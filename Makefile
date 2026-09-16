@@ -228,7 +228,10 @@ else
 ifeq ($(OS),Win32)
 	CPPFLAGS_COMMON += -DWIN32 -D_WIN32 -D_inline=inline
 	CFLAGS_COMMON += -mms-bitfields
-	LDFLAGS_DLL = -Wl,--add-stdcall-alias
+	# stdcall aliases only matter for 32-bit; lld rejects the flag
+	ifneq ($(findstring i686,$(shell $(CXX) -dumpmachine)),)
+		LDFLAGS_DLL = -Wl,--add-stdcall-alias
+	endif
 	LIBS_COMMON = -lws2_32 -luser32 -lgdi32 -lole32
 	EXE ?= exe
 	A = a

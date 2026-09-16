@@ -805,7 +805,9 @@ public:
 	}
 	mesh_t( mesh_t&& other ) noexcept : width( other.width ), height( other.height ), m_verts( std::exchange( other.m_verts, nullptr ) ) {
 	}
-	mesh_t& operator=( const mesh_t& ) = delete;
+	mesh_t& operator=( const mesh_t& other ) {
+		return *this = mesh_t( other );
+	}
 	mesh_t& operator=( mesh_t&& other ) noexcept {
 		if( this != &other ){
 			std::destroy_at( this );
