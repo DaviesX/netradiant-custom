@@ -89,7 +89,15 @@ float computeShadow( sampler2DShadow map, mat4 toLight, vec4 uvScaleOffset, floa
 		return 1.0;   // outside this light's map: lit
 	}
 
-	float bias = clamp( 0.001 * ( sqrt( 1.0 - NdotL * NdotL ) / max( NdotL, 1e-4 ) ), 0.0, 0.003 );
+	float slope = sqrt( 1.0 - NdotL * NdotL ) / max( NdotL, 1e-4 );
+	float bias = clamp( 0.001 * slope, 0.0, 0.003 );
+	if ( u_shadow_mode == 2 ) {
+		// a cascade's depth range reaches back to the world extent so that every caster is in it, which makes a
+		// bias in normalised depth hundreds of map units; pay it in map units instead. The projection is
+		// orthographic, so the third row of the matrix is the depth one unit along the light covers.
+		float depthPerUnit = 0.5 * length( vec3( toLight[0][2], toLight[1][2], toLight[2][2] ) );
+		bias = clamp( 0.5 * slope, 0.25, 2.0 ) * depthPerUnit;
+	}
 
 	vec3 coord = vec3( uvScaleOffset.xy * proj.xy + uvScaleOffset.zw, proj.z - bias );
 

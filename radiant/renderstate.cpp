@@ -1695,7 +1695,13 @@ void ShaderCache_setBumpEnabled( bool enabled ){
 /// surface: its brush faces bound a region the light travels through, so treating them as occluders drops a hard
 /// shadow of the volume), and the surfaces that are not really there.
 inline bool Shadow_materialCasts( const IShader& material ){
-	return ( material.getFlags() & ( QER_SKY | QER_FOG | QER_NODRAW | QER_CLIP | QER_BOTCLIP | QER_AREAPORTAL | QER_NOSHADOWS ) ) == 0;
+	const int flags = material.getFlags();
+	if ( ( flags & ( QER_SKY | QER_FOG | QER_CLIP | QER_BOTCLIP | QER_AREAPORTAL | QER_NOSHADOWS ) ) != 0 ) {
+		return false;
+	}
+	// solid nodraw is caulk: it is the sunward face of most walls and ceilings, and with back faces culled the
+	// drawn inner face cannot stand in for it. Non-solid nodraw (triggers, hints) is not there at all.
+	return ( flags & QER_NODRAW ) == 0 || ( flags & QER_NONSOLID ) == 0;
 }
 
 /// \brief Collects the solid geometry inside one light's volume into a flat draw list.

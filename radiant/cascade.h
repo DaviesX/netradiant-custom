@@ -36,8 +36,9 @@ const std::size_t c_shadowCascadeSize = 1024;
 /// Practical split blend between the logarithmic and uniform distributions. Matches sh-renderer.
 const float c_shadowCascadeLambda = 0.8f;
 /// How far the cascade near plane is pulled back so casters behind the slice still occlude, in map units.
-/// Matches sh-renderer's z_padding of 20.
-const float c_shadowCascadeNearPadding = 20.f;
+/// sh-renderer pads by 20, but its units are metres; 20 map units is half a metre, which clips the ceiling
+/// and walls out of the caster pass and leaves camera-shaped holes in the shadow. Pad by the world extent.
+const float c_shadowCascadeNearPadding = 65536.f;
 /// Editor-side cap on the cascade range, in map units. The camera's own far clip is the world diagonal
 /// (~227000 units), which would leave the last cascade at hundreds of units per texel; the reference engine's
 /// far plane is a game-scale distance instead. Shadows fade out beyond this, not the camera's far clip.
