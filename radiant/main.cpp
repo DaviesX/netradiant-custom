@@ -115,7 +115,8 @@ void qute_messageHandler( QtMsgType type, const QMessageLogContext &context, con
 	case QtCriticalMsg: buf << "QT CRT "; break;
 	case QtFatalMsg:    buf << "QT FTL "; break;
 	}
-	buf << context.category << ": " << msg.toLatin1().constData() << '\n';
+	// Qt leaves the category null for uncategorised messages; streaming it would be a strlen( 0 )
+	buf << ( context.category != 0 ? context.category : "default" ) << ": " << msg.toLatin1().constData() << '\n';
 	switch ( type )
 	{
 	case QtInfoMsg:
