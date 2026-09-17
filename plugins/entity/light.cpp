@@ -882,6 +882,7 @@ public:
 	float m_coneInner;
 	Vector3 m_angles;
 	Vector3 m_direction; ///< direction the light travels; from angles/angle, or from target when the instance supplies one
+	bool m_shadows;      ///< "_shadows" key; spot and sun only, point lights never cast
 	Callback<void()> m_changed;
 
 	PBRLight() :
@@ -892,7 +893,8 @@ public:
 		m_cone( 45 ),
 		m_coneInner( 30 ),
 		m_angles( 0, 0, 0 ),
-		m_direction( 0, 0, -1 ){
+		m_direction( 0, 0, -1 ),
+		m_shadows( true ){
 	}
 
 	float defaultIntensity() const {
@@ -981,6 +983,19 @@ public:
 		changed();
 	}
 	typedef MemberCaller<PBRLight, void(const char*), &PBRLight::angleChanged> AngleChangedCaller;
+
+	/// "_shadows": 0 makes the light non-casting. Only registered for light_spot and light_sun; point lights ignore it.
+	void shadowsChanged( const char* value ){
+		int shadows;
+		m_shadows = !string_parse_int( value, shadows ) || shadows != 0;
+		changed();
+	}
+	typedef MemberCaller<PBRLight, void(const char*), &PBRLight::shadowsChanged> ShadowsChangedCaller;
+
+	/// Point lights are never occluded in this renderer, whatever "_shadows" says.
+	bool castsShadows() const {
+		return m_shadows && m_type != RendererLightParams::ePoint;
+	}
 
 	float cosOuter() const {
 		return static_cast<float>( cos( std::min( m_cone, 89.9f ) * c_DEG2RADMULT ) );
@@ -1390,6 +1405,9 @@ class Light :
 			m_keyObservers.insert( "cone_inner", PBRLight::ConeInnerChangedCaller( m_pbr ) );
 			m_keyObservers.insert( "angles", PBRLight::AnglesChangedCaller( m_pbr ) );
 			m_keyObservers.insert( "angle", PBRLight::AngleChangedCaller( m_pbr ) );
+			if ( m_pbr.m_type != RendererLightParams::ePoint ) {
+				m_keyObservers.insert( "_shadows", PBRLight::ShadowsChangedCaller( m_pbr ) );
+			}
 		}
 
 		if ( g_lightType == LIGHTTYPE_DOOM3 ) {
@@ -1854,7 +1872,9 @@ public:
 		}
 		m_pbr.m_direction = m_pbr.anglesDirection();
 	}
-	const RendererLightParams& pbrParams() const {
+	/// \p active is false for a light_sun that is not the first in map order: it lights nothing, so it must not
+	/// claim the sun's shadow cascades either.
+	const RendererLightParams& pbrParams( bool active = true ) const {
 		m_pbrParams.type = m_pbr.m_type;
 		m_pbrParams.origin = m_aabb_light.origin;
 		m_pbrParams.direction = m_pbr.m_direction;
@@ -1862,6 +1882,7 @@ public:
 		m_pbrParams.radius = m_pbr.m_radiusTransformed;
 		m_pbrParams.cosInner = m_pbr.cosInner();
 		m_pbrParams.cosOuter = m_pbr.cosOuter();
+		m_pbrParams.castsShadows = active && m_pbr.castsShadows();
 		return m_pbrParams;
 	}
 	/// Sun: no cutoff; the bounds are world sized and the origin is pushed far back along the light direction
@@ -2312,7 +2333,7 @@ public:
 			return RendererLight::params();
 		}
 		m_contained.pbrUpdateDirection( firstTargetPosition() );
-		return m_contained.pbrParams();
+		return m_contained.pbrParams( m_contained.pbrType() != RendererLightParams::eSun || isActiveSun() );
 	}
 	const Matrix4& rotation() const override {
 		return m_contained.rotation();

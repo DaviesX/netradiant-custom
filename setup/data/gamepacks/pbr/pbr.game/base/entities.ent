@@ -54,6 +54,7 @@ Spot light with physical units. Points along "angles", or at the entity named by
 <angles key="angles" name="Pitch Yaw Roll" value="0 0 0">Direction the light travels (pitch positive looks down).</angles>
 <target key="target" name="Target">Entity to point at; takes precedence over angles.</target>
 <targetname key="targetname" name="Target Name">Name for targeting.</targetname>
+<boolean key="_shadows" name="Shadows" value="1">Whether the light casts shadows (default 1). Set 0 to light through occluders.</boolean>
 -------- NOTES --------
 Radiant intensity is intensity / (2 pi (1 - cos(cone))); inverse-square falloff in map units, culled beyond radius.
 </point>
@@ -64,6 +65,7 @@ Directional sun light. At most one is honoured: with several, the first in map o
 <color key="_color" name="Colour" value="1 1 1">Linear RGB colour (default 1 1 1).</color>
 <real key="intensity" name="Intensity" value="3">Irradiance on a surface facing the sun (default 3).</real>
 <angles key="angles" name="Pitch Yaw Roll" value="60 30 0">Direction the light travels (pitch positive looks down).</angles>
+<boolean key="_shadows" name="Shadows" value="1">Whether the sun casts shadows (default 1). Set 0 to light through occluders.</boolean>
 -------- NOTES --------
 No cutoff: every lit surface receives the sun. The entity position only marks the sun in the editor.
 </point>

@@ -1,23 +1,4 @@
-# pbr-gamepack Specification
-
-## Purpose
-The `pbr` gamepack: game description, build menu, entity definitions, benchmark map and the parity criterion against the engine.
-
-## Requirements
-
-### Requirement: PBR gamepack layout
-A gamepack named `pbr.game` SHALL be provided with `games/pbr.game` declaring `type="q3"`, `shaders="pbr"` (material module), `entities="pbr"` (entity module), `entityclass="quake3"` with `entityclasstype="xml"` (definition loader and format), `basegame="base"`, `shaderpath="materials"`, and standard Quake 3 map, brush, patch, archive, and texture types. The gamepack directory SHALL contain `default_build_menu.xml`, `base/entities.ent` (XML definitions, the only format that carries per-key defaults for the inspector), and `base/default_shaderlist.txt`.
-
-#### Scenario: Gamepack installed
-- **WHEN** the gamepack is copied into `gamepacks/` and the editor starts
-- **THEN** "PBR" appears in the game selection dialog and selecting it loads the PBR material and entity modules
-
-### Requirement: Build menu invokes q3map2 BSP and VIS stages
-The default build menu SHALL provide at least "BSP", "BSP + VIS", and "BSP + VIS + light (fast)" entries invoking the bundled q3map2 with `-meta`, `-vis`, and `-light -fast` respectively. No entry SHALL depend on a tool outside the repository.
-
-#### Scenario: Compile from the editor
-- **WHEN** the designer runs "BSP + VIS" on a saved map
-- **THEN** q3map2 produces a `.bsp` next to the map with no errors
+## MODIFIED Requirements
 
 ### Requirement: Benchmark map
 A benchmark map SHALL ship with the gamepack containing: one street block bounded by two building shells with enterable interiors, a low sky ceiling above head height, one fog volume, one `light_sun`, at least two `light` and two `light_spot` entities, and materials that exercise base colour, normal, metallic-roughness, occlusion, emissive, mask alpha, and double-sided. The map SHALL compile leak-free.
@@ -36,12 +17,7 @@ The map SHALL additionally contain geometry that demonstrates occlusion: at leas
 - **WHEN** the benchmark map is opened in lighting draw mode at the documented camera position
 - **THEN** a sun shadow and a spot shadow are both visible in the same view
 
-### Requirement: Engine parity criterion
-The benchmark map SHALL include a documented camera position and exposure. The editor lighting view from that position SHALL match the engine's direct-light-only render of the compiled map within a documented tolerance. The comparison procedure and tolerance SHALL be recorded in a `README.md` in the gamepack.
-
-#### Scenario: Parity check performed
-- **WHEN** screenshots are taken from the documented position in editor and engine
-- **THEN** the README's procedure yields a pass
+## ADDED Requirements
 
 ### Requirement: Shadow parameters documented in the gamepack README
 The gamepack `README.md` SHALL document the shadow scheme so it can be compared against the engine later: the caster culling mode, the normal-offset and slope-scaled bias constants, the PCF kernel, the cascade count, resolution, split lambda, texel snapping and near-plane padding, the spot atlas dimensions and per-light tile size, and the surface types excluded from the caster set. It SHALL state which of these are chosen to match `sh-renderer` and which are editor-side choices that may need revisiting when engine parity is attempted.

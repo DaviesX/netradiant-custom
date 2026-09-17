@@ -165,6 +165,40 @@ public:
 	}
 };
 
+/// \brief Traversal for the shadow caster pass.
+/// Deliberately not RenderHighlighted: that calls Renderable::viewChanged(), which invalidates patch
+/// tessellation for the current view. Running it a second time per frame with a light's volume would thrash
+/// patch LOD against the camera's. Selection highlighting is irrelevant to a depth pass, so it is skipped too.
+class RenderShadowCasters
+{
+	Renderer& m_renderer;
+	const VolumeTest& m_volume;
+public:
+	RenderShadowCasters( Renderer& renderer, const VolumeTest& volume )
+		: m_renderer( renderer ), m_volume( volume ){
+	}
+	bool pre( const scene::Path& path, scene::Instance& instance, VolumeIntersectionValue parentVisible ) const {
+		m_renderer.PushState();
+
+		if ( Cullable_testVisible( instance, m_volume, parentVisible ) != c_volumeOutside ) {
+			Renderable* renderable = Instance_getRenderable( instance );
+			if ( renderable ) {
+				renderable->renderSolid( m_renderer, m_volume );
+			}
+		}
+
+		return true;
+	}
+	void post( const scene::Path& path, scene::Instance& instance, VolumeIntersectionValue parentVisible ) const {
+		m_renderer.PopState();
+	}
+};
+
+/// \brief Collects the solid geometry visible from one light into \p renderer.
+inline void Scene_RenderShadowCasters( Renderer& renderer, const VolumeTest& volume ){
+	GlobalSceneGraph().traverse( ForEachVisible<RenderShadowCasters>( volume, RenderShadowCasters( renderer, volume ) ) );
+}
+
 inline void Scene_Render( Renderer& renderer, const VolumeTest& volume ){
 	GlobalSceneGraph().traverse( ForEachVisible<RenderHighlighted>( volume, RenderHighlighted( renderer, volume ) ) );
 	GlobalShaderCache().forEachRenderable( RenderHighlighted::RenderCaller( RenderHighlighted( renderer, volume ) ) );

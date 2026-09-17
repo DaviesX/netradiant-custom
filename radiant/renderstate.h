@@ -38,3 +38,15 @@ void ShaderCache_setResolveHook( RenderResolveHook* hook );
 
 /// Draws a full-screen quad through the tonemap program, sampling \p hdrTexture. GL state is preserved.
 void ShaderCache_drawTonemap( unsigned int hdrTexture, float exposure );
+
+struct ShadowCascadeCamera;
+class Matrix4;
+
+/// \brief Brings the shadow atlases up to date for this frame, if anything they depend on has changed.
+/// Called from the camera before it binds its own target, in lighting draw mode in a pbr game; the atlases and
+/// the framebuffer binding are restored before it returns. \p cameraView is the camera's modelview matrix,
+/// which cascade selection needs. No-op in any other game or draw mode.
+void ShaderCache_updateShadows( const ShadowCascadeCamera& camera, const Matrix4& cameraView );
+
+/// \brief Frees the shadow atlases. Called when the camera leaves lighting mode, and on context loss.
+void ShaderCache_releaseShadows();

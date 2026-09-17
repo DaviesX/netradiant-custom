@@ -239,6 +239,17 @@ PBR (Stage 1):
 	* camera preferences "Lighting exposure" and "Lighting ambient"
 	* pbr gamepack (setup/data/gamepacks/pbr) with entity definitions, build menu, benchmark map and README
 
+PBR (Stage 2):
+	* shadow maps in lighting camera mode for pbr games, ported from sh-renderer: depth-only caster pass with
+	  back-face culling, normal-offset and slope-scaled bias, 9-tap Poisson PCF rotated by interleaved gradient noise
+	* sun cascaded shadow maps: 3 cascades of 1024 in one 2048 atlas, practical split at lambda 0.8, texel-snapped
+	  centres, 20 unit near-plane padding, cascade range capped at 4096 map units
+	* spot light shadow atlas: 16 tiles of 512 in one 2048 atlas, assigned nearest-camera-first
+	* "_shadows" key (default 1) on light_spot and light_sun; point lights never cast
+	* camera preference "Lighting shadows" (default on)
+	* surfaceparm noshadows, trigger and hint exclude a surface from casting, as do sky, nodraw, clip and areaportal
+	* shadow maps are cached and regenerated only when the scene, a light, or (for the cascades) the camera changes
+
 
 binds...
 	* wasd camera binds, c - deSelect, z - delete

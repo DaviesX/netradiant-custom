@@ -1630,6 +1630,11 @@ bool ShaderTemplate::parsePBR( Tokeniser& tokeniser ){
 			else if ( string_equal_nocase( surfaceparm, "sky" ) ) {
 				m_nFlags |= QER_SKY;
 			}
+			else if ( string_equal_nocase( surfaceparm, "noshadows" ) ||
+			          string_equal_nocase( surfaceparm, "trigger" ) ||
+			          string_equal_nocase( surfaceparm, "hint" ) ) {
+				m_nFlags |= QER_NOSHADOWS;
+			}
 		}
 		// anything else (q3map_*, comments in unknown syntax, ...) is skipped
 	}

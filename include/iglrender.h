@@ -26,6 +26,7 @@
 class AABB;
 class Matrix4;
 struct RendererLightParams;
+class RendererLight;
 
 
 class GLProgram
@@ -34,8 +35,10 @@ public:
 	virtual void enable() = 0;
 	virtual void disable() = 0;
 	virtual void setParameters( const Vector3& viewer, const Matrix4& localToWorld, const Vector3& origin, const Vector3& colour, const Matrix4& world2light ) = 0;
-	/// Physical light parameters for one lighting pass; no-op for programs that do not use them.
-	virtual void setLightParams( const Vector3& viewer, const Matrix4& localToWorld, const Vector3& colour, const RendererLightParams& params ){
+	/// \brief The light of one physical lighting pass; no-op for programs that do not use them.
+	/// The whole light is passed rather than its colour and parameters so that a program can also look up the
+	/// renderer's shadow description for it (see ShaderCache_shadowsFor in renderstate.cpp).
+	virtual void setLightParams( const Vector3& viewer, const Matrix4& localToWorld, const RendererLight& light ){
 	}
 };
 

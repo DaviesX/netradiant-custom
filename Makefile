@@ -887,6 +887,7 @@ $(INSTALLDIR)/radiant.$(EXE): \
 	radiant/brushxml.o \
 	radiant/build.o \
 	radiant/camwindow.o \
+	radiant/cascade.o \
 	radiant/clippertool.o \
 	radiant/colors.o \
 	radiant/commands.o \

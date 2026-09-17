@@ -39,11 +39,105 @@ uniform float		u_light_cos_inner;
 uniform float		u_light_cos_outer;
 uniform int			u_light_type;             // 1 point, 2 spot, 3 sun
 
+// Shadows, ported from sh-renderer glsl/radiance.frag. Cascades and spot tiles share one atlas each and are
+// addressed by a uv scale and offset, because GLSL 1.20 forbids indexing a sampler array with a non-constant.
+uniform sampler2DShadow	u_sun_shadow_atlas;
+uniform sampler2DShadow	u_spot_shadow_atlas;
+uniform int			u_shadow_mode;            // 0 unshadowed, 1 spot, 2 sun
+uniform mat4		u_local_to_shadow0;       // object space -> light clip space; cascade 0, or the spot
+uniform mat4		u_local_to_shadow1;
+uniform mat4		u_local_to_shadow2;
+uniform vec4		u_shadow_uv0;             // xy atlas uv scale, zw atlas uv offset
+uniform vec4		u_shadow_uv1;
+uniform vec4		u_shadow_uv2;
+uniform vec3		u_sun_cascade_splits;     // view space distances at which cascades 0 and 1 end
+uniform vec4		u_local_to_view_z;        // third row of object space -> camera view space
+uniform float		u_shadow_texel_size;      // 1 / atlas size
+
 varying vec3		var_vertex;
 varying vec2		var_texcoord;
 varying mat3		var_mat_ts2os;
 
 const float PI = 3.14159265358979;
+
+float interleavedGradientNoise( vec2 positionScreen )
+{
+	vec3 magic = vec3( 0.06711056, 0.00583715, 52.9829189 );
+	return fract( magic.z * fract( dot( positionScreen, magic.xy ) ) );
+}
+
+// One hardware depth comparison, clamped into this light's tile: the one texel guard band around every tile is
+// left at the cleared depth, so a tap that lands in it reads as lit rather than picking up a neighbour.
+float shadowTap( sampler2DShadow map, vec3 coord, vec2 disc, mat2 rotation, float radius, vec4 uvScaleOffset )
+{
+	vec2 uv = coord.xy + rotation * disc * radius;
+	vec2 lo = uvScaleOffset.zw - u_shadow_texel_size;
+	vec2 hi = uvScaleOffset.zw + uvScaleOffset.xy + u_shadow_texel_size;
+	return shadow2D( map, vec3( clamp( uv, lo, hi ), coord.z ) ).r;
+}
+
+// normal offset + slope scaled depth bias + nine tap Poisson disc rotated per pixel, as in the reference renderer.
+// The disc is unrolled rather than held in an array so nothing depends on GLSL 1.20 dynamic indexing rules.
+float computeShadow( sampler2DShadow map, mat4 toLight, vec4 uvScaleOffset, float penumbra,
+                     vec3 position, vec3 normal, float NdotL )
+{
+	vec3 biased = position + normal * ( 1.0 - NdotL ) * 0.005;
+	vec4 lightPos = toLight * vec4( biased, 1.0 );
+	vec3 proj = lightPos.xyz / lightPos.w;
+	proj = proj * 0.5 + 0.5;
+	if ( proj.x < 0.0 || proj.x > 1.0 || proj.y < 0.0 || proj.y > 1.0 || proj.z < 0.0 || proj.z > 1.0 ) {
+		return 1.0;   // outside this light's map: lit
+	}
+
+	float bias = clamp( 0.001 * ( sqrt( 1.0 - NdotL * NdotL ) / max( NdotL, 1e-4 ) ), 0.0, 0.003 );
+
+	vec3 coord = vec3( uvScaleOffset.xy * proj.xy + uvScaleOffset.zw, proj.z - bias );
+
+	float angle = interleavedGradientNoise( gl_FragCoord.xy ) * 6.28318530718;
+	float s = sin( angle );
+	float c = cos( angle );
+	mat2 rotation = mat2( c, -s, s, c );
+	float radius = u_shadow_texel_size * penumbra;
+
+	float sum = 0.0;
+	sum += shadowTap( map, coord, vec2( -0.7674601,  0.5097495 ), rotation, radius, uvScaleOffset );
+	sum += shadowTap( map, coord, vec2( -0.0652758,  0.9238806 ), rotation, radius, uvScaleOffset );
+	sum += shadowTap( map, coord, vec2(  0.6559792,  0.7077699 ), rotation, radius, uvScaleOffset );
+	sum += shadowTap( map, coord, vec2( -0.9333916, -0.2797686 ), rotation, radius, uvScaleOffset );
+	sum += shadowTap( map, coord, vec2( -0.3013854, -0.4005081 ), rotation, radius, uvScaleOffset );
+	sum += shadowTap( map, coord, vec2(  0.4485547, -0.1982736 ), rotation, radius, uvScaleOffset );
+	sum += shadowTap( map, coord, vec2(  0.9008985,  0.1802927 ), rotation, radius, uvScaleOffset );
+	sum += shadowTap( map, coord, vec2( -0.5298812, -0.8258384 ), rotation, radius, uvScaleOffset );
+	sum += shadowTap( map, coord, vec2(  0.3533838, -0.8351508 ), rotation, radius, uvScaleOffset );
+	return sum / 9.0;
+}
+
+// Cascade selection is unrolled for the same reason: no dynamic index into a sampler or a uniform array.
+float shadowTerm( vec3 position, vec3 normal, float NdotL )
+{
+	if ( u_shadow_mode == 0 ) {
+		return 1.0;
+	}
+	if ( u_shadow_mode == 1 ) {
+		return computeShadow( u_spot_shadow_atlas, u_local_to_shadow0, u_shadow_uv0, 1.0, position, normal, NdotL );
+	}
+
+	float viewDepth = abs( dot( u_local_to_view_z, vec4( position, 1.0 ) ) );
+	if ( viewDepth < u_sun_cascade_splits.x ) {
+		return computeShadow( u_sun_shadow_atlas, u_local_to_shadow0, u_shadow_uv0, 2.0, position, normal, NdotL );
+	}
+	if ( viewDepth < u_sun_cascade_splits.y ) {
+		return computeShadow( u_sun_shadow_atlas, u_local_to_shadow1, u_shadow_uv1, 1.0, position, normal, NdotL );
+	}
+	// past the last split there is no cascade covering this fragment. Its light space position can still land
+	// inside the last cascade's bounds, because that box is an AABB fitted around a frustum slice and for an
+	// oblique sun it reaches well beyond the slice, so sampling anyway would shadow some of what lies past the
+	// shadow distance and not the rest, depending on the sun angle. Render it lit instead.
+	if ( viewDepth >= u_sun_cascade_splits.z ) {
+		return 1.0;
+	}
+	return computeShadow( u_sun_shadow_atlas, u_local_to_shadow2, u_shadow_uv2, 2.0 / 3.0, position, normal, NdotL );
+}
 
 // exact sRGB electro-optical transfer function
 vec3 srgbToLinear( vec3 c )
@@ -145,7 +239,9 @@ void	main()
 	vec3 kD = ( 1.0 - F ) * ( 1.0 - metallic );
 	vec3 diffuse = kD * baseColor / PI * diffuseDisney( NdotV, NdotL, VdotH, roughness );
 
-	vec3 radiance = ( diffuse + specular ) * u_light_color * irradiance * NdotL;
+	float shadow = NdotL > 0.0 ? shadowTerm( var_vertex, N, NdotL ) : 1.0;
+
+	vec3 radiance = ( diffuse + specular ) * u_light_color * irradiance * NdotL * shadow;
 
 	gl_FragColor = vec4( radiance * alpha, alpha );
 }

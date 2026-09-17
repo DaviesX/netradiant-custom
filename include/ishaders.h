@@ -39,6 +39,7 @@ enum
 	QER_CLIP = 1 << 9,
 	QER_BOTCLIP = 1 << 10,
 	QER_SKY = 1 << 11,
+	QER_NOSHADOWS = 1 << 12, ///< surfaceparm noshadows, trigger or hint: the surface never occludes a light
 };
 
 struct qtexture_t;

@@ -55,6 +55,7 @@
 #include "xywindow.h"
 #include "windowobservers.h"
 #include "renderstate.h"
+#include "cascade.h"
 #include "stringio.h"
 
 #include "timer.h"
@@ -172,6 +173,7 @@ struct camwindow_globals_private_t
 	bool m_bShowSize = true;
 	float m_lightingExposure = 1.f;
 	float m_lightingAmbient = 0.02f;
+	bool m_lightingShadows = true;
 };
 
 camwindow_globals_private_t g_camwindow_globals_private;
@@ -181,6 +183,9 @@ float Camera_lightingExposure(){
 }
 float Camera_lightingAmbient(){
 	return g_camwindow_globals_private.m_lightingAmbient;
+}
+bool Camera_lightingShadows(){
+	return g_camwindow_globals_private.m_lightingShadows;
 }
 
 /// Lighting draw mode exists for Doom 3 style games and for PBR games.
@@ -2089,6 +2094,39 @@ void CamHDRResolve::resolve(){
 void CamWnd::Cam_Draw(){
 //		globalOutputStream() << "Cam_Draw()\n";
 
+	// the caster pass owns the framebuffer binding and the viewport, so it runs before the HDR target is bound
+	if ( m_Camera.draw_mode == cd_lighting && ShaderCache_pbrGame() && g_camwindow_globals_private.m_lightingShadows ) {
+		ShadowCascadeCamera shadowCamera;
+		shadowCamera.origin = m_Camera.origin;
+		shadowCamera.forward = vector3_negated( m_Camera.vpn );
+		shadowCamera.right = m_Camera.vright;
+		shadowCamera.up = m_Camera.vup;
+		{	// the frustum extents projection_for_camera builds, so the cascades match what the camera draws
+			float halfWidth = camera_t::near_z * tan( degrees_to_radians( camera_t::fieldOfView * 0.5 ) );
+			int width = m_Camera.width;
+			int height = m_Camera.height;
+			const bool swap = height > width;
+			if ( swap ) {
+				std::swap( width, height );
+			}
+			float halfHeight = halfWidth * ( static_cast<float>( height ) / static_cast<float>( width ) );
+			if ( swap ) {
+				std::swap( halfWidth, halfHeight );
+			}
+			shadowCamera.halfWidthAtNear = halfWidth;
+			shadowCamera.halfHeightAtNear = halfHeight;
+		}
+		shadowCamera.nearDistance = camera_t::near_z;
+		// the camera's own far clip is the world diagonal; the cascades use a usable shadow distance instead
+		shadowCamera.farDistance = std::min( Camera_getFarClipPlane( m_Camera ), c_shadowDistance );
+
+		ShaderCache_updateShadows( shadowCamera, m_Camera.modelview );
+	}
+	else
+	{
+		ShaderCache_releaseShadows();
+	}
+
 	const bool hdr = m_Camera.draw_mode == cd_lighting && ShaderCache_pbrGame() && HDR_begin();
 	if ( !hdr && m_hdr != 0 ) {
 		HDR_release(); // left lighting mode
@@ -2586,6 +2624,14 @@ void LightingAmbientImport( float value ){
 }
 typedef FreeCaller<void(float), LightingAmbientImport> LightingAmbientImportCaller;
 
+void LightingShadowsImport( bool value ){
+	g_camwindow_globals_private.m_lightingShadows = value;
+	if ( g_camwnd != 0 ) {
+		CamWnd_Update( *g_camwnd );
+	}
+}
+typedef FreeCaller<void(bool), LightingShadowsImport> LightingShadowsImportCaller;
+
 void Camera_constructPreferences( PreferencesPage& page ){
 	page.appendSpinner( "Movement Speed", g_camwindow_globals_private.m_nMoveSpeed, 1, CAM_MAX_SPEED );
 	page.appendSpinner( "Time to Max Speed", g_camwindow_globals_private.m_time_toMaxSpeed, 0, 5000 );
@@ -2659,6 +2705,11 @@ void Camera_constructPreferences( PreferencesPage& page ){
 		                    FloatExportCallback( FloatExportCaller( g_camwindow_globals_private.m_lightingAmbient ) ),
 		                    3
 		                  );
+		page.appendCheckBox(
+		    "", "Lighting shadows",
+		    LightingShadowsImportCaller(),
+		    BoolExportCaller( g_camwindow_globals_private.m_lightingShadows )
+		);
 	}
 }
 void Camera_constructPage( PreferenceGroup& group ){
@@ -2767,6 +2818,7 @@ void CamWnd_Construct(){
 	GlobalPreferenceSystem().registerPreference( "fieldOfView", FloatImportStringCaller( camera_t::fieldOfView ), FloatExportStringCaller( camera_t::fieldOfView ) );
 	GlobalPreferenceSystem().registerPreference( "LightingExposure", FloatImportStringCaller( g_camwindow_globals_private.m_lightingExposure ), FloatExportStringCaller( g_camwindow_globals_private.m_lightingExposure ) );
 	GlobalPreferenceSystem().registerPreference( "LightingAmbient", FloatImportStringCaller( g_camwindow_globals_private.m_lightingAmbient ), FloatExportStringCaller( g_camwindow_globals_private.m_lightingAmbient ) );
+	GlobalPreferenceSystem().registerPreference( "LightingShadows", BoolImportStringCaller( g_camwindow_globals_private.m_lightingShadows ), BoolExportStringCaller( g_camwindow_globals_private.m_lightingShadows ) );
 	//.  HACK: always show camera from start to have at least one ogl viewport shown = ogl initialized; otherwise loading map = loading textures = crash
 //	GlobalPreferenceSystem().registerPreference( "CamVIS", makeBoolStringImportCallback( ToggleShownImportBoolCaller( g_camera_shown ) ), makeBoolStringExportCallback( ToggleShownExportBoolCaller( g_camera_shown ) ) );
 

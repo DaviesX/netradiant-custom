@@ -36,9 +36,16 @@
 #include <vector>
 #include <list>
 #include <map>
+#include <algorithm>
+#include <cmath>
+
+#include <QOpenGLContext>
+#include <QOpenGLExtraFunctions>
 
 #include "math/matrix.h"
 #include "math/aabb.h"
+#include "math/pi.h"
+#include "math/frustum.h"
 #include "generic/callback.h"
 #include "texturelib.h"
 #include "string/string.h"
@@ -53,6 +60,10 @@
 
 #include "xywindow.h"
 #include "camwindow.h"
+#include "cascade.h"
+#include "renderer.h"
+#include "view.h"
+#include "iscenegraph.h"
 
 
 
@@ -445,6 +456,54 @@ bool ShaderCache_pbrGame(){
 	return g_pbrGame;
 }
 
+// ============================================================================
+// Shadow maps. Generation lives further down, next to the light registry it needs; only the per-frame
+// assignment table is declared here, because the lighting program reads it in setLightParams.
+// ============================================================================
+
+/// Edge of either atlas, in texels.
+const std::size_t c_shadowAtlasSize = 2048;
+/// Edge of one spot light's region of the spot atlas, in texels.
+const std::size_t c_spotShadowTileSize = 512;
+const std::size_t c_spotShadowTilesPerRow = c_shadowAtlasSize / c_spotShadowTileSize;
+/// How many spot lights the atlas holds at once.
+const std::size_t c_spotShadowTileCount = c_spotShadowTilesPerRow * c_spotShadowTilesPerRow;
+/// Near plane of a spot light's shadow frustum, in map units.
+const float c_spotShadowNear = 4.f;
+/// Five material textures plus the two atlases.
+const GLint c_shadowTextureUnits = 7;
+
+/// \brief What the lighting program needs in order to sample one light's shadow, for the duration of a frame.
+/// The entity only reports whether the light casts (RendererLightParams::castsShadows); everything here is the
+/// renderer's, because it is the renderer that owns the atlases.
+struct ShadowAssignment
+{
+	bool sun;                                        ///< false for a spot light, which uses index 0 only
+	std::size_t cascades;                            ///< 1 for a spot, c_shadowCascadeCount for the sun
+	Matrix4 worldToShadow[c_shadowCascadeCount];     ///< world space -> light clip space
+	Vector4 uvScaleOffset[c_shadowCascadeCount];     ///< xy scale, zw offset of the atlas region
+	float splits[c_shadowCascadeCount];              ///< sun only: view space distance at which each cascade ends
+};
+
+typedef std::map<const RendererLight*, ShadowAssignment> ShadowAssignments;
+ShadowAssignments g_shadowAssignments;
+/// The camera view matrix the cascades were fitted to; cascade selection needs view space depth.
+Matrix4 g_shadowCameraView( g_matrix4_identity );
+/// Cleared once, with a warning, if this context cannot do shadow maps at all.
+bool g_shadowsAvailable = true;
+/// Set from the scene graph's changed callback: the geometry the atlases were built from has moved.
+bool g_shadowGeometryDirty = true;
+/// Set whenever a light is attached, detached or edited.
+bool g_shadowLightsDirty = true;
+
+void ShaderCache_releaseShadows();
+void Shadow_sceneChanged();
+
+const ShadowAssignment* ShaderCache_shadowsFor( const RendererLight& light ){
+	const ShadowAssignments::const_iterator i = g_shadowAssignments.find( &light );
+	return ( i == g_shadowAssignments.end() ) ? 0 : &( *i ).second;
+}
+
 /// \brief Shared program for the additive PBR light passes (pbr_vp/pbr_fp).
 /// Per-material factors are set by GLSLPBRMaterialProgram when a material's pass is enabled.
 class GLSLPBRProgram : public GLProgram
@@ -463,6 +522,15 @@ public:
 	GLint u_light_cos_inner;
 	GLint u_light_cos_outer;
 	GLint u_light_type;
+	GLint u_shadow_mode;
+	// the cascade uniforms are named individually rather than declared as an array, because GLSL 1.20 forbids
+	// indexing a uniform array with a non-constant in the fragment program
+	static_assert( c_shadowCascadeCount == 3, "pbr_fp.glsl declares exactly three cascade uniforms" );
+	GLint u_local_to_shadow[c_shadowCascadeCount];
+	GLint u_shadow_uv[c_shadowCascadeCount];
+	GLint u_sun_cascade_splits;
+	GLint u_local_to_view_z;
+	GLint u_shadow_texel_size;
 
 	GLSLPBRProgram() : m_program( 0 ){
 	}
@@ -480,7 +548,6 @@ public:
 		gl().glBindAttribLocation( m_program, c_attr_Binormal, "attr_Binormal" );
 
 		GLSLProgram_link( m_program );
-		GLSLProgram_validate( m_program );
 
 		gl().glUseProgram( m_program );
 
@@ -502,6 +569,27 @@ public:
 		u_light_cos_inner = gl().glGetUniformLocation( m_program, "u_light_cos_inner" );
 		u_light_cos_outer = gl().glGetUniformLocation( m_program, "u_light_cos_outer" );
 		u_light_type = gl().glGetUniformLocation( m_program, "u_light_type" );
+
+		gl().glUniform1i( gl().glGetUniformLocation( m_program, "u_sun_shadow_atlas" ), 5 );
+		gl().glUniform1i( gl().glGetUniformLocation( m_program, "u_spot_shadow_atlas" ), 6 );
+
+		u_shadow_mode = gl().glGetUniformLocation( m_program, "u_shadow_mode" );
+		u_local_to_shadow[0] = gl().glGetUniformLocation( m_program, "u_local_to_shadow0" );
+		u_local_to_shadow[1] = gl().glGetUniformLocation( m_program, "u_local_to_shadow1" );
+		u_local_to_shadow[2] = gl().glGetUniformLocation( m_program, "u_local_to_shadow2" );
+		u_shadow_uv[0] = gl().glGetUniformLocation( m_program, "u_shadow_uv0" );
+		u_shadow_uv[1] = gl().glGetUniformLocation( m_program, "u_shadow_uv1" );
+		u_shadow_uv[2] = gl().glGetUniformLocation( m_program, "u_shadow_uv2" );
+		u_sun_cascade_splits = gl().glGetUniformLocation( m_program, "u_sun_cascade_splits" );
+		u_local_to_view_z = gl().glGetUniformLocation( m_program, "u_local_to_view_z" );
+		u_shadow_texel_size = gl().glGetUniformLocation( m_program, "u_shadow_texel_size" );
+
+		// both atlases are the same size, so the filter step is one constant for the whole program
+		gl().glUniform1f( u_shadow_texel_size, 1.f / float( c_shadowAtlasSize ) );
+
+		// validated only after the sampler units are assigned: this program mixes sampler2D and sampler2DShadow,
+		// and validation fails while they all still default to texture unit 0
+		GLSLProgram_validate( m_program );
 
 		gl().glUseProgram( 0 );
 
@@ -544,7 +632,10 @@ public:
 	void setParameters( const Vector3& viewer, const Matrix4& localToWorld, const Vector3& origin, const Vector3& colour, const Matrix4& world2light ) override {
 	}
 
-	void setLightParams( const Vector3& viewer, const Matrix4& localToWorld, const Vector3& colour, const RendererLightParams& params ) override {
+	void setLightParams( const Vector3& viewer, const Matrix4& localToWorld, const RendererLight& light ) override {
+		const Vector3& colour = light.colour();
+		const RendererLightParams& params = light.params();
+
 		Matrix4 world2local( localToWorld );
 		matrix4_affine_invert( world2local );
 
@@ -569,7 +660,36 @@ public:
 		gl().glUniform1f( u_light_cos_outer, params.cosOuter );
 		gl().glUniform1i( u_light_type, params.type == RendererLightParams::eSun ? 3 : params.type == RendererLightParams::eSpot ? 2 : 1 );
 
+		setShadowParams( localToWorld, light );
+
 		GlobalOpenGL_debugAssertNoErrors();
+	}
+
+	/// Shading is in object space, so the light space matrices are composed per renderable here rather than
+	/// being uploaded once per light.
+	void setShadowParams( const Matrix4& localToWorld, const RendererLight& light ){
+		const ShadowAssignment* shadow = light.params().castsShadows ? ShaderCache_shadowsFor( light ) : 0;
+		if ( shadow == 0 ) {
+			gl().glUniform1i( u_shadow_mode, 0 );
+			return;
+		}
+
+		for ( std::size_t i = 0; i < shadow->cascades; ++i )
+		{
+			const Matrix4 localToShadow = matrix4_multiplied_by_matrix4( shadow->worldToShadow[i], localToWorld );
+			gl().glUniformMatrix4fv( u_local_to_shadow[i], 1, GL_FALSE, reinterpret_cast<const float*>( &localToShadow ) );
+			gl().glUniform4f( u_shadow_uv[i], shadow->uvScaleOffset[i].x(), shadow->uvScaleOffset[i].y(),
+			                  shadow->uvScaleOffset[i].z(), shadow->uvScaleOffset[i].w() );
+		}
+
+		if ( shadow->sun ) {
+			// cascade selection needs view space depth: the third row of localToView dotted with the position
+			const Matrix4 localToView = matrix4_multiplied_by_matrix4( g_shadowCameraView, localToWorld );
+			gl().glUniform4f( u_local_to_view_z, localToView[2], localToView[6], localToView[10], localToView[14] );
+			gl().glUniform3f( u_sun_cascade_splits, shadow->splits[0], shadow->splits[1], shadow->splits[2] );
+		}
+
+		gl().glUniform1i( u_shadow_mode, shadow->sun ? 2 : 1 );
 	}
 };
 
@@ -647,6 +767,72 @@ public:
 
 GLSLPBRBaseProgram g_pbrBaseGLSL;
 
+/// \brief Depth-only program for the shadow caster pass (shadow_vp/shadow_fp).
+class GLSLShadowProgram : public GLProgram
+{
+public:
+	GLuint m_program;
+	GLint u_alpha_cutoff;
+
+	GLSLShadowProgram() : m_program( 0 ), u_alpha_cutoff( -1 ){
+	}
+
+	void create(){
+		m_program = gl().glCreateProgram();
+		{
+			StringOutputStream filename( 256 );
+			createShader( m_program, filename( GlobalRadiant().getAppPath(), "gl/shadow_vp.glsl" ), GL_VERTEX_SHADER );
+			createShader( m_program, filename( GlobalRadiant().getAppPath(), "gl/shadow_fp.glsl" ), GL_FRAGMENT_SHADER );
+		}
+
+		gl().glBindAttribLocation( m_program, c_attr_TexCoord0, "attr_TexCoord0" );
+
+		GLSLProgram_link( m_program );
+		GLSLProgram_validate( m_program );
+
+		gl().glUseProgram( m_program );
+		gl().glUniform1i( gl().glGetUniformLocation( m_program, "u_basecolormap" ), 0 );
+		u_alpha_cutoff = gl().glGetUniformLocation( m_program, "u_alpha_cutoff" );
+		gl().glUniform1f( u_alpha_cutoff, 0.f );
+		gl().glUseProgram( 0 );
+
+		GlobalOpenGL_debugAssertNoErrors();
+	}
+
+	void destroy(){
+		gl().glDeleteProgram( m_program );
+		m_program = 0;
+	}
+
+	bool created() const {
+		return m_program != 0;
+	}
+
+	void enable() override {
+		gl().glUseProgram( m_program );
+		gl().glEnableVertexAttribArray( c_attr_TexCoord0 );
+		GlobalOpenGL_debugAssertNoErrors();
+		debug_string( "enable shadow" );
+	}
+
+	void disable() override {
+		gl().glUseProgram( 0 );
+		gl().glDisableVertexAttribArray( c_attr_TexCoord0 );
+		GlobalOpenGL_debugAssertNoErrors();
+		debug_string( "disable shadow" );
+	}
+
+	/// 0 disables the alpha mask; otherwise the caster discards texels below the cutoff.
+	void setAlphaCutoff( float cutoff ){
+		gl().glUniform1f( u_alpha_cutoff, cutoff );
+	}
+
+	void setParameters( const Vector3& viewer, const Matrix4& localToWorld, const Vector3& origin, const Vector3& colour, const Matrix4& world2light ) override {
+	}
+};
+
+GLSLShadowProgram g_shadowGLSL;
+
 /// \brief Per-material front for the shared PBR programs.
 /// The render loop enables a pass's program when the pass is reached; this sets the material's factors then.
 class GLSLPBRMaterialProgram : public GLProgram
@@ -678,9 +864,9 @@ public:
 	}
 	void setParameters( const Vector3& viewer, const Matrix4& localToWorld, const Vector3& origin, const Vector3& colour, const Matrix4& world2light ) override {
 	}
-	void setLightParams( const Vector3& viewer, const Matrix4& localToWorld, const Vector3& colour, const RendererLightParams& params ) override {
+	void setLightParams( const Vector3& viewer, const Matrix4& localToWorld, const RendererLight& light ) override {
 		if ( !m_base ) {
-			g_pbrGLSL.setLightParams( viewer, localToWorld, colour, params );
+			g_pbrGLSL.setLightParams( viewer, localToWorld, light );
 		}
 	}
 };
@@ -1070,6 +1256,10 @@ public:
 		ASSERT_NOTNULL( m_shader );
 		return *m_shader;
 	}
+	/// False for the hardcoded states ($WIRE, clipper overlay, component handles), which have no material.
+	bool hasShader() const {
+		return m_shader != 0;
+	}
 	OpenGLState& appendDefaultPass(){
 		m_passes.push_back( new OpenGLStateBucket );
 		OpenGLState& state = m_passes.back()->state();
@@ -1355,6 +1545,7 @@ public:
 				if ( g_pbrGame ) {
 					g_pbrGLSL.create();
 					g_pbrBaseGLSL.create();
+					g_shadowGLSL.create();
 					g_tonemapGLSL.create();
 				}
 			}
@@ -1381,8 +1572,10 @@ public:
 				g_bumpGLSL.destroy();
 				g_depthFillGLSL.destroy();
 				if ( g_pbrGame ) {
+					ShaderCache_releaseShadows();
 					g_pbrGLSL.destroy();
 					g_pbrBaseGLSL.destroy();
+					g_shadowGLSL.destroy();
 					g_tonemapGLSL.destroy();
 				}
 			}
@@ -1442,6 +1635,7 @@ public:
 	}
 	void changed( RendererLight& light ) override {
 		m_lightsChanged = true;
+		g_shadowLightsDirty = true;
 	}
 	void evaluateChanged(){
 		if ( m_lightsChanged ) {
@@ -1488,6 +1682,510 @@ void ShaderCache_extensionsInitialised(){
 
 void ShaderCache_setBumpEnabled( bool enabled ){
 	g_ShaderCache->setLightingEnabled( enabled );
+}
+
+// ============================================================================
+// Shadow caster pass and shadow map generation.
+// The scheme is ported from sh-renderer (draw_shadow_map.cpp, cascade.cpp, radiance.frag): back faces are
+// culled and the bias is paid in the fragment program, rather than second-depth. See design.md in the
+// stage2-shadow-mapping change for why, and the pbr gamepack README for the constants.
+// ============================================================================
+
+/// \brief Never occludes: sky (a low sky ceiling would otherwise block the sun everywhere), fog (a volume, not a
+/// surface: its brush faces bound a region the light travels through, so treating them as occluders drops a hard
+/// shadow of the volume), and the surfaces that are not really there.
+inline bool Shadow_materialCasts( const IShader& material ){
+	return ( material.getFlags() & ( QER_SKY | QER_FOG | QER_NODRAW | QER_CLIP | QER_BOTCLIP | QER_AREAPORTAL | QER_NOSHADOWS ) ) == 0;
+}
+
+/// \brief Collects the solid geometry inside one light's volume into a flat draw list.
+/// Only the current material is tracked on the state stack; a depth pass has no use for the rest of the
+/// OpenGLState, and highlighting and light lists are ignored outright.
+class ShadowCasterRenderer : public Renderer
+{
+public:
+	struct Caster
+	{
+		const OpenGLRenderable* m_renderable;
+		const Matrix4* m_transform;
+		IShader* m_material;
+	};
+private:
+	std::vector<OpenGLShader*> m_state;
+	std::vector<Caster> m_casters;
+public:
+	ShadowCasterRenderer(){
+		m_state.push_back( 0 );
+	}
+	void PushState() override {
+		m_state.push_back( m_state.back() );
+	}
+	void PopState() override {
+		ASSERT_MESSAGE( !m_state.empty(), "popping empty shadow caster state stack" );
+		m_state.pop_back();
+	}
+	void SetState( Shader* state, EStyle mode ) override {
+		if ( mode == eFullMaterials ) {
+			m_state.back() = static_cast<OpenGLShader*>( state );
+		}
+	}
+	EStyle getStyle() const override {
+		return eFullMaterials;
+	}
+	void Highlight( EHighlightMode mode, bool bEnable = true ) override {
+	}
+	void addRenderable( const OpenGLRenderable& renderable, const Matrix4& world ) override {
+		OpenGLShader* shader = m_state.back();
+		if ( shader == 0 || !shader->hasShader() ) {
+			return; // a built-in state (clipper overlay, component handles), not scene geometry
+		}
+		IShader& material = shader->getShader();
+		if ( !Shadow_materialCasts( material ) ) {
+			return;
+		}
+		const Caster caster = { &renderable, &world, &material };
+		m_casters.push_back( caster );
+	}
+
+	std::size_t size() const {
+		return m_casters.size();
+	}
+
+	/// \brief Draws the collected geometry into whatever depth target is bound. The caster program must be enabled.
+	void draw() const {
+		const Matrix4* transform = 0;
+		float cutoff = -1;
+
+		// the caller's cull state is unknown here and tiles are drawn back to back, so put GL into the state the
+		// tracking variable claims rather than assuming it; otherwise a tile whose first caster is double sided
+		// takes no action and inherits the previous tile's enabled GL_CULL_FACE
+		bool culling = false;
+		gl().glDisable( GL_CULL_FACE );
+
+		gl().glPushMatrix();
+
+		for ( const Caster& caster : m_casters )
+		{
+			if ( transform == 0 || ( transform != caster.m_transform && !matrix4_affine_equal( *transform, *caster.m_transform ) ) ) {
+				transform = caster.m_transform;
+				gl().glPopMatrix();
+				gl().glPushMatrix();
+				gl().glMultMatrixf( reinterpret_cast<const float*>( transform ) );
+				gl().glFrontFace( ( matrix4_handedness( *transform ) == MATRIX4_RIGHTHANDED ) ? GL_CW : GL_CCW );
+			}
+
+			// double sided materials have no back face to cull; everything else stores the surface nearest the light
+			const bool doubleSided = caster.m_material->isDoubleSided()
+			                      || ( ( caster.m_material->getFlags() & QER_CULL ) != 0 && caster.m_material->getCull() == IShader::eCullNone );
+			if ( culling == doubleSided ) {
+				culling = !doubleSided;
+				if ( culling ) {
+					gl().glEnable( GL_CULL_FACE );
+					gl().glCullFace( GL_BACK );
+				}
+				else{
+					gl().glDisable( GL_CULL_FACE );
+				}
+			}
+
+			const float wanted = ( caster.m_material->getAlphaMode() == IShader::eAlphaMask && caster.m_material->getBaseColor() != 0 )
+			                     ? caster.m_material->getAlphaCutoff()
+			                     : 0.f;
+			if ( wanted != cutoff ) {
+				cutoff = wanted;
+				g_shadowGLSL.setAlphaCutoff( cutoff );
+			}
+			if ( cutoff > 0 ) {
+				gl().glBindTexture( GL_TEXTURE_2D, caster.m_material->getBaseColor()->texture_number );
+			}
+
+			caster.m_renderable->render( RENDER_FILL | RENDER_CULLFACE | RENDER_BUMP );
+		}
+
+		gl().glPopMatrix();
+	}
+};
+
+GLuint g_sunShadowAtlas = 0;
+GLuint g_spotShadowAtlas = 0;
+GLuint g_sunShadowFBO = 0;
+GLuint g_spotShadowFBO = 0;
+bool g_spotShadowAtlasFullWarned = false;
+/// \brief True while more spot lights want a tile than the atlas holds. Only then does which lights get one
+/// depend on the camera, so only then must moving the camera re-run the spot pass.
+bool g_spotShadowOversubscribed = false;
+/// The camera the sun cascades were last fitted to; they follow the camera frustum, the spot tiles do not.
+ShadowCascadeCamera g_lastCascadeCamera;
+bool g_lastCascadeCameraValid = false;
+
+inline QOpenGLExtraFunctions& glExtra(){
+	return *QOpenGLContext::currentContext()->extraFunctions();
+}
+
+void Shadow_sceneChanged(){
+	g_shadowGeometryDirty = true;
+}
+
+/// \brief One depth texture with hardware comparison, plus an FBO that renders into it.
+bool Shadow_createAtlas( GLuint& texture, GLuint& fbo ){
+	QOpenGLExtraFunctions& ef = glExtra();
+
+	gl().glActiveTexture( GL_TEXTURE0 );
+	gl().glGenTextures( 1, &texture );
+	gl().glBindTexture( GL_TEXTURE_2D, texture );
+	gl().glTexImage2D( GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT24, GLsizei( c_shadowAtlasSize ), GLsizei( c_shadowAtlasSize ),
+	                   0, GL_DEPTH_COMPONENT, GL_UNSIGNED_INT, 0 );
+	gl().glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR );
+	gl().glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR );
+	gl().glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE );
+	gl().glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE );
+	// GL_LINEAR on a comparison texture gives a free 2x2 hardware PCF under each of the nine taps
+	gl().glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_COMPARE_MODE, GL_COMPARE_R_TO_TEXTURE );
+	gl().glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_COMPARE_FUNC, GL_LEQUAL );
+	gl().glBindTexture( GL_TEXTURE_2D, 0 );
+
+	GLint previousFBO = 0;
+	gl().glGetIntegerv( GL_FRAMEBUFFER_BINDING, &previousFBO );
+
+	ef.glGenFramebuffers( 1, &fbo );
+	ef.glBindFramebuffer( GL_FRAMEBUFFER, fbo );
+	ef.glFramebufferTexture2D( GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, texture, 0 );
+	gl().glDrawBuffer( GL_NONE );
+	gl().glReadBuffer( GL_NONE );
+	const GLenum status = ef.glCheckFramebufferStatus( GL_FRAMEBUFFER );
+	ef.glBindFramebuffer( GL_FRAMEBUFFER, GLuint( previousFBO ) );
+
+	while ( gl().glGetError() != GL_NO_ERROR ) {} // the framebuffer status is the verdict, not the error queue
+
+	if ( status != GL_FRAMEBUFFER_COMPLETE ) {
+		ef.glDeleteFramebuffers( 1, &fbo );
+		fbo = 0;
+		gl().glDeleteTextures( 1, &texture );
+		texture = 0;
+		return false;
+	}
+	return true;
+}
+
+void ShaderCache_releaseShadows(){
+	if ( g_sunShadowFBO != 0 || g_spotShadowFBO != 0 ) {
+		QOpenGLExtraFunctions& ef = glExtra();
+		if ( g_sunShadowFBO != 0 ) {
+			ef.glDeleteFramebuffers( 1, &g_sunShadowFBO );
+			g_sunShadowFBO = 0;
+		}
+		if ( g_spotShadowFBO != 0 ) {
+			ef.glDeleteFramebuffers( 1, &g_spotShadowFBO );
+			g_spotShadowFBO = 0;
+		}
+	}
+	if ( g_sunShadowAtlas != 0 ) {
+		gl().glDeleteTextures( 1, &g_sunShadowAtlas );
+		g_sunShadowAtlas = 0;
+	}
+	if ( g_spotShadowAtlas != 0 ) {
+		gl().glDeleteTextures( 1, &g_spotShadowAtlas );
+		g_spotShadowAtlas = 0;
+	}
+	g_shadowAssignments.clear();
+	g_lastCascadeCameraValid = false;
+	g_shadowGeometryDirty = true;
+	g_shadowLightsDirty = true;
+}
+
+/// \brief Creates the atlases on first use in lighting mode. Any failure disables shadows for the session.
+bool Shadow_ensureAtlases(){
+	if ( !g_shadowsAvailable ) {
+		return false;
+	}
+
+	// the shader cache module does not depend on the scene graph, so this cannot be done in ShaderCache_Construct
+	static bool s_sceneObserved = false;
+	if ( !s_sceneObserved ) {
+		s_sceneObserved = true;
+		GlobalSceneGraph().addSceneChangedCallback( FreeCaller<void(), Shadow_sceneChanged>() );
+	}
+
+	if ( g_sunShadowAtlas != 0 && g_spotShadowAtlas != 0 ) {
+		return true;
+	}
+
+	const char* reason = 0;
+
+	GLint units = 0;
+	gl().glGetIntegerv( GL_MAX_TEXTURE_IMAGE_UNITS, &units );
+	if ( units < c_shadowTextureUnits ) {
+		reason = "fewer than seven texture image units";
+	}
+	else if ( !g_shadowGLSL.created() ) {
+		reason = "the shadow caster program is unavailable";
+	}
+	else if ( !Shadow_createAtlas( g_sunShadowAtlas, g_sunShadowFBO )
+	       || !Shadow_createAtlas( g_spotShadowAtlas, g_spotShadowFBO ) ) {
+		reason = "depth texture framebuffers are unavailable";
+	}
+
+	if ( reason != 0 ) {
+		ShaderCache_releaseShadows();
+		g_shadowsAvailable = false;
+		globalWarningStream() << "Lighting mode: " << reason << ", rendering without shadows\n";
+		return false;
+	}
+	return true;
+}
+
+/// \brief Renders one tile of an atlas: collects the casters visible from \p projection and \p view, then draws
+/// them depth-only into the tile, inset by one texel so a PCF tap cannot reach a neighbouring tile.
+void Shadow_renderTile( const Matrix4& projection, const Matrix4& view, GLint x, GLint y, GLsizei size ){
+	View volume( true );
+	volume.Construct( projection, view, std::size_t( size ), std::size_t( size ) );
+
+	ShadowCasterRenderer casters;
+	Scene_RenderShadowCasters( casters, volume );
+
+	gl().glViewport( x + 1, y + 1, size - 2, size - 2 );
+	gl().glScissor( x + 1, y + 1, size - 2, size - 2 );
+
+	gl().glMatrixMode( GL_PROJECTION );
+	gl().glLoadMatrixf( reinterpret_cast<const float*>( &projection ) );
+	gl().glMatrixMode( GL_MODELVIEW );
+	gl().glLoadMatrixf( reinterpret_cast<const float*>( &view ) );
+
+	casters.draw();
+}
+
+/// \brief The atlas region a tile occupies, as the uv scale and offset the fragment program applies.
+inline Vector4 Shadow_tileUV( GLint x, GLint y, GLsizei size ){
+	const float atlas = float( c_shadowAtlasSize );
+	return Vector4( float( size - 2 ) / atlas, float( size - 2 ) / atlas, float( x + 1 ) / atlas, float( y + 1 ) / atlas );
+}
+
+void Shadow_generateSun( const ShadowCascadeCamera& camera, const RendererLight& light ){
+	ShadowCascades cascades;
+	ShadowCascades_compute( cascades, camera, light.params().direction );
+
+	glExtra().glBindFramebuffer( GL_FRAMEBUFFER, g_sunShadowFBO );
+	gl().glViewport( 0, 0, GLsizei( c_shadowAtlasSize ), GLsizei( c_shadowAtlasSize ) );
+	gl().glScissor( 0, 0, GLsizei( c_shadowAtlasSize ), GLsizei( c_shadowAtlasSize ) );
+	gl().glClear( GL_DEPTH_BUFFER_BIT );
+
+	ShadowAssignment& assignment = g_shadowAssignments[ &light ];
+	assignment.sun = true;
+	assignment.cascades = c_shadowCascadeCount;
+
+	// three 1024 cascades in a 2x2 grid; the fourth quadrant is unused
+	for ( std::size_t i = 0; i < c_shadowCascadeCount; ++i )
+	{
+		const GLsizei size = GLsizei( c_shadowCascadeSize );
+		const GLint x = GLint( ( i % 2 ) * c_shadowCascadeSize );
+		const GLint y = GLint( ( i / 2 ) * c_shadowCascadeSize );
+
+		Shadow_renderTile( cascades.projection[i], cascades.view, x, y, size );
+
+		assignment.worldToShadow[i] = cascades.viewProjection[i];
+		assignment.uvScaleOffset[i] = Shadow_tileUV( x, y, size );
+		assignment.splits[i] = cascades.splits[i];
+	}
+}
+
+void Shadow_generateSpot( const RendererLight& light, std::size_t tile ){
+	const RendererLightParams& params = light.params();
+
+	const Matrix4 view = matrix4_light_view( params.direction, params.origin );
+
+	// a frustum covering twice the outer cone half-angle
+	const float cosOuter = std::min( std::max( params.cosOuter, -1.f ), 1.f );
+	const float halfAngle = std::min( float( acos( cosOuter ) ), float( c_half_pi ) - 0.02f );
+	const float extent = c_spotShadowNear * std::tan( halfAngle );
+	const float farPlane = std::max( params.radius, c_spotShadowNear + 1.f );
+	const Matrix4 projection = matrix4_frustum( -extent, extent, -extent, extent, c_spotShadowNear, farPlane );
+
+	const GLsizei size = GLsizei( c_spotShadowTileSize );
+	const GLint x = GLint( ( tile % c_spotShadowTilesPerRow ) * c_spotShadowTileSize );
+	const GLint y = GLint( ( tile / c_spotShadowTilesPerRow ) * c_spotShadowTileSize );
+
+	Shadow_renderTile( projection, view, x, y, size );
+
+	ShadowAssignment& assignment = g_shadowAssignments[ &light ];
+	assignment.sun = false;
+	assignment.cascades = 1;
+	assignment.worldToShadow[0] = matrix4_multiplied_by_matrix4( projection, view );
+	assignment.uvScaleOffset[0] = Shadow_tileUV( x, y, size );
+}
+
+/// \brief Orders casting spot lights by distance from the camera, so the ones that matter get the tiles.
+struct SpotByDistance
+{
+	Vector3 m_viewer;
+	explicit SpotByDistance( const Vector3& viewer ) : m_viewer( viewer ){
+	}
+	bool operator()( const RendererLight* a, const RendererLight* b ) const {
+		return vector3_length_squared( a->params().origin - m_viewer )
+		     < vector3_length_squared( b->params().origin - m_viewer );
+	}
+};
+
+/// \brief Sets up the depth-only state shared by every tile, renders what is stale, and restores the target.
+void Shadow_generate( const ShadowCascadeCamera& camera, bool sun, bool spots ){
+	QOpenGLExtraFunctions& ef = glExtra();
+
+	GLint previousFBO = 0;
+	gl().glGetIntegerv( GL_FRAMEBUFFER_BINDING, &previousFBO );
+	GLint previousViewport[4];
+	gl().glGetIntegerv( GL_VIEWPORT, previousViewport );
+
+	gl().glColorMask( GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE );
+	gl().glDepthMask( GL_TRUE );
+	gl().glEnable( GL_DEPTH_TEST );
+	gl().glDepthFunc( GL_LEQUAL );
+	gl().glDisable( GL_BLEND );
+	gl().glDisable( GL_ALPHA_TEST );
+	gl().glDisable( GL_LIGHTING );
+	gl().glDisable( GL_FOG );
+	gl().glDisable( GL_POLYGON_STIPPLE );
+	gl().glDisable( GL_LINE_STIPPLE );
+	gl().glDisable( GL_POLYGON_OFFSET_FILL );
+	gl().glDisable( GL_POLYGON_OFFSET_LINE );
+	gl().glPolygonMode( GL_FRONT_AND_BACK, GL_FILL );
+	gl().glEnable( GL_SCISSOR_TEST );
+
+	gl().glActiveTexture( GL_TEXTURE0 );
+	gl().glClientActiveTexture( GL_TEXTURE0 );
+	gl().glEnableClientState( GL_VERTEX_ARRAY );
+	gl().glDisableClientState( GL_NORMAL_ARRAY );
+	gl().glDisableClientState( GL_TEXTURE_COORD_ARRAY );
+	gl().glDisableClientState( GL_COLOR_ARRAY );
+
+	g_shadowGLSL.enable();
+
+	// the table is rebuilt rather than patched: the light pointers it is keyed on are only valid while nothing
+	// changes, and anything that could invalidate one also marks the spot tiles stale
+	if ( spots ) {
+		g_shadowAssignments.clear();
+	}
+	else
+	{
+		for ( ShadowAssignments::iterator i = g_shadowAssignments.begin(); i != g_shadowAssignments.end(); )
+		{
+			i = ( *i ).second.sun ? g_shadowAssignments.erase( i ) : ++i;
+		}
+	}
+
+	// the sun is the first casting light_sun; LightInstance reports every other sun as non-casting, because
+	// only the first in map order lights anything
+	const RendererLight* sunLight = 0;
+	std::vector<const RendererLight*> spotLights;
+	for ( const RendererLight* light : g_ShaderCache->m_lights )
+	{
+		const RendererLightParams& params = light->params();
+		if ( !params.castsShadows ) {
+			continue;
+		}
+		if ( params.type == RendererLightParams::eSun ) {
+			if ( sunLight == 0 ) {
+				sunLight = light;
+			}
+		}
+		else if ( params.type == RendererLightParams::eSpot ) {
+			spotLights.push_back( light );
+		}
+	}
+
+	if ( sun && sunLight != 0 ) {
+		Shadow_generateSun( camera, *sunLight );
+	}
+
+	if ( spots ) {
+		g_spotShadowOversubscribed = spotLights.size() > c_spotShadowTileCount;
+	}
+
+	if ( spots && !spotLights.empty() ) {
+		std::sort( spotLights.begin(), spotLights.end(), SpotByDistance( camera.origin ) );
+
+		ef.glBindFramebuffer( GL_FRAMEBUFFER, g_spotShadowFBO );
+		gl().glViewport( 0, 0, GLsizei( c_shadowAtlasSize ), GLsizei( c_shadowAtlasSize ) );
+		gl().glScissor( 0, 0, GLsizei( c_shadowAtlasSize ), GLsizei( c_shadowAtlasSize ) );
+		gl().glClear( GL_DEPTH_BUFFER_BIT );
+
+		const std::size_t count = std::min( spotLights.size(), c_spotShadowTileCount );
+		for ( std::size_t i = 0; i < count; ++i )
+		{
+			Shadow_generateSpot( *spotLights[i], i );
+		}
+
+		if ( spotLights.size() > c_spotShadowTileCount && !g_spotShadowAtlasFullWarned ) {
+			g_spotShadowAtlasFullWarned = true;
+			globalWarningStream() << "Lighting mode: more than " << c_spotShadowTileCount
+			                      << " shadow casting spot lights; the " << ( spotLights.size() - c_spotShadowTileCount )
+			                      << " furthest from the camera render unshadowed\n";
+		}
+	}
+
+	g_shadowGLSL.disable();
+
+	gl().glDisable( GL_SCISSOR_TEST );
+	gl().glDisable( GL_CULL_FACE );
+	gl().glColorMask( GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE );
+	gl().glBindTexture( GL_TEXTURE_2D, 0 );
+
+	ef.glBindFramebuffer( GL_FRAMEBUFFER, GLuint( previousFBO ) );
+	gl().glViewport( previousViewport[0], previousViewport[1], previousViewport[2], previousViewport[3] );
+
+	g_vertexArray_enabled = true;
+	g_normalArray_enabled = false;
+	g_texcoordArray_enabled = false;
+	g_colorArray_enabled = false;
+
+	GlobalOpenGL_debugAssertNoErrors();
+}
+
+/// \brief True when the cascades would be fitted to a different frustum than the one they were last fitted to.
+inline bool Shadow_cameraMoved( const ShadowCascadeCamera& camera ){
+	if ( !g_lastCascadeCameraValid ) {
+		return true;
+	}
+	const ShadowCascadeCamera& last = g_lastCascadeCamera;
+	return !vector3_equal_epsilon( last.origin, camera.origin, 1e-3f )
+	    || !vector3_equal_epsilon( last.forward, camera.forward, 1e-5f )
+	    || !vector3_equal_epsilon( last.right, camera.right, 1e-5f )
+	    || !vector3_equal_epsilon( last.up, camera.up, 1e-5f )
+	    || last.halfWidthAtNear != camera.halfWidthAtNear
+	    || last.halfHeightAtNear != camera.halfHeightAtNear
+	    || last.nearDistance != camera.nearDistance
+	    || last.farDistance != camera.farDistance;
+}
+
+void ShaderCache_updateShadows( const ShadowCascadeCamera& camera, const Matrix4& cameraView ){
+	if ( !g_pbrGame || !g_ShaderCache->lightingEnabled() || !Shadow_ensureAtlases() ) {
+		return;
+	}
+
+	g_shadowCameraView = cameraView;
+
+	// editing the scene or any light invalidates both atlases; moving the camera refits the cascades, which are
+	// fitted to the camera frustum. Spot tiles are camera independent while every casting spot gets one, but as
+	// soon as the atlas is oversubscribed the winners are "the nearest to the camera", so moving it re-sorts.
+	const bool moved = Shadow_cameraMoved( camera );
+	const bool stale = g_shadowGeometryDirty || g_shadowLightsDirty;
+	const bool refitSun = stale || moved;
+	const bool refitSpots = stale || ( moved && g_spotShadowOversubscribed );
+	if ( refitSun || refitSpots ) {
+		// cleared before the traversal, not after: generating walks the scene graph and can itself signal a
+		// change, and clearing afterwards would swallow it and leave the atlases stale until the next edit
+		g_shadowGeometryDirty = false;
+		g_shadowLightsDirty = false;
+		g_lastCascadeCamera = camera;
+		g_lastCascadeCameraValid = true;
+		Shadow_generate( camera, refitSun, refitSpots );
+	}
+
+	// units 5 and 6 sit above the five a PBR material binds, and no other pass touches them
+	gl().glActiveTexture( GL_TEXTURE5 );
+	gl().glBindTexture( GL_TEXTURE_2D, g_sunShadowAtlas );
+	gl().glActiveTexture( GL_TEXTURE6 );
+	gl().glBindTexture( GL_TEXTURE_2D, g_spotShadowAtlas );
+	gl().glActiveTexture( GL_TEXTURE0 );
+	gl().glClientActiveTexture( GL_TEXTURE0 );
 }
 
 
@@ -1944,7 +2642,7 @@ void Renderables_flush( OpenGLStateBucket::Renderables& renderables, OpenGLState
 
 		if ( current.m_program != 0 && rend.m_light != 0 && rend.m_light->params().type != RendererLightParams::eDoom3 ) {
 			// physical light: point, spot or sun
-			current.m_program->setLightParams( viewer, *rend.m_transform, rend.m_light->colour(), rend.m_light->params() );
+			current.m_program->setLightParams( viewer, *rend.m_transform, *rend.m_light );
 			debug_string( "set light params" );
 		}
 		else if ( current.m_program != 0 && rend.m_light != 0 ) {

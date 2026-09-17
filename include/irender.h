@@ -79,9 +79,13 @@ struct RendererLightParams
 	float radius;       ///< cutoff distance in map units (point, spot)
 	float cosInner;     ///< cosine of the inner cone half-angle (spot)
 	float cosOuter;     ///< cosine of the outer cone half-angle (spot)
+	/// \brief Whether this light should occlude. Spot and sun lights report the "_shadows" key here; point lights
+	/// never cast. This is the only part of the shadow description the entity owns: the light-space matrices, the
+	/// atlas rectangle and the cascade splits are computed and held by the renderer, which knows about atlases.
+	bool castsShadows;
 
 	RendererLightParams() :
-		type( eDoom3 ), origin( 0, 0, 0 ), direction( 0, 0, -1 ), intensity( 0 ), radius( 0 ), cosInner( 1 ), cosOuter( 1 ){
+		type( eDoom3 ), origin( 0, 0, 0 ), direction( 0, 0, -1 ), intensity( 0 ), radius( 0 ), cosInner( 1 ), cosOuter( 1 ), castsShadows( false ){
 	}
 };
 
