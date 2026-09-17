@@ -37,6 +37,8 @@
 #include "light.h"
 
 #include <cstdlib>
+#include <vector>
+#include <algorithm>
 
 #include "cullable.h"
 #include "renderable.h"
@@ -866,6 +868,129 @@ public:
 	typedef MemberCaller<Doom3LightRadius, void(const char*), &Doom3LightRadius::lightCenterChanged> LightCenterChangedCaller;
 };
 
+/// \brief Keys of the PBR light entities: light (point), light_spot and light_sun.
+/// intensity is radiant flux in watts (point, spot) or irradiance in W/m^2 (sun);
+/// radius is the cutoff distance in map units; cone and cone_inner are half-angles in degrees.
+class PBRLight
+{
+public:
+	RendererLightParams::EType m_type;
+	float m_intensity;
+	float m_radius;
+	float m_radiusTransformed;
+	float m_cone;
+	float m_coneInner;
+	Vector3 m_angles;
+	Vector3 m_direction; ///< direction the light travels; from angles/angle, or from target when the instance supplies one
+	Callback<void()> m_changed;
+
+	PBRLight() :
+		m_type( RendererLightParams::ePoint ),
+		m_intensity( 50000 ),
+		m_radius( 256 ),
+		m_radiusTransformed( 256 ),
+		m_cone( 45 ),
+		m_coneInner( 30 ),
+		m_angles( 0, 0, 0 ),
+		m_direction( 0, 0, -1 ){
+	}
+
+	float defaultIntensity() const {
+		return m_type == RendererLightParams::eSun ? 3.f : 50000.f;
+	}
+	void setType( RendererLightParams::EType type ){
+		m_type = type;
+		m_intensity = defaultIntensity();
+		m_direction = anglesDirection();
+	}
+
+	/// Quake convention: "pitch yaw roll", positive pitch looks down.
+	Vector3 anglesDirection() const {
+		const double pitch = m_angles[0] * c_DEG2RADMULT;
+		const double yaw = m_angles[1] * c_DEG2RADMULT;
+		return vector3_normalised( Vector3(
+		    static_cast<float>( cos( yaw ) * cos( pitch ) ),
+		    static_cast<float>( sin( yaw ) * cos( pitch ) ),
+		    static_cast<float>( -sin( pitch ) ) ) );
+	}
+
+	void changed(){
+		m_changed();
+		SceneChangeNotify();
+	}
+
+	void intensityChanged( const char* value ){
+		if ( !string_parse_float( value, m_intensity ) ) {
+			m_intensity = defaultIntensity();
+		}
+		changed();
+	}
+	typedef MemberCaller<PBRLight, void(const char*), &PBRLight::intensityChanged> IntensityChangedCaller;
+
+	void radiusChanged( const char* value ){
+		if ( !string_parse_float( value, m_radius ) || m_radius <= 0 ) {
+			m_radius = 256;
+		}
+		m_radiusTransformed = m_radius;
+		changed();
+	}
+	typedef MemberCaller<PBRLight, void(const char*), &PBRLight::radiusChanged> RadiusChangedCaller;
+
+	void coneChanged( const char* value ){
+		if ( !string_parse_float( value, m_cone ) || m_cone <= 0 ) {
+			m_cone = 45;
+		}
+		changed();
+	}
+	typedef MemberCaller<PBRLight, void(const char*), &PBRLight::coneChanged> ConeChangedCaller;
+
+	void coneInnerChanged( const char* value ){
+		if ( !string_parse_float( value, m_coneInner ) || m_coneInner < 0 ) {
+			m_coneInner = 30;
+		}
+		changed();
+	}
+	typedef MemberCaller<PBRLight, void(const char*), &PBRLight::coneInnerChanged> ConeInnerChangedCaller;
+
+	void anglesChanged( const char* value ){
+		if ( !string_parse_vector3( value, m_angles ) ) {
+			m_angles = Vector3( 0, 0, 0 );
+		}
+		m_direction = anglesDirection();
+		changed();
+	}
+	typedef MemberCaller<PBRLight, void(const char*), &PBRLight::anglesChanged> AnglesChangedCaller;
+
+	/// "angle": yaw only; -1 is straight up, -2 straight down (Quake convention).
+	void angleChanged( const char* value ){
+		float angle;
+		if ( !string_parse_float( value, angle ) ) {
+			angle = 0;
+		}
+		if ( angle == -1 ) {
+			m_angles = Vector3( -90, 0, 0 );
+		}
+		else if ( angle == -2 ) {
+			m_angles = Vector3( 90, 0, 0 );
+		}
+		else
+		{
+			m_angles = Vector3( 0, angle, 0 );
+		}
+		m_direction = anglesDirection();
+		changed();
+	}
+	typedef MemberCaller<PBRLight, void(const char*), &PBRLight::angleChanged> AngleChangedCaller;
+
+	float cosOuter() const {
+		return static_cast<float>( cos( std::min( m_cone, 89.9f ) * c_DEG2RADMULT ) );
+	}
+	float cosInner() const {
+		return static_cast<float>( cos( std::min( std::min( m_coneInner, m_cone ), 89.9f ) * c_DEG2RADMULT ) );
+	}
+};
+
+
 class RenderLightRadiiWire : public OpenGLRenderable
 {
 	LightRadii& m_radii;
@@ -901,6 +1026,98 @@ public:
 };
 //Shader* RenderLightRadiiFill::m_state = 0;
 Vector3 RenderLightRadiiFill::m_radiiPoints[SPHERE_FILL_POINTS] = {g_vector3_identity};
+/// \brief Draws the extent of a PBR light when it is selected:
+/// the cutoff sphere for a point light, the outer cone for a spot light, a direction arrow for the sun.
+class RenderPBRLightShape : public OpenGLRenderable
+{
+	const PBRLight& m_light;
+	const Vector3& m_origin;
+public:
+	RenderPBRLightShape( const PBRLight& light, const Vector3& origin ) : m_light( light ), m_origin( origin ){
+	}
+	void render( RenderStateFlags state ) const override {
+		const float radius = m_light.m_radiusTransformed;
+		switch ( m_light.m_type )
+		{
+		case RendererLightParams::ePoint:
+			if ( ( state & RENDER_FILL ) != 0 ) {
+				sphere_draw_fill( m_origin, radius, RenderLightRadiiFill::m_radiiPoints );
+			}
+			else
+			{
+				sphere_draw_wire( m_origin, radius, RenderLightRadiiWire::m_radiiPoints );
+			}
+			break;
+		case RendererLightParams::eSpot:
+			{
+				const Vector3 axis = m_light.m_direction;
+				const Vector3 up = std::fabs( axis.z() ) < 0.9f ? Vector3( 0, 0, 1 ) : Vector3( 1, 0, 0 );
+				const Vector3 right = vector3_normalised( vector3_cross( axis, up ) );
+				const Vector3 forward = vector3_cross( right, axis );
+				const float rim = radius * static_cast<float>( tan( std::min( m_light.m_cone, 89.9f ) * c_DEG2RADMULT ) );
+				const Vector3 centre = m_origin + axis * radius;
+				const int sides = 24;
+				Vector3 points[sides];
+				for ( int i = 0; i < sides; ++i )
+				{
+					const double a = i * c_2pi / sides;
+					points[i] = centre + right * static_cast<float>( cos( a ) * rim ) + forward * static_cast<float>( sin( a ) * rim );
+				}
+				if ( ( state & RENDER_FILL ) != 0 ) {
+					gl().glBegin( GL_TRIANGLE_FAN );
+					gl().glVertex3fv( vector3_to_array( m_origin ) );
+					for ( int i = 0; i <= sides; ++i )
+					{
+						gl().glVertex3fv( vector3_to_array( points[i % sides] ) );
+					}
+					gl().glEnd();
+				}
+				else
+				{
+					gl().glBegin( GL_LINE_LOOP );
+					for ( int i = 0; i < sides; ++i )
+					{
+						gl().glVertex3fv( vector3_to_array( points[i] ) );
+					}
+					gl().glEnd();
+					gl().glBegin( GL_LINES );
+					for ( int i = 0; i < sides; i += sides / 8 )
+					{
+						gl().glVertex3fv( vector3_to_array( m_origin ) );
+						gl().glVertex3fv( vector3_to_array( points[i] ) );
+					}
+					gl().glVertex3fv( vector3_to_array( m_origin ) );
+					gl().glVertex3fv( vector3_to_array( centre ) );
+					gl().glEnd();
+				}
+			}
+			break;
+		case RendererLightParams::eSun:
+			{
+				const Vector3 axis = m_light.m_direction;
+				const Vector3 up = std::fabs( axis.z() ) < 0.9f ? Vector3( 0, 0, 1 ) : Vector3( 1, 0, 0 );
+				const Vector3 right = vector3_normalised( vector3_cross( axis, up ) );
+				const Vector3 forward = vector3_cross( right, axis );
+				const float length = 128;
+				const Vector3 tip = m_origin + axis * length;
+				const Vector3 tail = m_origin - axis * length;
+				gl().glBegin( GL_LINES );
+				gl().glVertex3fv( vector3_to_array( tail ) );
+				gl().glVertex3fv( vector3_to_array( tip ) );
+				for ( int i = 0; i < 4; ++i )
+				{
+					const Vector3 side = ( i == 0 ? right : i == 1 ? -right : i == 2 ? forward : -forward ) * 12.f;
+					gl().glVertex3fv( vector3_to_array( tip ) );
+					gl().glVertex3fv( vector3_to_array( tip - axis * 24.f + side ) );
+				}
+				gl().glEnd();
+			}
+			break;
+		default:
+			break;
+		}
+	}
+};
 
 class RenderLightRadiiBox : public OpenGLRenderable
 {
@@ -1088,6 +1305,8 @@ class Light :
 
 	LightRadii m_radii;
 	Doom3LightRadius m_doom3Radius;
+	PBRLight m_pbr;
+	mutable RendererLightParams m_pbrParams;
 
 	AABB m_aabb_light;
 
@@ -1095,6 +1314,7 @@ class Light :
 	RenderLightRadiiFill m_radii_fill;
 	RenderLightRadiiBox m_radii_box;
 	RenderLightCenter m_render_center;
+	RenderPBRLightShape m_pbr_shape;
 	RenderableNamedEntity m_renderName;
 
 	Vector3 m_lightOrigin;
@@ -1157,6 +1377,19 @@ class Light :
 			m_keyObservers.insert( "texture", LightShader::ValueChangedCaller( m_shader ) );
 			m_useLightTarget = m_useLightUp = m_useLightRight = m_useLightStart = m_useLightEnd = false;
 			m_doom3ProjectionChanged = true;
+		}
+
+		if ( g_lightType == LIGHTTYPE_PBR ) {
+			const char* classname = m_entity.getEntityClass().name();
+			m_pbr.setType( classname_equal( classname, "light_spot" ) ? RendererLightParams::eSpot
+			             : classname_equal( classname, "light_sun" ) ? RendererLightParams::eSun
+			                                                          : RendererLightParams::ePoint );
+			m_keyObservers.insert( "intensity", PBRLight::IntensityChangedCaller( m_pbr ) );
+			m_keyObservers.insert( "radius", PBRLight::RadiusChangedCaller( m_pbr ) );
+			m_keyObservers.insert( "cone", PBRLight::ConeChangedCaller( m_pbr ) );
+			m_keyObservers.insert( "cone_inner", PBRLight::ConeInnerChangedCaller( m_pbr ) );
+			m_keyObservers.insert( "angles", PBRLight::AnglesChangedCaller( m_pbr ) );
+			m_keyObservers.insert( "angle", PBRLight::AngleChangedCaller( m_pbr ) );
 		}
 
 		if ( g_lightType == LIGHTTYPE_DOOM3 ) {
@@ -1303,6 +1536,7 @@ public:
 		m_radii_fill( m_radii, m_aabb_light.origin ),
 		m_radii_box( m_aabb_light.origin ),
 		m_render_center( m_doom3Radius.m_center, m_entity.getEntityClass() ),
+		m_pbr_shape( m_pbr, m_aabb_light.origin ),
 		m_renderName( m_named, m_aabb_light.origin, EXCLUDE_NAME ),
 		m_useLightOrigin( false ),
 		m_useLightRotation( false ),
@@ -1327,6 +1561,7 @@ public:
 		m_radii_fill( m_radii, m_aabb_light.origin ),
 		m_radii_box( m_aabb_light.origin ),
 		m_render_center( m_doom3Radius.m_center, m_entity.getEntityClass() ),
+		m_pbr_shape( m_pbr, m_aabb_light.origin ),
 		m_renderName( m_named, m_aabb_light.origin, EXCLUDE_NAME ),
 		m_useLightOrigin( false ),
 		m_useLightRotation( false ),
@@ -1421,7 +1656,24 @@ public:
 		renderer.addRenderable( *this, localToWorld );
 
 		if( selected ){
-			if ( g_lightType != LIGHTTYPE_DOOM3 ) {
+			if ( g_lightType == LIGHTTYPE_PBR ) {
+				// point: cutoff sphere (when radii display is on); spot: outer cone; sun: direction arrow
+				if ( m_pbr.m_type != RendererLightParams::ePoint || g_lightRadii ) {
+					if ( renderer.getStyle() == Renderer::eFullMaterials && m_pbr.m_type != RendererLightParams::eSun ) {
+						renderer.SetState( m_colour.state_additive(), Renderer::eFullMaterials );
+						renderer.Highlight( Renderer::ePrimitive, false );
+						renderer.Highlight( Renderer::eFace, false );
+						renderer.addRenderable( m_pbr_shape, localToWorld );
+					}
+					else
+					{
+						renderer.SetState( m_entity.getEntityClass().m_state_wire, Renderer::eFullMaterials );
+						renderer.Highlight( Renderer::ePrimitive, false );
+						renderer.addRenderable( m_pbr_shape, localToWorld );
+					}
+				}
+			}
+			else if ( g_lightType != LIGHTTYPE_DOOM3 ) {
 				if ( g_lightRadii && !m_entity.hasKeyValue( "target" ) ) {
 					if ( renderer.getStyle() == Renderer::eFullMaterials ) {
 						renderer.SetState( m_colour.state_additive(), Renderer::eFullMaterials );
@@ -1503,6 +1755,10 @@ public:
 		}
 	}
 	void transformLightRadii( float offset ){
+		if ( g_lightType == LIGHTTYPE_PBR ) {
+			m_pbr.m_radiusTransformed = std::max( 1.f, m_pbr.m_radius + offset );
+			return;
+		}
 		m_radii.transformRadii( offset );
 	}
 	void setLightRadius( const AABB& aabb ){
@@ -1517,6 +1773,7 @@ public:
 		rotation_assign( m_rotation, m_useLightRotation ? m_lightRotation : m_rotationKey.m_rotation );
 		m_doom3Radius.m_radiusTransformed = m_doom3Radius.m_radius;
 		m_radii.m_radii_transformed = m_radii.m_radii;
+		m_pbr.m_radiusTransformed = m_pbr.m_radius;
 	}
 	void freezeTransform( bool doradii ){
 		if ( g_lightType == LIGHTTYPE_DOOM3 && !m_useLightOrigin && !m_traverse.empty() ) {
@@ -1550,8 +1807,17 @@ public:
 			write_origin( m_doom3Radius.m_radius, &m_entity, "light_radius" );
 		}
 		else if( doradii ){
-			write_intensity( m_radii.calculateIntensityFromRadii(), &m_entity );
-			m_radii.m_radii = m_radii.m_radii_transformed;
+			if ( g_lightType == LIGHTTYPE_PBR ) {
+				char value[64];
+				sprintf( value, "%g", m_pbr.m_radiusTransformed );
+				m_entity.setKeyValue( "radius", value );
+				m_pbr.m_radius = m_pbr.m_radiusTransformed;
+			}
+			else
+			{
+				write_intensity( m_radii.calculateIntensityFromRadii(), &m_entity );
+				m_radii.m_radii = m_radii.m_radii_transformed;
+			}
 		}
 	}
 	void transformChanged(){
@@ -1570,13 +1836,64 @@ public:
 
 	void setLightChangedCallback( const Callback<void()>& callback ){
 		m_doom3Radius.m_changed = callback;
+		m_pbr.m_changed = callback;
+	}
+
+// PBR light
+	RendererLightParams::EType pbrType() const {
+		return m_pbr.m_type;
+	}
+	/// Refreshes the travel direction; \p target is the world position of the targeted entity, if any (spot lights).
+	void pbrUpdateDirection( const Vector3* target ){
+		if ( target != 0 && m_pbr.m_type == RendererLightParams::eSpot ) {
+			const Vector3 dir = *target - m_aabb_light.origin;
+			if ( vector3_length_squared( dir ) > 0 ) {
+				m_pbr.m_direction = vector3_normalised( dir );
+				return;
+			}
+		}
+		m_pbr.m_direction = m_pbr.anglesDirection();
+	}
+	const RendererLightParams& pbrParams() const {
+		m_pbrParams.type = m_pbr.m_type;
+		m_pbrParams.origin = m_aabb_light.origin;
+		m_pbrParams.direction = m_pbr.m_direction;
+		m_pbrParams.intensity = m_pbr.m_intensity;
+		m_pbrParams.radius = m_pbr.m_radiusTransformed;
+		m_pbrParams.cosInner = m_pbr.cosInner();
+		m_pbrParams.cosOuter = m_pbr.cosOuter();
+		return m_pbrParams;
+	}
+	/// Sun: no cutoff; the bounds are world sized and the origin is pushed far back along the light direction
+	/// so per-face back-face culling behaves like a distant point light.
+	const AABB& pbrAABB() const {
+		if ( m_pbr.m_type == RendererLightParams::eSun ) {
+			m_doom3AABB = AABB( m_aabb_light.origin - m_pbr.m_direction * 1e6f, Vector3( 1e7f, 1e7f, 1e7f ) );
+		}
+		else
+		{
+			m_doom3AABB = AABB( m_aabb_light.origin, Vector3( m_pbr.m_radiusTransformed, m_pbr.m_radiusTransformed, m_pbr.m_radiusTransformed ) );
+		}
+		return m_doom3AABB;
+	}
+	bool pbrTestAABB( const AABB& other ) const {
+		if ( m_pbr.m_type == RendererLightParams::eSun ) {
+			return true;
+		}
+		return aabb_intersects_aabb( other, pbrAABB() );
 	}
 
 	const AABB& aabb() const {
+		if ( g_lightType == LIGHTTYPE_PBR ) {
+			return pbrAABB();
+		}
 		m_doom3AABB = AABB( m_aabb_light.origin, m_doom3Radius.m_radiusTransformed );
 		return m_doom3AABB;
 	}
 	bool testAABB( const AABB& other ) const {
+		if ( g_lightType == LIGHTTYPE_PBR ) {
+			return pbrTestAABB( other );
+		}
 		if ( isProjected() ) {
 			Matrix4 transform = rotation();
 			transform.t().vec3() = localAABB().origin;
@@ -1790,6 +2107,38 @@ class LightInstance :
 	Light& m_contained;
 	DragPlanes m_dragPlanes;  // dragplanes for lightresizing using mousedrag
 	ScaleRadius m_scaleRadius;
+
+	/// light_sun instances in map order; only the first is honoured by the renderer
+	static inline std::vector<LightInstance*> g_suns;
+
+	bool isActiveSun() const {
+		return !g_suns.empty() && g_suns.front() == this;
+	}
+	void attachSun(){
+		g_suns.push_back( this );
+		if ( g_suns.size() > 1 ) {
+			globalWarningStream() << "light_sun: " << g_suns.size() << " suns in the map, only the first in map order is used; ignoring "
+			                      << Quoted( m_contained.getEntity().getClassName() ) << " at " << m_contained.getEntity().getKeyValue( "origin" ) << '\n';
+		}
+	}
+	void detachSun(){
+		const bool wasActive = isActiveSun();
+		g_suns.erase( std::remove( g_suns.begin(), g_suns.end(), this ), g_suns.end() );
+		if ( wasActive && !g_suns.empty() ) {
+			GlobalShaderCache().changed( *g_suns.front() ); // promote the next sun
+		}
+	}
+	/// world position of the first targeted entity, for spot light direction
+	const Vector3* firstTargetPosition() const {
+		for ( const auto& [ index, entity ] : getTargeting() )
+		{
+			for ( const auto *targetable : entity )
+			{
+				return &targetable->world_position();
+			}
+		}
+		return 0;
+	}
 public:
 	typedef LazyStatic<TypeCasts> StaticTypeCasts;
 
@@ -1807,9 +2156,15 @@ public:
 		m_scaleRadius( SelectedChangedComponentCaller( *this ) ){
 		m_contained.instanceAttach( Instance::path() );
 
-		if ( g_lightType == LIGHTTYPE_DOOM3 ) {
+		if ( g_lightType == LIGHTTYPE_DOOM3 || g_lightType == LIGHTTYPE_PBR ) {
 			GlobalShaderCache().attach( *this );
 			m_contained.setLightChangedCallback( LightChangedCaller( *this ) );
+		}
+		if ( g_lightType == LIGHTTYPE_PBR ) {
+			setTargetsChanged( LightChangedCaller( *this ) );
+			if ( m_contained.pbrType() == RendererLightParams::eSun ) {
+				attachSun();
+			}
 		}
 
 		StaticRenderableConnectionLines::instance().attach( *this );
@@ -1817,7 +2172,13 @@ public:
 	~LightInstance(){
 		StaticRenderableConnectionLines::instance().detach( *this );
 
-		if ( g_lightType == LIGHTTYPE_DOOM3 ) {
+		if ( g_lightType == LIGHTTYPE_PBR ) {
+			setTargetsChanged( Callback<void()>() ); // the base class fires this while detaching keys
+			if ( m_contained.pbrType() == RendererLightParams::eSun ) {
+				detachSun();
+			}
+		}
+		if ( g_lightType == LIGHTTYPE_DOOM3 || g_lightType == LIGHTTYPE_PBR ) {
 			m_contained.setLightChangedCallback( Callback<void()>() );
 			GlobalShaderCache().detach( *this );
 		}
@@ -1825,6 +2186,9 @@ public:
 		m_contained.instanceDetach( Instance::path() );
 	}
 	void renderSolid( Renderer& renderer, const VolumeTest& volume ) const override {
+		if ( g_lightType == LIGHTTYPE_PBR ) {
+			m_contained.pbrUpdateDirection( firstTargetPosition() );
+		}
 		m_contained.renderSolid( renderer, volume, Instance::localToWorld(), getSelectable().isSelected() );
 	}
 	void renderWireframe( Renderer& renderer, const VolumeTest& volume ) const override {
@@ -1938,7 +2302,17 @@ public:
 		return m_contained.aabb();
 	}
 	bool testAABB( const AABB& other ) const override {
+		if ( g_lightType == LIGHTTYPE_PBR && m_contained.pbrType() == RendererLightParams::eSun && !isActiveSun() ) {
+			return false; // only the first sun in map order lights anything
+		}
 		return m_contained.testAABB( other );
+	}
+	const RendererLightParams& params() const override {
+		if ( g_lightType != LIGHTTYPE_PBR ) {
+			return RendererLight::params();
+		}
+		m_contained.pbrUpdateDirection( firstTargetPosition() );
+		return m_contained.pbrParams();
 	}
 	const Matrix4& rotation() const override {
 		return m_contained.rotation();

@@ -55,7 +55,9 @@ inline scene::Node& entity_for_eclass( EntityClass* eclass ){
 		return New_MiscModel( eclass );
 	}
 	else if ( classname_equal( eclass->name(), "light" )
-	       || classname_equal( eclass->name(), "lightJunior" ) ) {
+	       || classname_equal( eclass->name(), "lightJunior" )
+	       || ( g_gameType == eGameTypePBR && ( classname_equal( eclass->name(), "light_spot" )
+	                                          || classname_equal( eclass->name(), "light_sun" ) ) ) ) {
 		return New_Light( eclass );
 	}
 	if ( !eclass->fixedsize ) {
@@ -427,6 +429,7 @@ void Entity_Construct( EGameType gameType ){
 	Entity_InitFilters();
 	const LightType lightType = g_gameType == eGameTypeRTCW? LIGHTTYPE_RTCW
 	                          : g_gameType == eGameTypeDoom3? LIGHTTYPE_DOOM3
+	                          : g_gameType == eGameTypePBR? LIGHTTYPE_PBR
 	                                                         : LIGHTTYPE_DEFAULT;
 	Light_Construct( lightType );
 	MiscModel_construct();

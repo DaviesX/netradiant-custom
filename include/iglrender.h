@@ -25,6 +25,7 @@
 #include "generic/vector.h"
 class AABB;
 class Matrix4;
+struct RendererLightParams;
 
 
 class GLProgram
@@ -33,6 +34,9 @@ public:
 	virtual void enable() = 0;
 	virtual void disable() = 0;
 	virtual void setParameters( const Vector3& viewer, const Matrix4& localToWorld, const Vector3& origin, const Vector3& colour, const Matrix4& world2light ) = 0;
+	/// Physical light parameters for one lighting pass; no-op for programs that do not use them.
+	virtual void setLightParams( const Vector3& viewer, const Matrix4& localToWorld, const Vector3& colour, const RendererLightParams& params ){
+	}
 };
 
 class OpenGLFogState

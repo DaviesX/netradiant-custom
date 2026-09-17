@@ -167,6 +167,35 @@ typedef SingletonModule<EntityDoom3API, EntityDependencies> EntityDoom3Module;
 EntityDoom3Module g_EntityDoom3Module;
 
 
+/// Quake 3 style entities with physically based light, light_spot and light_sun entities.
+/// Selected with entities="pbr" in the .game file.
+class EntityPBRAPI : public TypeSystemRef
+{
+	EntityCreator* m_entitypbr;
+public:
+	typedef EntityCreator Type;
+	STRING_CONSTANT( Name, "pbr" );
+
+	EntityPBRAPI(){
+		Entity_Construct( eGameTypePBR );
+
+		m_entitypbr = &GetEntityCreator();
+
+		GlobalReferenceCache().setEntityCreator( *m_entitypbr );
+	}
+	~EntityPBRAPI(){
+		Entity_Destroy();
+	}
+	EntityCreator* getTable(){
+		return m_entitypbr;
+	}
+};
+
+typedef SingletonModule<EntityPBRAPI, EntityDependencies> EntityPBRModule;
+
+EntityPBRModule g_EntityPBRModule;
+
+
 extern "C" void RADIANT_DLLEXPORT Radiant_RegisterModules( ModuleServer& server ){
 	initialiseModule( server );
 
@@ -174,5 +203,6 @@ extern "C" void RADIANT_DLLEXPORT Radiant_RegisterModules( ModuleServer& server 
 	g_EntityQ1Module.selfRegister();
 	g_EntityWolfModule.selfRegister();
 	g_EntityDoom3Module.selfRegister();
+	g_EntityPBRModule.selfRegister();
 	Doom3ModelSkinCacheModule_selfRegister( server );
 }

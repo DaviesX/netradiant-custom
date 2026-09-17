@@ -31,7 +31,8 @@ enum LightType
 {
 	LIGHTTYPE_DEFAULT,
 	LIGHTTYPE_RTCW,
-	LIGHTTYPE_DOOM3
+	LIGHTTYPE_DOOM3,
+	LIGHTTYPE_PBR
 };
 void Light_Construct( LightType lightType );
 void Light_Destroy();

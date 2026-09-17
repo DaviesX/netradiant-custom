@@ -1,0 +1,3 @@
+// The pbr material language loads every materials/*.mtr file; no shaderlist is used by the editor.
+// This list feeds q3map2, which still reads scripts/*.shader for surfaceparms (see README.md).
+bench

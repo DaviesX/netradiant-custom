@@ -33,8 +33,9 @@ public:
 	void* m_environment;
 	LoadFunc m_func;
 	bool m_skybox;
+	bool m_linear; ///< upload texel data untouched, bypassing the texture gamma preference
 
-	LoadImageCallback( void* environment, LoadFunc func, bool skybox = false ) : m_environment( environment ), m_func( func ), m_skybox( skybox ){
+	LoadImageCallback( void* environment, LoadFunc func, bool skybox = false, bool linear = false ) : m_environment( environment ), m_func( func ), m_skybox( skybox ), m_linear( linear ){
 	}
 	Image* loadImage( const char* name ) const {
 		return m_func( m_environment, name );
@@ -42,11 +43,12 @@ public:
 };
 
 inline bool operator==( const LoadImageCallback& self, const LoadImageCallback& other ){
-	return self.m_environment == other.m_environment && self.m_func == other.m_func;
+	return self.m_environment == other.m_environment && self.m_func == other.m_func && self.m_linear == other.m_linear;
 }
 inline bool operator<( const LoadImageCallback& self, const LoadImageCallback& other ){
 	return self.m_environment < other.m_environment ||
-	       ( !( other.m_environment < self.m_environment ) && self.m_func < other.m_func );
+	       ( !( other.m_environment < self.m_environment ) && ( self.m_func < other.m_func ||
+	       ( !( other.m_func < self.m_func ) && self.m_linear < other.m_linear ) ) );
 }
 
 class TexturesCacheObserver

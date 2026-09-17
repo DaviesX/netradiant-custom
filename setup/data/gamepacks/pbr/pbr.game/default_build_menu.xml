@@ -1,0 +1,36 @@
+<?xml version="1.0"?>
+<!--
+build commands for the PBR gamepack
+[RadiantPath]: path to Radiant
+[EnginePath]: path to the engine, the directory containing "base/"
+All entries use the bundled q3map2; nothing outside the repository is required.
+-->
+<project version="2.0">
+<var name="q3map2">"[RadiantPath]q3map2.[ExecutableType]" -v<cond value="[MonitorAddress]"> -connect [MonitorAddress]</cond> -game quake3 -fs_basepath "[EnginePath]"<cond value="[GameName]"> -fs_game [GameName]</cond></var>
+<build name="BSP">
+<command>[q3map2] -meta "[MapFile]"</command>
+</build>
+<build name="BSP + VIS">
+<command>[q3map2] -meta "[MapFile]"</command>
+<command>[q3map2] -vis -saveprt "[MapFile]"</command>
+</build>
+<build name="BSP + VIS + light (fast)">
+<command>[q3map2] -meta "[MapFile]"</command>
+<command>[q3map2] -vis -saveprt "[MapFile]"</command>
+<command>[q3map2] -light -fast "[MapFile]"</command>
+</build>
+<separator />
+<build name="Single: bsp">
+<command>[q3map2] -meta "[MapFile]"</command>
+</build>
+<build name="Single: vis">
+<command>[q3map2] -vis -saveprt "[MapFile]"</command>
+</build>
+<build name="Single: light (fast)">
+<command>[q3map2] -light -fast "[MapFile]"</command>
+</build>
+<separator />
+<build name="make .pk3">
+<command>[q3map2] -pk3 "[BspFile]"</command>
+</build>
+</project>

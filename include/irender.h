@@ -60,6 +60,31 @@ class Matrix4;
 
 class Shader;
 
+/// \brief Physical light description handed to lighting programs.
+/// Doom 3 lights report eDoom3 and keep using the attenuation-texture path;
+/// PBR lights report point, spot or sun with physical units (see the pbr gamepack README).
+struct RendererLightParams
+{
+	enum EType
+	{
+		eDoom3,
+		ePoint,
+		eSpot,
+		eSun,
+	};
+	EType type;
+	Vector3 origin;     ///< world space
+	Vector3 direction;  ///< world space, normalised, direction the light travels (spot, sun)
+	float intensity;    ///< radiant flux in watts (point, spot); irradiance in W/m^2 (sun)
+	float radius;       ///< cutoff distance in map units (point, spot)
+	float cosInner;     ///< cosine of the inner cone half-angle (spot)
+	float cosOuter;     ///< cosine of the outer cone half-angle (spot)
+
+	RendererLightParams() :
+		type( eDoom3 ), origin( 0, 0, 0 ), direction( 0, 0, -1 ), intensity( 0 ), radius( 0 ), cosInner( 1 ), cosOuter( 1 ){
+	}
+};
+
 class RendererLight
 {
 public:
@@ -71,6 +96,11 @@ public:
 	virtual const Vector3& colour() const = 0;
 	virtual bool isProjected() const = 0;
 	virtual const Matrix4& projection() const = 0;
+	/// Physical parameters; the default marks the light as a Doom 3 style light.
+	virtual const RendererLightParams& params() const {
+		static const RendererLightParams doom3;
+		return doom3;
+	}
 };
 
 class LightCullable

@@ -228,6 +228,18 @@ MBSPC:
 
 Radiant:
 
+PBR (Stage 1):
+	* "pbr" material language (shaders="pbr"): materials/*.mtr, glTF metallic-roughness keywords
+	  (basecolor, normal, metallicroughness, occlusion, emissive, factors, alphamode, doublesided, surfaceparm),
+	  textures uploaded without the gamma preference
+	* "pbr" entity module (entities="pbr"): light, light_spot, light_sun with physical units
+	  (intensity in W, sun in W/m^2, radius, cone, cone_inner, angles/target)
+	* lighting camera mode for pbr games: GGX/Smith/Schlick/Disney BRDF, one additive pass per light plus
+	  emissive+ambient base pass, RGBA16F framebuffer resolved with exposure and Uncharted 2 tonemap
+	* camera preferences "Lighting exposure" and "Lighting ambient"
+	* pbr gamepack (setup/data/gamepacks/pbr) with entity definitions, build menu, benchmark map and README
+
+
 binds...
 	* wasd camera binds, c - deSelect, z - delete
 	* ExpandSelectionToEntities - shift+e

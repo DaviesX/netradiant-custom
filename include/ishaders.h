@@ -23,6 +23,7 @@
 
 #include "generic/constant.h"
 #include "generic/callback.h"
+#include "generic/vector.h"
 
 enum
 {
@@ -93,6 +94,12 @@ public:
 		eCullNone,
 		eCullBack,
 	};
+	enum EAlphaMode
+	{
+		eAlphaOpaque,
+		eAlphaMask,
+		eAlphaBlend,
+	};
 // Increment the number of references to this object
 	virtual void IncRef() = 0;
 // Decrement the reference count
@@ -125,6 +132,23 @@ public:
 	virtual void forEachLayer( const ShaderLayerCallback& layer ) const = 0;
 
 	virtual qtexture_t* lightFalloffImage() const = 0;
+
+// PBR (glTF metallic-roughness) material data; only meaningful when isPBR() is true.
+// Textures are loaded while lighting is enabled, like the bump/specular maps.
+	virtual bool isPBR() const = 0;
+	virtual qtexture_t* getBaseColor() const = 0;
+	virtual qtexture_t* getNormal() const = 0;
+	virtual qtexture_t* getMetallicRoughness() const = 0;
+	virtual qtexture_t* getOcclusion() const = 0;
+	virtual qtexture_t* getEmissive() const = 0;
+	virtual const Vector4& getBaseColorFactor() const = 0;
+	virtual float getMetallicFactor() const = 0;
+	virtual float getRoughnessFactor() const = 0;
+	virtual const Vector3& getEmissiveFactor() const = 0;
+	virtual float getEmissiveStrength() const = 0;
+	virtual EAlphaMode getAlphaMode() const = 0;
+	virtual float getAlphaCutoff() const = 0;
+	virtual bool isDoubleSided() const = 0;
 };
 
 typedef Callback<void(const char*)> ShaderNameCallback;
@@ -134,7 +158,7 @@ class ModuleObserver;
 class ShaderSystem
 {
 public:
-	INTEGER_CONSTANT( Version, 1 );
+	INTEGER_CONSTANT( Version, 2 );
 	STRING_CONSTANT( Name, "shaders" );
 // NOTE: shader and texture names used must be full path.
 // Shaders usable as textures have prefix equal to getTexturePrefix()

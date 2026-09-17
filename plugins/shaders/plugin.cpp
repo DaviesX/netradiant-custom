@@ -136,6 +136,38 @@ typedef SingletonModule<ShadersQuake4API, ShadersDependencies, DependenciesAPICo
 ShadersQuake4Module g_ShadersQuake4Module;
 
 
+/// glTF-style metallic-roughness materials: materials/*.mtr, flat key-value grammar,
+/// no default shaders for bare textures, no shaderlist.txt.
+class ShadersPBRAPI
+{
+	ShaderSystem* m_shaderspbr;
+public:
+	typedef ShaderSystem Type;
+	STRING_CONSTANT( Name, "pbr" );
+
+	ShadersPBRAPI( ShadersDependencies& dependencies ){
+		g_shadersExtension = "mtr";
+		g_shadersDirectory = "materials/";
+		g_enableDefaultShaders = false;
+		g_shaderLanguage = SHADERLANGUAGE_PBR;
+		g_useShaderList = false;
+		g_bitmapModule = dependencies.getBitmapModule().getTable();
+		Shaders_Construct();
+		m_shaderspbr = &GetShaderSystem();
+	}
+	~ShadersPBRAPI(){
+		Shaders_Destroy();
+	}
+	ShaderSystem* getTable(){
+		return m_shaderspbr;
+	}
+};
+
+typedef SingletonModule<ShadersPBRAPI, ShadersDependencies, DependenciesAPIConstructor<ShadersPBRAPI, ShadersDependencies> > ShadersPBRModule;
+
+ShadersPBRModule g_ShadersPBRModule;
+
+
 
 extern "C" void RADIANT_DLLEXPORT Radiant_RegisterModules( ModuleServer& server ){
 	initialiseModule( server );
@@ -143,4 +175,5 @@ extern "C" void RADIANT_DLLEXPORT Radiant_RegisterModules( ModuleServer& server 
 	g_ShadersQ3Module.selfRegister();
 	g_ShadersDoom3Module.selfRegister();
 	g_ShadersQuake4Module.selfRegister();
+	g_ShadersPBRModule.selfRegister();
 }

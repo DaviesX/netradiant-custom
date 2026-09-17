@@ -32,6 +32,7 @@
 #include "qerplugin.h"
 
 #include <set>
+#include <cstdlib>
 #include <vector>
 #include <list>
 #include <map>
@@ -438,6 +439,344 @@ public:
 GLSLSkyboxProgram g_skyboxGLSL;
 
 
+bool g_pbrGame = false; // set in ShaderCache_Construct from the .game "shaders" key
+
+bool ShaderCache_pbrGame(){
+	return g_pbrGame;
+}
+
+/// \brief Shared program for the additive PBR light passes (pbr_vp/pbr_fp).
+/// Per-material factors are set by GLSLPBRMaterialProgram when a material's pass is enabled.
+class GLSLPBRProgram : public GLProgram
+{
+public:
+	GLuint m_program;
+	GLint u_basecolor_factor;
+	GLint u_metallic_factor;
+	GLint u_roughness_factor;
+	GLint u_view_origin;
+	GLint u_light_origin;
+	GLint u_light_direction;
+	GLint u_light_color;
+	GLint u_light_intensity;
+	GLint u_light_radius;
+	GLint u_light_cos_inner;
+	GLint u_light_cos_outer;
+	GLint u_light_type;
+
+	GLSLPBRProgram() : m_program( 0 ){
+	}
+
+	void create(){
+		m_program = gl().glCreateProgram();
+		{
+			StringOutputStream filename( 256 );
+			createShader( m_program, filename( GlobalRadiant().getAppPath(), "gl/pbr_vp.glsl" ), GL_VERTEX_SHADER );
+			createShader( m_program, filename( GlobalRadiant().getAppPath(), "gl/pbr_fp.glsl" ), GL_FRAGMENT_SHADER );
+		}
+
+		gl().glBindAttribLocation( m_program, c_attr_TexCoord0, "attr_TexCoord0" );
+		gl().glBindAttribLocation( m_program, c_attr_Tangent, "attr_Tangent" );
+		gl().glBindAttribLocation( m_program, c_attr_Binormal, "attr_Binormal" );
+
+		GLSLProgram_link( m_program );
+		GLSLProgram_validate( m_program );
+
+		gl().glUseProgram( m_program );
+
+		gl().glUniform1i( gl().glGetUniformLocation( m_program, "u_basecolormap" ), 0 );
+		gl().glUniform1i( gl().glGetUniformLocation( m_program, "u_normalmap" ), 1 );
+		gl().glUniform1i( gl().glGetUniformLocation( m_program, "u_metallicroughnessmap" ), 2 );
+		gl().glUniform1i( gl().glGetUniformLocation( m_program, "u_occlusionmap" ), 3 );
+		gl().glUniform1i( gl().glGetUniformLocation( m_program, "u_emissivemap" ), 4 );
+
+		u_basecolor_factor = gl().glGetUniformLocation( m_program, "u_basecolor_factor" );
+		u_metallic_factor = gl().glGetUniformLocation( m_program, "u_metallic_factor" );
+		u_roughness_factor = gl().glGetUniformLocation( m_program, "u_roughness_factor" );
+		u_view_origin = gl().glGetUniformLocation( m_program, "u_view_origin" );
+		u_light_origin = gl().glGetUniformLocation( m_program, "u_light_origin" );
+		u_light_direction = gl().glGetUniformLocation( m_program, "u_light_direction" );
+		u_light_color = gl().glGetUniformLocation( m_program, "u_light_color" );
+		u_light_intensity = gl().glGetUniformLocation( m_program, "u_light_intensity" );
+		u_light_radius = gl().glGetUniformLocation( m_program, "u_light_radius" );
+		u_light_cos_inner = gl().glGetUniformLocation( m_program, "u_light_cos_inner" );
+		u_light_cos_outer = gl().glGetUniformLocation( m_program, "u_light_cos_outer" );
+		u_light_type = gl().glGetUniformLocation( m_program, "u_light_type" );
+
+		gl().glUseProgram( 0 );
+
+		GlobalOpenGL_debugAssertNoErrors();
+	}
+
+	void destroy(){
+		gl().glDeleteProgram( m_program );
+		m_program = 0;
+	}
+
+	void enable() override {
+		gl().glUseProgram( m_program );
+
+		gl().glEnableVertexAttribArray( c_attr_TexCoord0 );
+		gl().glEnableVertexAttribArray( c_attr_Tangent );
+		gl().glEnableVertexAttribArray( c_attr_Binormal );
+
+		GlobalOpenGL_debugAssertNoErrors();
+		debug_string( "enable pbr" );
+	}
+
+	void disable() override {
+		gl().glUseProgram( 0 );
+
+		gl().glDisableVertexAttribArray( c_attr_TexCoord0 );
+		gl().glDisableVertexAttribArray( c_attr_Tangent );
+		gl().glDisableVertexAttribArray( c_attr_Binormal );
+
+		GlobalOpenGL_debugAssertNoErrors();
+		debug_string( "disable pbr" );
+	}
+
+	void setMaterial( const Vector4& baseColorFactor, float metallicFactor, float roughnessFactor ){
+		gl().glUniform4f( u_basecolor_factor, baseColorFactor.x(), baseColorFactor.y(), baseColorFactor.z(), baseColorFactor.w() );
+		gl().glUniform1f( u_metallic_factor, metallicFactor );
+		gl().glUniform1f( u_roughness_factor, roughnessFactor );
+	}
+
+	void setParameters( const Vector3& viewer, const Matrix4& localToWorld, const Vector3& origin, const Vector3& colour, const Matrix4& world2light ) override {
+	}
+
+	void setLightParams( const Vector3& viewer, const Matrix4& localToWorld, const Vector3& colour, const RendererLightParams& params ) override {
+		Matrix4 world2local( localToWorld );
+		matrix4_affine_invert( world2local );
+
+		Vector3 localLight( params.origin );
+		matrix4_transform_point( world2local, localLight );
+
+		Vector3 localViewer( viewer );
+		matrix4_transform_point( world2local, localViewer );
+
+		Vector3 localDirection( matrix4_transformed_direction( world2local, params.direction ) );
+		if ( vector3_length_squared( localDirection ) > 0 ) {
+			vector3_normalise( localDirection );
+		}
+
+		gl().glUniform3f( u_view_origin, localViewer.x(), localViewer.y(), localViewer.z() );
+		gl().glUniform3f( u_light_origin, localLight.x(), localLight.y(), localLight.z() );
+		gl().glUniform3f( u_light_direction, localDirection.x(), localDirection.y(), localDirection.z() );
+		gl().glUniform3f( u_light_color, colour.x(), colour.y(), colour.z() );
+		gl().glUniform1f( u_light_intensity, params.intensity );
+		gl().glUniform1f( u_light_radius, params.radius );
+		gl().glUniform1f( u_light_cos_inner, params.cosInner );
+		gl().glUniform1f( u_light_cos_outer, params.cosOuter );
+		gl().glUniform1i( u_light_type, params.type == RendererLightParams::eSun ? 3 : params.type == RendererLightParams::eSpot ? 2 : 1 );
+
+		GlobalOpenGL_debugAssertNoErrors();
+	}
+};
+
+GLSLPBRProgram g_pbrGLSL;
+
+/// \brief Shared program for the PBR base pass (emissive + ambient), pbr_base_vp/pbr_base_fp.
+class GLSLPBRBaseProgram : public GLProgram
+{
+public:
+	GLuint m_program;
+	GLint u_basecolor_factor;
+	GLint u_emissive_factor;
+	GLint u_emissive_strength;
+	GLint u_ambient;
+
+	GLSLPBRBaseProgram() : m_program( 0 ){
+	}
+
+	void create(){
+		m_program = gl().glCreateProgram();
+		{
+			StringOutputStream filename( 256 );
+			createShader( m_program, filename( GlobalRadiant().getAppPath(), "gl/pbr_base_vp.glsl" ), GL_VERTEX_SHADER );
+			createShader( m_program, filename( GlobalRadiant().getAppPath(), "gl/pbr_base_fp.glsl" ), GL_FRAGMENT_SHADER );
+		}
+
+		GLSLProgram_link( m_program );
+		GLSLProgram_validate( m_program );
+
+		gl().glUseProgram( m_program );
+
+		gl().glUniform1i( gl().glGetUniformLocation( m_program, "u_basecolormap" ), 0 );
+		gl().glUniform1i( gl().glGetUniformLocation( m_program, "u_normalmap" ), 1 );
+		gl().glUniform1i( gl().glGetUniformLocation( m_program, "u_metallicroughnessmap" ), 2 );
+		gl().glUniform1i( gl().glGetUniformLocation( m_program, "u_occlusionmap" ), 3 );
+		gl().glUniform1i( gl().glGetUniformLocation( m_program, "u_emissivemap" ), 4 );
+
+		u_basecolor_factor = gl().glGetUniformLocation( m_program, "u_basecolor_factor" );
+		u_emissive_factor = gl().glGetUniformLocation( m_program, "u_emissive_factor" );
+		u_emissive_strength = gl().glGetUniformLocation( m_program, "u_emissive_strength" );
+		u_ambient = gl().glGetUniformLocation( m_program, "u_ambient" );
+
+		gl().glUseProgram( 0 );
+
+		GlobalOpenGL_debugAssertNoErrors();
+	}
+
+	void destroy(){
+		gl().glDeleteProgram( m_program );
+		m_program = 0;
+	}
+
+	void enable() override {
+		gl().glUseProgram( m_program );
+		GlobalOpenGL_debugAssertNoErrors();
+		debug_string( "enable pbr base" );
+	}
+
+	void disable() override {
+		gl().glUseProgram( 0 );
+		GlobalOpenGL_debugAssertNoErrors();
+		debug_string( "disable pbr base" );
+	}
+
+	void setMaterial( const Vector4& baseColorFactor, const Vector3& emissiveFactor, float emissiveStrength, float ambient ){
+		gl().glUniform4f( u_basecolor_factor, baseColorFactor.x(), baseColorFactor.y(), baseColorFactor.z(), baseColorFactor.w() );
+		gl().glUniform3f( u_emissive_factor, emissiveFactor.x(), emissiveFactor.y(), emissiveFactor.z() );
+		gl().glUniform1f( u_emissive_strength, emissiveStrength );
+		gl().glUniform1f( u_ambient, ambient );
+	}
+
+	void setParameters( const Vector3& viewer, const Matrix4& localToWorld, const Vector3& origin, const Vector3& colour, const Matrix4& world2light ) override {
+	}
+};
+
+GLSLPBRBaseProgram g_pbrBaseGLSL;
+
+/// \brief Per-material front for the shared PBR programs.
+/// The render loop enables a pass's program when the pass is reached; this sets the material's factors then.
+class GLSLPBRMaterialProgram : public GLProgram
+{
+	IShader& m_material;
+	const bool m_base;
+public:
+	GLSLPBRMaterialProgram( IShader& material, bool base ) : m_material( material ), m_base( base ){
+	}
+	void enable() override {
+		if ( m_base ) {
+			g_pbrBaseGLSL.enable();
+			g_pbrBaseGLSL.setMaterial( m_material.getBaseColorFactor(), m_material.getEmissiveFactor(), m_material.getEmissiveStrength(), Camera_lightingAmbient() );
+		}
+		else
+		{
+			g_pbrGLSL.enable();
+			g_pbrGLSL.setMaterial( m_material.getBaseColorFactor(), m_material.getMetallicFactor(), m_material.getRoughnessFactor() );
+		}
+	}
+	void disable() override {
+		if ( m_base ) {
+			g_pbrBaseGLSL.disable();
+		}
+		else
+		{
+			g_pbrGLSL.disable();
+		}
+	}
+	void setParameters( const Vector3& viewer, const Matrix4& localToWorld, const Vector3& origin, const Vector3& colour, const Matrix4& world2light ) override {
+	}
+	void setLightParams( const Vector3& viewer, const Matrix4& localToWorld, const Vector3& colour, const RendererLightParams& params ) override {
+		if ( !m_base ) {
+			g_pbrGLSL.setLightParams( viewer, localToWorld, colour, params );
+		}
+	}
+};
+
+/// \brief HDR resolve: exposure, Uncharted 2 (Hable) tonemap, sRGB encode (tonemap_vp/tonemap_fp).
+class GLSLTonemapProgram
+{
+public:
+	GLuint m_program;
+	GLint u_exposure;
+
+	GLSLTonemapProgram() : m_program( 0 ){
+	}
+
+	void create(){
+		m_program = gl().glCreateProgram();
+		{
+			StringOutputStream filename( 256 );
+			createShader( m_program, filename( GlobalRadiant().getAppPath(), "gl/tonemap_vp.glsl" ), GL_VERTEX_SHADER );
+			createShader( m_program, filename( GlobalRadiant().getAppPath(), "gl/tonemap_fp.glsl" ), GL_FRAGMENT_SHADER );
+		}
+
+		GLSLProgram_link( m_program );
+		GLSLProgram_validate( m_program );
+
+		gl().glUseProgram( m_program );
+		gl().glUniform1i( gl().glGetUniformLocation( m_program, "u_hdr" ), 0 );
+		u_exposure = gl().glGetUniformLocation( m_program, "u_exposure" );
+		gl().glUseProgram( 0 );
+
+		GlobalOpenGL_debugAssertNoErrors();
+	}
+
+	void destroy(){
+		gl().glDeleteProgram( m_program );
+		m_program = 0;
+	}
+
+	bool created() const {
+		return m_program != 0;
+	}
+
+	/// Draws the full-screen quad; all touched GL state is restored afterwards, the program is left unbound.
+	void draw( GLuint hdrTexture, float exposure ){
+		gl().glPushAttrib( GL_ENABLE_BIT | GL_DEPTH_BUFFER_BIT | GL_COLOR_BUFFER_BIT | GL_TEXTURE_BIT | GL_POLYGON_BIT | GL_CURRENT_BIT );
+
+		gl().glDisable( GL_DEPTH_TEST );
+		gl().glDepthMask( GL_FALSE );
+		gl().glDisable( GL_BLEND );
+		gl().glDisable( GL_ALPHA_TEST );
+		gl().glDisable( GL_CULL_FACE );
+		gl().glDisable( GL_LIGHTING );
+		gl().glDisable( GL_FOG );
+		gl().glDisable( GL_POLYGON_STIPPLE );
+		gl().glPolygonMode( GL_FRONT_AND_BACK, GL_FILL );
+		gl().glColorMask( GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE );
+
+		gl().glActiveTexture( GL_TEXTURE0 );
+		gl().glClientActiveTexture( GL_TEXTURE0 );
+		gl().glBindTexture( GL_TEXTURE_2D, hdrTexture );
+		gl().glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST );
+		gl().glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST );
+
+		gl().glUseProgram( m_program );
+		gl().glUniform1f( u_exposure, exposure );
+
+		gl().glBegin( GL_QUADS );
+		gl().glVertex3f( -1, -1, 0 );
+		gl().glVertex3f( 1, -1, 0 );
+		gl().glVertex3f( 1, 1, 0 );
+		gl().glVertex3f( -1, 1, 0 );
+		gl().glEnd();
+
+		gl().glUseProgram( 0 );
+
+		gl().glPopAttrib();
+
+		GlobalOpenGL_debugAssertNoErrors();
+	}
+};
+
+GLSLTonemapProgram g_tonemapGLSL;
+
+RenderResolveHook* g_resolveHook = 0;
+
+void ShaderCache_setResolveHook( RenderResolveHook* hook ){
+	g_resolveHook = hook;
+}
+
+void ShaderCache_drawTonemap( unsigned int hdrTexture, float exposure ){
+	if ( g_tonemapGLSL.created() ) {
+		g_tonemapGLSL.draw( hdrTexture, exposure );
+	}
+}
+
+
 
 bool g_vertexArray_enabled = false;
 bool g_normalArray_enabled = false;
@@ -616,8 +955,10 @@ class OpenGLShader final : public Shader
 	IShader* m_shader;
 	std::size_t m_used;
 	ModuleObservers m_observers;
+	GLSLPBRMaterialProgram* m_pbrLightProgram;
+	GLSLPBRMaterialProgram* m_pbrBaseProgram;
 public:
-	OpenGLShader() : m_shader( 0 ), m_used( 0 ){
+	OpenGLShader() : m_shader( 0 ), m_used( 0 ), m_pbrLightProgram( 0 ), m_pbrBaseProgram( 0 ){
 	}
 	~OpenGLShader() = default;
 	void construct( const char* name );
@@ -632,6 +973,11 @@ public:
 			delete bucket;
 		}
 		m_passes.clear();
+
+		delete m_pbrLightProgram;
+		m_pbrLightProgram = 0;
+		delete m_pbrBaseProgram;
+		m_pbrBaseProgram = 0;
 	}
 	void addRenderable( const OpenGLRenderable& renderable, const Matrix4& modelview, const LightList* lights ) override {
 		for ( auto *bucket : m_passes )
@@ -973,9 +1319,26 @@ public:
 		GlobalOpenGL_debugAssertNoErrors();
 
 		debug_string( "begin rendering" );
+		bool resolved = false;
+		const auto resolve = [&](){
+			resolved = true;
+			OpenGLState reset = current;
+			reset.m_program = nullptr; // unbind the program before the hook draws with its own
+			OpenGLState_apply( reset, current, globalstate );
+			g_resolveHook->resolve();
+			gl().glActiveTexture( GL_TEXTURE0 );
+			gl().glClientActiveTexture( GL_TEXTURE0 );
+		};
 		for ( auto& [ state, bucket ] : g_state_sorted )
 		{
+			// the HDR target is resolved once the scene passes are done, before highlights and overlays
+			if ( g_resolveHook != 0 && !resolved && state.get().m_sort >= OpenGLState::eSortHighlight ) {
+				resolve();
+			}
 			bucket->render( current, globalstate, viewer );
+		}
+		if ( g_resolveHook != 0 && !resolved ) {
+			resolve();
 		}
 		debug_string( "end rendering" );
 
@@ -989,6 +1352,11 @@ public:
 			if ( lightingEnabled() ) {
 				g_bumpGLSL.create();
 				g_depthFillGLSL.create();
+				if ( g_pbrGame ) {
+					g_pbrGLSL.create();
+					g_pbrBaseGLSL.create();
+					g_tonemapGLSL.create();
+				}
 			}
 
 			g_skyboxGLSL.create();
@@ -1012,6 +1380,11 @@ public:
 			if ( GlobalOpenGL().contextValid && lightingEnabled() ) {
 				g_bumpGLSL.destroy();
 				g_depthFillGLSL.destroy();
+				if ( g_pbrGame ) {
+					g_pbrGLSL.destroy();
+					g_pbrBaseGLSL.destroy();
+					g_tonemapGLSL.destroy();
+				}
 			}
 			if( GlobalOpenGL().contextValid )
 				g_skyboxGLSL.destroy();
@@ -1122,6 +1495,8 @@ Vector3 g_DebugShaderColours[256];
 Shader* g_defaultPointLight = 0;
 
 void ShaderCache_Construct(){
+	g_pbrGame = string_equal( GlobalRadiant().getRequiredGameDescriptionKeyValue( "shaders" ), "pbr" );
+
 	g_ShaderCache = new OpenGLShaderCache;
 	GlobalTexturesCache().attach( *g_ShaderCache );
 	GlobalShaderSystem().attach( *g_ShaderCache );
@@ -1488,6 +1863,10 @@ void OpenGLState_apply( const OpenGLState& self, OpenGLState& current, unsigned 
 			setTextureState( current.m_texture5, texture5, GL_TEXTURE5 );
 			setTextureState( current.m_texture6, texture6, GL_TEXTURE6 );
 			setTextureState( current.m_texture7, texture7, GL_TEXTURE7 );
+			// leave unit 0 active: fixed-function texcoord pointers set by renderables must land on unit 0
+			// even when a pass binds textures on higher units (PBR passes bind five)
+			gl().glActiveTexture( GL_TEXTURE0 );
+			gl().glClientActiveTexture( GL_TEXTURE0 );
 		}
 	}
 
@@ -1563,7 +1942,12 @@ void Renderables_flush( OpenGLStateBucket::Renderables& renderables, OpenGLState
 
 		count_prim();
 
-		if ( current.m_program != 0 && rend.m_light != 0 ) {
+		if ( current.m_program != 0 && rend.m_light != 0 && rend.m_light->params().type != RendererLightParams::eDoom3 ) {
+			// physical light: point, spot or sun
+			current.m_program->setLightParams( viewer, *rend.m_transform, rend.m_light->colour(), rend.m_light->params() );
+			debug_string( "set light params" );
+		}
+		else if ( current.m_program != 0 && rend.m_light != 0 ) {
 			const IShader& lightShader = static_cast<OpenGLShader*>( rend.m_light->getShader() )->getShader();
 			if ( lightShader.firstLayer() != 0 ) {
 				GLuint attenuation_xy = lightShader.firstLayer()->texture()->texture_number;
@@ -1963,7 +2347,62 @@ void OpenGLShader::construct( const char* name ){
 		// construction from IShader
 		m_shader = QERApp_Shader_ForName( name );
 
-		if ( g_ShaderCache->lightingEnabled() && m_shader->getBump() != 0 && m_shader->getBump()->texture_number != 0 ) { // is a bump shader
+		if ( g_ShaderCache->lightingEnabled() && g_pbrGame && m_shader->isPBR() && m_shader->getBaseColor() != 0 ) { // PBR material
+			const unsigned int cull = ( m_shader->isDoubleSided() || ( ( m_shader->getFlags() & QER_CULL ) != 0 && m_shader->getCull() == IShader::eCullNone ) ) ? 0 : RENDER_CULLFACE;
+			const bool masked = m_shader->getAlphaMode() == IShader::eAlphaMask;
+			const bool blended = m_shader->getAlphaMode() == IShader::eAlphaBlend;
+
+			m_pbrBaseProgram = new GLSLPBRMaterialProgram( *m_shader, true );
+			m_pbrLightProgram = new GLSLPBRMaterialProgram( *m_shader, false );
+
+			// base pass: emissive + ambient; also fills the depth buffer, honouring the alpha mask
+			state.m_texture = m_shader->getBaseColor()->texture_number;
+			state.m_texture1 = m_shader->getNormal()->texture_number;
+			state.m_texture2 = m_shader->getMetallicRoughness()->texture_number;
+			state.m_texture3 = m_shader->getOcclusion()->texture_number;
+			state.m_texture4 = m_shader->getEmissive()->texture_number;
+			state.m_state = RENDER_FILL | RENDER_TEXTURE | RENDER_DEPTHTEST | RENDER_COLOURWRITE | RENDER_SMOOTH | RENDER_PROGRAM | cull;
+			state.m_colour = Vector4( 1, 1, 1, 1 );
+			state.m_program = m_pbrBaseProgram;
+			if ( masked ) {
+				state.m_state |= RENDER_ALPHATEST;
+				state.m_alphafunc = GL_GEQUAL;
+				state.m_alpharef = m_shader->getAlphaCutoff();
+			}
+			if ( blended ) {
+				state.m_state |= RENDER_BLEND;
+				state.m_blend_src = GL_SRC_ALPHA;
+				state.m_blend_dst = GL_ONE_MINUS_SRC_ALPHA;
+				state.m_sort = OpenGLState::eSortTranslucent;
+				state.m_depthfunc = GL_LEQUAL;
+			}
+			else
+			{
+				state.m_state |= RENDER_DEPTHWRITE;
+				state.m_sort = OpenGLState::eSortOpaque;
+			}
+
+			// one additive pass per light
+			OpenGLState& lightPass = appendDefaultPass();
+			lightPass.m_texture = state.m_texture;
+			lightPass.m_texture1 = state.m_texture1;
+			lightPass.m_texture2 = state.m_texture2;
+			lightPass.m_texture3 = state.m_texture3;
+			lightPass.m_texture4 = state.m_texture4;
+			lightPass.m_state = RENDER_BLEND | RENDER_FILL | RENDER_DEPTHTEST | RENDER_COLOURWRITE | RENDER_SMOOTH | RENDER_BUMP | RENDER_PROGRAM | RENDER_LIGHTING | cull;
+			lightPass.m_colour = Vector4( 1, 1, 1, 1 );
+			lightPass.m_program = m_pbrLightProgram;
+			lightPass.m_depthfunc = GL_LEQUAL;
+			lightPass.m_sort = blended ? OpenGLState::eSortTranslucent : OpenGLState::eSortMultiFirst;
+			lightPass.m_blend_src = GL_ONE;
+			lightPass.m_blend_dst = GL_ONE;
+			if ( masked ) {
+				lightPass.m_state |= RENDER_ALPHATEST;
+				lightPass.m_alphafunc = GL_GEQUAL;
+				lightPass.m_alpharef = m_shader->getAlphaCutoff();
+			}
+		}
+		else if ( g_ShaderCache->lightingEnabled() && m_shader->getBump() != 0 && m_shader->getBump()->texture_number != 0 ) { // is a bump shader
 			state.m_state = RENDER_FILL | RENDER_CULLFACE | RENDER_TEXTURE | RENDER_DEPTHTEST | RENDER_DEPTHWRITE | RENDER_COLOURWRITE | RENDER_PROGRAM;
 			state.m_colour = Vector4( 0, 0, 0, 1 );
 			state.m_sort = OpenGLState::eSortOpaque;

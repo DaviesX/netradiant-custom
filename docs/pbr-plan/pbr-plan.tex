@@ -1,0 +1,254 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\hypersetup{colorlinks=true,linkcolor=black,urlcolor=blue!60!black}
+\setlist{nosep}
+\setlength{\parskip}{4pt}
+\setlength{\parindent}{0pt}
+
+\title{NetRadiant-custom: Modern Lighting Pipeline Plan\\
+\large Direct PBR, shadow mapping, and SH indirect lighting for a Silent Hill 1 style game}
+\author{Davis Wen}
+\date{16 September 2026}
+
+\begin{document}
+\maketitle
+
+\section{Goal}
+
+Extend NetRadiant-custom and its build pipeline so a level designer can author, preview, and compile
+maps with a glTF-style metallic--roughness material model, physically based direct lighting with
+shadow maps, and baked indirect lighting stored as spherical harmonics (SH). The target game is a
+Silent Hill 1 style third-person title running on an ioquake3-derived engine: a fog-limited town of
+watertight streets under a low virtual sky, with watertight interiors.
+
+The plan is staged so that every stage ends with something a level designer can look at, and no
+stage requires undoing the previous one.
+
+\section{Guiding decisions}
+
+\begin{description}[style=nextline]
+\item[Keep q3map2's BSP and VIS stages untouched.]
+  CSG, the BSP tree, portals, leak detection, t-junctions, patch tessellation, fog volumes,
+  collision lumps, and the file formats are exactly what we do not want to rewrite.
+\item[Replace the light stage with a separate tool.]
+  The existing \texttt{sh-baker} (Embree, tinygltf) gains a BSP reader and becomes the light stage.
+  q3map2's \texttt{-light} is used only to allocate lightmap UVs, or dropped once the baker atlases
+  on its own.
+\item[No BSP format change for thick walls.]
+  The BSP brush and brushside lumps keep every plane of every solid brush, including void-facing
+  planes whose draw surfaces q3map2 strips. The engine reconstructs closed convex hulls from those
+  lumps at load and uses them as front-face-culled shadow casters.
+\item[Editor preview of direct lighting is the fast iteration loop.]
+  Editor preview of baked SH is optional and last, because it needs lightmap UVs on source
+  geometry, which is a new subsystem.
+\item[Lock units and colour spaces in Stage~1.]
+  Every later comparison against the engine depends on light units, exposure, and sRGB handling
+  being final in the benchmark map.
+\end{description}
+
+\section{Current state of the editor (relevant facts)}
+
+\begin{itemize}
+\item Gamepacks are data: \texttt{gamepacks/games/*.game} plus a matching directory. The editor
+  scans them at start; no code change is needed to add a game.
+\item Material parsing is compiled into \texttt{plugins/shaders}. Three hard-coded languages exist
+  (Quake~3, Doom~3, Quake~4), selected by the \texttt{shaders} attribute of the \texttt{.game} file.
+  The Doom~3/Quake~4 path already resolves diffuse, bump, and specular textures per material.
+\item The camera has a lighting draw mode that renders one additive GLSL pass per light
+  (\texttt{radiant/renderstate.cpp}, \texttt{GLSLBumpProgram}) using map light entities as omni
+  lights with attenuation textures. Brush and patch vertices already carry tangent and bitangent.
+\item Rendering goes straight to the 8-bit window buffer; there is no framebuffer object in the
+  camera path. The context is created by \texttt{QOpenGLWidget} with no explicit version request.
+\item The editor has no notion of lightmap UVs; q3map2's light stage allocates them.
+\item The build menu is a per-gamepack XML list of command lines; each q3map2 stage is a separate
+  invocation that reads and writes the BSP.
+\end{itemize}
+
+\section{Stage 1: Direct light and PBR materials}
+
+\textbf{Outcome.} A gamepack, a material format, light entity definitions, and a lit editor preview
+good enough to author the first benchmark map with final storage formats.
+
+\subsection{1.1 Material format and parser}
+\begin{itemize}
+\item Define a text material format modelled on the glTF metallic--roughness schema, brace-compatible
+  with the Doom~3 parser: \texttt{basecolor}, \texttt{normal}, \texttt{metallicroughness},
+  \texttt{occlusion}, \texttt{emissive}, plus \texttt{metallicFactor}, \texttt{roughnessFactor},
+  \texttt{emissiveFactor}, \texttt{emissiveStrength}, alpha mode and cutoff, double-sided.
+\item Keep \texttt{qer\_editorimage}, \texttt{surfaceparm}, and \texttt{q3map\_} keys so q3map2 and
+  the editor's brush classification keep working. Decide whether the baker reads the same files.
+\item Add a fourth shader language: new \texttt{parsePBR} on \texttt{ShaderTemplate}, a new
+  \texttt{SHADERLANGUAGE\_} value, a module in \texttt{plugins/shaders/plugin.cpp} setting the
+  directory and extension, and a \texttt{shaders="pbr"} value for the \texttt{.game} file.
+\item Extend \texttt{IShader} in \texttt{include/ishaders.h} with the extra textures and factors.
+\item Colour space: base colour and emissive are sRGB and decoded in the shader; normal, metallic--
+  roughness, and occlusion are linear. Check the texture preference paths (gamma, compression) so the
+  loaders do not alter these.
+\end{itemize}
+
+\subsection{1.2 Light entities and units}
+\begin{itemize}
+\item Entity definitions for point, spot, and sun lights with the keys the engine will read:
+  colour, intensity in physical units, radius, cone angles, and shadow flags.
+\item The sun lives on worldspawn or a dedicated entity, so Stage~2 can read it without a format
+  change. Direction and colour also feed \texttt{q3map\_sun} for compatibility.
+\item Plumb the new keys through the entity plugin into \texttt{RendererLight} (origin, colour,
+  radius exist; add direction, cone, intensity).
+\end{itemize}
+
+\subsection{1.3 Float framebuffer and tonemap}
+\begin{itemize}
+\item Add a half-float colour target plus depth in the camera path, with a resolve pass that applies
+  exposure and a tonemap. Physical light units clip in an 8-bit buffer before tonemapping can happen.
+\item Pulled forward from Stage~2 because shadow maps need framebuffer objects anyway.
+\end{itemize}
+
+\subsection{1.4 Lighting program}
+\begin{itemize}
+\item New GLSL program replacing Blinn--Phong: GGX distribution, Smith geometry, Schlick Fresnel,
+  Disney diffuse, ported from \texttt{sh-renderer/glsl/radiance.frag}.
+\item Keep the editor's per-light additive pass structure. Do not port Forward+ tiling; the editor
+  already culls lights per surface on the CPU.
+\item Base pass draws emissive plus a constant ambient. Point and spot lights accumulate on top.
+\end{itemize}
+
+\subsection{1.5 Gamepack and benchmark map}
+\begin{itemize}
+\item Gamepack: \texttt{.game} file, entity definitions, default build menu, shader list.
+\item Benchmark map: one street block with two building interiors, a low sky ceiling, a fog volume,
+  a sun, several point and spot lights, and materials exercising every map type.
+\item Exit criterion: the map looks the same in the editor lighting mode and in the engine's
+  direct-light-only path, within exposure tolerance.
+\end{itemize}
+
+\section{Stage 2: Shadow mapping}
+
+\textbf{Outcome.} Sun and spot shadows in the editor preview, cast by closed brush volumes, and a
+proof in the engine that hull reconstruction from the BSP gives the same result.
+
+\subsection{2.1 Caster pass}
+\begin{itemize}
+\item Depth-only program drawing all brush faces with front-face culling. Because every brush is a
+  closed convex volume in the editor, the far side of each wall becomes the caster and the effective
+  bias is the wall thickness (second-depth technique). No hand-tuned bias per map.
+\item Cache the shadow maps and invalidate on scene change or light change; the editor scene changes
+  rarely, so per-frame cost is only sampling.
+\end{itemize}
+
+\subsection{2.2 Sun cascades, then spot atlas}
+\begin{itemize}
+\item Cascaded shadow maps for the sun first, since a low sky ceiling makes the thin-wall question
+  hardest there. Then the spot light shadow atlas.
+\item Port \texttt{ComputeShadow}, \texttt{ComputeSunShadow}, and the Poisson PCF from
+  \texttt{radiance.frag} unchanged once the samplers and cascade uniforms exist.
+\end{itemize}
+
+\subsection{2.3 Thin receivers}
+\begin{itemize}
+\item Patches and models are thin in the editor too. Use normal-offset bias for them, or make them
+  receivers only.
+\end{itemize}
+
+\subsection{2.4 Engine-side hull reconstruction (validation)}
+\begin{itemize}
+\item In ioquake3, rebuild each collision brush's convex hull from the brush and brushside lumps at
+  load, and use the hulls as the front-face-culled caster mesh. Draw surfaces remain the receivers.
+\item Known gaps: brushes with non-solid shaders are dropped from the collision lumps. If such a
+  brush must cast, mark its material so the compiler keeps it, or emit it separately. q3map2's bevel
+  planes are redundant on the polytope and do not disturb the intersection.
+\item Exit criterion: the benchmark map's shadows match between editor and engine.
+\end{itemize}
+
+\section{Stage 3: Lightmap UVs, SH indirect, and the compiled format}
+
+\textbf{Outcome.} Baked SH indirect lighting in the engine via a light stage replacement, with no
+change to the BSP format.
+
+\subsection{3.1 Baker as the light stage}
+\begin{itemize}
+\item Add a BSP reader to \texttt{sh-baker}: draw surfaces, lightmap UVs, materials, and brush hulls
+  for casters. Entities for lights and sun.
+\item Pipeline: \texttt{q3map2 -meta}, \texttt{q3map2 -vis}, \texttt{q3map2 -light -fast} for UV
+  allocation only, then \texttt{sh\_baker} in place of the real light stage.
+\item Later, optionally atlas in the baker and write lightmap coordinates into the draw surfaces
+  directly, dropping the \texttt{-light} step.
+\end{itemize}
+
+\subsection{3.2 Output and engine loading}
+\begin{itemize}
+\item External lightmap images (already supported by the engine) for the L0 band, plus a side file
+  with the three packed SH textures matching \texttt{GetLightmapTexel} in \texttt{radiance.frag}.
+\item Engine loads the side file and runs the indirect BRDF. No BSP lump changes.
+\end{itemize}
+
+\subsection{3.3 Editor preview of baked SH (optional, last)}
+\begin{itemize}
+\item Requires lightmap UVs on source brush faces and patches that match the compiled atlas, either
+  by matching surfaces back to the BSP or by an editor-side atlas (xatlas or similar).
+\item Only worth doing if designers need indirect preview inside the editor; the engine and the
+  existing \texttt{sh-renderer} viewer cover it otherwise.
+\end{itemize}
+
+\section{World-building conventions for the town}
+
+These are authoring rules, not code, but they determine whether the visibility system works.
+
+\begin{itemize}
+\item \textbf{Low sky ceiling just above the camera.} VIS treats sky as opaque, so the town becomes a
+  network of corridors walled by buildings, and the PVS behaves like an indoor level.
+\item \textbf{Building shells are structural brushes.} Only structural brushes block VIS. Ornament is
+  detail. Props, pipes, and clutter are models.
+\item \textbf{Fog colour equals sky colour.} Buildings end at the ceiling; with matched colours both
+  fade to the same value and the seam disappears. Far plane set at fog opacity distance.
+\item \textbf{Hint brushes across long streets} at intervals so far clusters drop out; area portals in
+  doors between street and interiors.
+\item \textbf{Clamp camera pitch} so the ceiling is never inspected from below.
+\item \textbf{Set worldspawn \texttt{\_blocksize}} to zero or a large value for the flat town to
+  avoid pointless axial splits.
+\end{itemize}
+
+\section{Risks}
+
+\begin{tabular}{@{}p{0.34\textwidth}p{0.62\textwidth}@{}}
+\toprule
+Risk & Mitigation \\
+\midrule
+Light units or colour space differ between editor and engine &
+  Fixed in Stage~1.5 by comparing the benchmark map; treat as a blocking exit criterion. \\
+Texture loader preferences alter colour data &
+  Audit gamma and compression paths before choosing where linearisation happens. \\
+Non-solid brushes needed as casters are dropped from collision lumps &
+  Material key to keep them, or a small editor-side caster export. \\
+Long straight streets defeat the PVS &
+  Fog far plane plus hint brushes; accept that the fog is the real culler there. \\
+Editor SH preview is expensive &
+  Scoped optional and last; not on the critical path. \\
+Qt GL context lacks needed features for FBO and half-float &
+  Request an explicit 3.3 compatibility profile in \texttt{QSurfaceFormat}; the legacy code keeps working. \\
+\bottomrule
+\end{tabular}
+
+\section{Dependency summary}
+
+\begin{tabular}{@{}llp{0.55\textwidth}@{}}
+\toprule
+Item & Depends on & Note \\
+\midrule
+1.4 Lighting program & 1.1, 1.2, 1.3 & Needs materials, light keys, and a float target. \\
+1.5 Benchmark map & 1.1--1.4 & Locks units and formats. \\
+2.1 Caster pass & 1.3 & Reuses FBO plumbing. \\
+2.2 Cascades & 1.2 & Needs the sun definition. \\
+2.4 Engine hulls & 1.5 & Needs the benchmark map to compare against. \\
+3.1 Baker & 1.1, 1.5 & Reads the material format; validated on the benchmark map. \\
+3.2 Engine SH loading & 3.1, 2.4 & Direct and indirect combine in the engine's radiance shader. \\
+3.3 Editor SH preview & 3.2 & Optional. \\
+\bottomrule
+\end{tabular}
+
+\end{document}

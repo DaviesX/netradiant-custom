@@ -152,7 +152,7 @@ int g_Textures_mipLevel = 0;
 
 /// \brief This function does the actual processing of raw RGBA data into a GL texture.
 /// It will also resample to power-of-two dimensions, generate the mipmaps and adjust gamma.
-void LoadTextureRGBA( qtexture_t* q, unsigned char* pPixels, int nWidth, int nHeight ){
+void LoadTextureRGBA( qtexture_t* q, unsigned char* pPixels, int nWidth, int nHeight, bool applyGamma = true ){
 	static float fGamma = -1;
 	float total[3];
 	int nCount = nWidth * nHeight;
@@ -168,13 +168,16 @@ void LoadTextureRGBA( qtexture_t* q, unsigned char* pPixels, int nWidth, int nHe
 	total[0] = total[1] = total[2] = 0;
 
 	// resample texture gamma according to user settings
+	// (bypassed for linear data, e.g. PBR material textures, so texels reach the GPU untouched)
 	for ( int i = 0; i < ( nCount * 4 ); i += 4 )
 	{
 		for ( int j = 0; j < 3; ++j )
 		{
 			total[j] += ( pPixels + i )[j];
-			byte b = ( pPixels + i )[j];
-			( pPixels + i )[j] = g_gammatable[b];
+			if ( applyGamma ) {
+				byte b = ( pPixels + i )[j];
+				( pPixels + i )[j] = g_gammatable[b];
+			}
 		}
 	}
 
@@ -329,7 +332,7 @@ void qtexture_realise( qtexture_t& texture, const TextureKey& key ){
 		if( !key.first.m_skybox ){
 			Image* image = key.first.loadImage( key.second.c_str() );
 			if ( image != 0 ) {
-				LoadTextureRGBA( &texture, image->getRGBAPixels(), image->getWidth(), image->getHeight() );
+				LoadTextureRGBA( &texture, image->getRGBAPixels(), image->getWidth(), image->getHeight(), !key.first.m_linear );
 				texture.surfaceFlags = image->getSurfaceFlags();
 				texture.contentFlags = image->getContentFlags();
 				texture.value = image->getValue();

@@ -55,10 +55,17 @@
 #include "xywindow.h"
 #include "windowobservers.h"
 #include "renderstate.h"
+#include "stringio.h"
 
 #include "timer.h"
 
 #include <QOpenGLWidget>
+#include <QOpenGLFramebufferObject>
+#include <QOpenGLContext>
+#include <QOpenGLExtraFunctions>
+#include <QImage>
+#include <QTimer>
+#include <cstdlib>
 
 #include <QApplication>
 
@@ -163,9 +170,23 @@ struct camwindow_globals_private_t
 	int m_MSAA = 8;
 	bool m_bShowWorkzone = true;
 	bool m_bShowSize = true;
+	float m_lightingExposure = 1.f;
+	float m_lightingAmbient = 0.02f;
 };
 
 camwindow_globals_private_t g_camwindow_globals_private;
+
+float Camera_lightingExposure(){
+	return g_camwindow_globals_private.m_lightingExposure;
+}
+float Camera_lightingAmbient(){
+	return g_camwindow_globals_private.m_lightingAmbient;
+}
+
+/// Lighting draw mode exists for Doom 3 style games and for PBR games.
+inline bool Camera_lightingModeAvailable(){
+	return g_pGameDescription->mGameType == "doom3" || ShaderCache_pbrGame();
+}
 
 
 const Matrix4 g_opengl2radiant(
@@ -921,11 +942,37 @@ public:
 
 
 
+class CamWnd;
+
+/// Resolves the camera's HDR target when the render loop reaches the overlay passes.
+class CamHDRResolve : public RenderResolveHook
+{
+	CamWnd& m_camwnd;
+public:
+	CamHDRResolve( CamWnd& camwnd ) : m_camwnd( camwnd ){
+	}
+	void resolve() override;
+};
+
 class CamWnd
 {
 	View m_view;
 	camera_t m_Camera;
 	RadiantCameraView m_cameraview;
+
+	// HDR target for lighting mode in PBR games (half-float colour + depth), resolved with exposure and tonemap
+	QOpenGLFramebufferObject* m_hdr{};
+	bool m_hdrWarned{};
+	GLint m_hdrPreviousFBO{};
+	bool m_hdrResolved{};
+	CamHDRResolve m_hdrResolve{ *this };
+
+	bool HDR_begin();
+	void HDR_resolve();
+	friend class CamHDRResolve;
+public:
+	void HDR_release();
+private:
 #if 0
 	int m_PositionDragCursorX;
 	int m_PositionDragCursorY;
@@ -1041,6 +1088,9 @@ void CamWnd_reconstructStatic(){
 }
 
 static CamWnd* g_camwnd = 0;
+
+extern bool g_lightingModeDeferred;
+void CamWnd_SetMode( camera_draw_mode mode );
 
 void GlobalCamera_setCamWnd( CamWnd& camwnd ){
 	g_camwnd = &camwnd;
@@ -1581,6 +1631,7 @@ public:
 	}
 
 	~CamGLWidget() override {
+		m_camwnd.HDR_release();
 		delete m_fbo;
 		glwidget_context_destroyed();
 	}
@@ -1605,6 +1656,12 @@ protected:
 	}
 	void paintGL() override
 	{
+		if ( g_lightingModeDeferred && g_camwnd != 0 ) {
+			// lighting mode restored from the preferences: switching programs needs a current GL context, so it happens here
+			g_lightingModeDeferred = false;
+			CamWnd_SetMode( cd_lighting );
+		}
+
 		if( m_fbo->m_samples != g_camwindow_globals_private.m_MSAA ){
 			delete m_fbo;
 			m_fbo = new FBO( m_camwnd.getCamera().width, m_camwnd.getCamera().height, true, g_camwindow_globals_private.m_MSAA );
@@ -1619,6 +1676,47 @@ protected:
 			m_fbo->release();
 			m_camwnd.m_XORRectangle.render( m_camwnd.m_XORRect, m_camwnd.getCamera().width, m_camwnd.getCamera().height );
 			GlobalOpenGL_debugAssertNoErrors();
+			saveScreenshotIfRequested();
+		}
+	}
+
+	/// Automation aid: with NETRADIANT_CAMERA_SCREENSHOT=<file.png> in the environment, the camera view is saved
+	/// once, a few frames after the first draw. grabFramebuffer() re-enters paintGL, so it runs from the event loop.
+	void saveScreenshotIfRequested(){
+		static int frames = 0;
+		static bool scheduled = false;
+		const char* path = getenv( "NETRADIANT_CAMERA_SCREENSHOT" );
+		if ( path == 0 || *path == '\0' || scheduled ) {
+			return;
+		}
+		if ( ++frames < 3 ) {
+			// optional view for the capture: NETRADIANT_CAMERA_ORIGIN="x y z", NETRADIANT_CAMERA_ANGLES="pitch yaw roll"
+			Vector3 v;
+			const char* origin = getenv( "NETRADIANT_CAMERA_ORIGIN" );
+			if ( origin != 0 && string_parse_vector3( origin, v ) ) {
+				Camera_setOrigin( m_camwnd, v );
+			}
+			const char* angles = getenv( "NETRADIANT_CAMERA_ANGLES" );
+			if ( angles != 0 && string_parse_vector3( angles, v ) ) {
+				Camera_setAngles( m_camwnd, v );
+			}
+			m_camwnd.m_drawRequired = true;
+			update();
+			return;
+		}
+		scheduled = true;
+		// the widget's framebuffer is bound at this point (after the MSAA blit); read it back directly
+		const int w = m_camwnd.getCamera().width;
+		const int h = m_camwnd.getCamera().height;
+		QImage image( w, h, QImage::Format_RGBA8888 );
+		gl().glPixelStorei( GL_PACK_ALIGNMENT, 1 );
+		gl().glReadPixels( 0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, image.bits() );
+		if ( image.mirrored().save( path ) ) {
+			globalOutputStream() << "Camera screenshot saved to " << path << '\n';
+		}
+		else
+		{
+			globalErrorStream() << "Camera screenshot could not be saved to " << path << '\n';
 		}
 	}
 
@@ -1926,8 +2024,75 @@ void ShowSize3dToggle(){
 	}
 }
 
+/// \brief Creates or resizes the HDR target and binds it. Returns false (rendering goes straight to the window) if
+/// framebuffer objects or half-float attachments are unavailable; that is reported once.
+bool CamWnd::HDR_begin(){
+	if ( m_hdr != 0 && ( m_hdr->width() != m_Camera.width || m_hdr->height() != m_Camera.height ) ) {
+		HDR_release();
+	}
+	if ( m_hdr == 0 ) {
+		if ( m_hdrWarned ) {
+			return false;
+		}
+		if ( QOpenGLFramebufferObject::hasOpenGLFramebufferObjects() && QOpenGLFramebufferObject::hasOpenGLFramebufferBlit() ) {
+			QOpenGLFramebufferObjectFormat format;
+			format.setAttachment( QOpenGLFramebufferObject::Attachment::Depth );
+			format.setInternalTextureFormat( GL_RGBA16F );
+			format.setSamples( 0 );
+			m_hdr = new QOpenGLFramebufferObject( m_Camera.width, m_Camera.height, format );
+			if ( !m_hdr->isValid() ) {
+				delete m_hdr;
+				m_hdr = 0;
+			}
+		}
+		if ( m_hdr == 0 ) {
+			m_hdrWarned = true;
+			globalWarningStream() << "Lighting mode: half-float framebuffer unavailable, rendering without exposure and tonemapping\n";
+			return false;
+		}
+	}
+	gl().glGetIntegerv( GL_FRAMEBUFFER_BINDING, &m_hdrPreviousFBO );
+	if ( !m_hdr->bind() ) {
+		return false;
+	}
+	gl().glDisable( GL_MULTISAMPLE );
+	m_hdrResolved = false;
+	return true;
+}
+
+/// \brief Copies depth to the window target, then draws the tonemapped colour over it. Overlays are drawn afterwards.
+void CamWnd::HDR_resolve(){
+	if ( m_hdr == 0 || m_hdrResolved ) {
+		return;
+	}
+	m_hdrResolved = true;
+
+	QOpenGLExtraFunctions* ef = QOpenGLContext::currentContext()->extraFunctions();
+	ef->glBindFramebuffer( GL_READ_FRAMEBUFFER, m_hdr->handle() );
+	ef->glBindFramebuffer( GL_DRAW_FRAMEBUFFER, m_hdrPreviousFBO );
+	ef->glBlitFramebuffer( 0, 0, m_Camera.width, m_Camera.height, 0, 0, m_Camera.width, m_Camera.height, GL_DEPTH_BUFFER_BIT, GL_NEAREST );
+	ef->glBindFramebuffer( GL_FRAMEBUFFER, m_hdrPreviousFBO );
+	while ( gl().glGetError() != GL_NO_ERROR ) {} // a depth format mismatch only loses overlay occlusion; do not abort the frame
+
+	ShaderCache_drawTonemap( m_hdr->texture(), g_camwindow_globals_private.m_lightingExposure );
+}
+
+void CamWnd::HDR_release(){
+	delete m_hdr;
+	m_hdr = 0;
+}
+
+void CamHDRResolve::resolve(){
+	m_camwnd.HDR_resolve();
+}
+
 void CamWnd::Cam_Draw(){
 //		globalOutputStream() << "Cam_Draw()\n";
+
+	const bool hdr = m_Camera.draw_mode == cd_lighting && ShaderCache_pbrGame() && HDR_begin();
+	if ( !hdr && m_hdr != 0 ) {
+		HDR_release(); // left lighting mode
+	}
 
 	gl().glViewport( 0, 0, m_Camera.width, m_Camera.height );
 #if 0
@@ -2050,7 +2215,14 @@ void CamWnd::Cam_Draw(){
 			m_draw_size.render( renderer, m_state_text, m_view );
 		}
 
+		if ( hdr ) {
+			ShaderCache_setResolveHook( &m_hdrResolve );
+		}
 		renderer.render( m_Camera.modelview, m_Camera.projection );
+		if ( hdr ) {
+			ShaderCache_setResolveHook( 0 );
+			HDR_resolve(); // no-op if the render loop already resolved before the overlays
+		}
 	}
 
 	// prepare for 2d stuff
@@ -2261,7 +2433,7 @@ void CamWnd_constructToolbar( QToolBar* toolbar ){
 }
 
 void CamWnd_registerShortcuts(){
-	if ( g_pGameDescription->mGameType == "doom3" ) {
+	if ( Camera_lightingModeAvailable() ) {
 		command_connect_accelerator( "TogglePreview" );
 	}
 
@@ -2286,9 +2458,12 @@ void GlobalCamera_Update(){
 camera_draw_mode CamWnd_GetMode(){
 	return camera_t::draw_mode;
 }
+bool g_lightingModeDeferred = false; // lighting mode requested by the preferences before the camera window existed
+
 void CamWnd_SetMode( camera_draw_mode mode ){
-	// workaround cd_lighting not being correctly applied on start (fixme?)
-	camera_t::draw_mode = ( g_camwnd == 0 && mode == cd_lighting )? cd_texture : mode;
+	// lighting mode cannot be applied before the camera window exists; it is applied in GlobalCamera_setCamWnd
+	g_lightingModeDeferred = ( g_camwnd == 0 && mode == cd_lighting );
+	camera_t::draw_mode = g_lightingModeDeferred ? cd_texture : mode;
 
 	ShaderCache_setBumpEnabled( camera_t::draw_mode == cd_lighting );
 	if ( g_camwnd != 0 ) {
@@ -2300,7 +2475,7 @@ void CamWnd_TogglePreview(){
 	// gametype must be doom3 for this function to work
 	// if the gametype is not doom3 something is wrong with the
 	// global command list or somebody else calls this function.
-	ASSERT_MESSAGE( g_pGameDescription->mGameType == "doom3", "CamWnd_TogglePreview called although mGameType is not doom3 compatible" );
+	ASSERT_MESSAGE( Camera_lightingModeAvailable(), "CamWnd_TogglePreview called although the game has no lighting mode" );
 
 	// switch between textured and lighting mode
 	CamWnd_SetMode( ( CamWnd_GetMode() == cd_lighting ) ? cd_texture : cd_lighting );
@@ -2360,11 +2535,11 @@ void RenderModeExport( const IntImportCallback& importer ){
 typedef FreeCaller<void(const IntImportCallback&), RenderModeExport> RenderModeExportCaller;
 
 void CameraModeNext(){
-	const int count = camera_draw_mode_count - ( g_pGameDescription->mGameType == "doom3"? 0 : 1 );
+	const int count = camera_draw_mode_count - ( Camera_lightingModeAvailable()? 0 : 1 );
 	CamWnd_SetMode( static_cast<camera_draw_mode>( ( CamWnd_GetMode() + 1 ) % count ) );
 }
 void CameraModePrev(){
-	const int count = camera_draw_mode_count - ( g_pGameDescription->mGameType == "doom3"? 0 : 1 );
+	const int count = camera_draw_mode_count - ( Camera_lightingModeAvailable()? 0 : 1 );
 	CamWnd_SetMode( static_cast<camera_draw_mode>( ( CamWnd_GetMode() + count - 1 ) % count ) );
 }
 
@@ -2394,6 +2569,22 @@ void fieldOfViewImport( float value ){
 	}
 }
 typedef FreeCaller<void(float), fieldOfViewImport> fieldOfViewImportCaller;
+
+void LightingExposureImport( float value ){
+	g_camwindow_globals_private.m_lightingExposure = value;
+	if ( g_camwnd != 0 ) {
+		CamWnd_Update( *g_camwnd );
+	}
+}
+typedef FreeCaller<void(float), LightingExposureImport> LightingExposureImportCaller;
+
+void LightingAmbientImport( float value ){
+	g_camwindow_globals_private.m_lightingAmbient = value;
+	if ( g_camwnd != 0 ) {
+		CamWnd_Update( *g_camwnd );
+	}
+}
+typedef FreeCaller<void(float), LightingAmbientImport> LightingAmbientImportCaller;
 
 void Camera_constructPreferences( PreferencesPage& page ){
 	page.appendSpinner( "Movement Speed", g_camwindow_globals_private.m_nMoveSpeed, 1, CAM_MAX_SPEED );
@@ -2427,7 +2618,7 @@ void Camera_constructPreferences( PreferencesPage& page ){
 	const char* render_modes[]{ "Wireframe", "Flatshade", "Textured", "Textured+Wire", "Lighting" };
 	page.appendCombo(
 	    "Render Mode",
-	    StringArrayRange( render_modes, std::size( render_modes ) - ( g_pGameDescription->mGameType == "doom3"? 0 : 1 ) ),
+	    StringArrayRange( render_modes, std::size( render_modes ) - ( Camera_lightingModeAvailable()? 0 : 1 ) ),
 	    IntImportCallback( RenderModeImportCaller() ),
 	    IntExportCallback( RenderModeExportCaller() )
 	);
@@ -2456,6 +2647,19 @@ void Camera_constructPreferences( PreferencesPage& page ){
 	                    FloatExportCallback( FloatExportCaller( camera_t::fieldOfView ) ),
 	                    0
 	                  );
+
+	if ( ShaderCache_pbrGame() ) {
+		page.appendSpinner( "Lighting exposure", 0.001, 1000.0,
+		                    FloatImportCallback( LightingExposureImportCaller() ),
+		                    FloatExportCallback( FloatExportCaller( g_camwindow_globals_private.m_lightingExposure ) ),
+		                    3
+		                  );
+		page.appendSpinner( "Lighting ambient", 0.0, 100.0,
+		                    FloatImportCallback( LightingAmbientImportCaller() ),
+		                    FloatExportCallback( FloatExportCaller( g_camwindow_globals_private.m_lightingAmbient ) ),
+		                    3
+		                  );
+	}
 }
 void Camera_constructPage( PreferenceGroup& group ){
 	PreferencesPage page( group.createPage( "Camera", "Camera View Preferences" ) );
@@ -2499,7 +2703,7 @@ void CamWnd_Construct(){
 //	GlobalCommands_insert( "LookThroughSelected", makeCallbackF( GlobalCamera_LookThroughSelected ) );
 //	GlobalCommands_insert( "LookThroughCamera", makeCallbackF( GlobalCamera_LookThroughCamera ) );
 
-	if ( g_pGameDescription->mGameType == "doom3" ) {
+	if ( Camera_lightingModeAvailable() ) {
 		GlobalCommands_insert( "TogglePreview", makeCallbackF( CamWnd_TogglePreview ), QKeySequence( "F3" ) );
 	}
 
@@ -2561,6 +2765,8 @@ void CamWnd_Construct(){
 	GlobalPreferenceSystem().registerPreference( "CameraFaceFill", BoolImportStringCaller( g_camwindow_globals_private.m_bFaceFill ), BoolExportStringCaller( g_camwindow_globals_private.m_bFaceFill ) );
 	GlobalPreferenceSystem().registerPreference( "3DZoomInToPointer", BoolImportStringCaller( g_camwindow_globals_private.m_bZoomToPointer ), BoolExportStringCaller( g_camwindow_globals_private.m_bZoomToPointer ) );
 	GlobalPreferenceSystem().registerPreference( "fieldOfView", FloatImportStringCaller( camera_t::fieldOfView ), FloatExportStringCaller( camera_t::fieldOfView ) );
+	GlobalPreferenceSystem().registerPreference( "LightingExposure", FloatImportStringCaller( g_camwindow_globals_private.m_lightingExposure ), FloatExportStringCaller( g_camwindow_globals_private.m_lightingExposure ) );
+	GlobalPreferenceSystem().registerPreference( "LightingAmbient", FloatImportStringCaller( g_camwindow_globals_private.m_lightingAmbient ), FloatExportStringCaller( g_camwindow_globals_private.m_lightingAmbient ) );
 	//.  HACK: always show camera from start to have at least one ogl viewport shown = ogl initialized; otherwise loading map = loading textures = crash
 //	GlobalPreferenceSystem().registerPreference( "CamVIS", makeBoolStringImportCallback( ToggleShownImportBoolCaller( g_camera_shown ) ), makeBoolStringExportCallback( ToggleShownExportBoolCaller( g_camera_shown ) ) );
 

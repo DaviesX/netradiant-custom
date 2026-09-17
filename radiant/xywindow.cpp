@@ -1173,7 +1173,7 @@ void BackgroundImage::free_tex(){
 }
 
 #include "texturelib.h"
-void LoadTextureRGBA( qtexture_t* q, unsigned char* pPixels, int nWidth, int nHeight );
+void LoadTextureRGBA( qtexture_t* q, unsigned char* pPixels, int nWidth, int nHeight, bool applyGamma = true );
 
 void BackgroundImage::set( const VIEWTYPE viewtype ){
 	const AABB bounds = GlobalSelectionSystem().getBoundsSelected();
