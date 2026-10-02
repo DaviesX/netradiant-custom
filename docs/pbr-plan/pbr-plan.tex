@@ -2,6 +2,7 @@
 \usepackage[margin=2.5cm]{geometry}
 \usepackage[T1]{fontenc}
 \usepackage{lmodern}
+\usepackage{amsmath}
 \usepackage{booktabs}
 \usepackage{enumitem}
 \usepackage{xcolor}
@@ -10,207 +11,897 @@
 \setlist{nosep}
 \setlength{\parskip}{4pt}
 \setlength{\parindent}{0pt}
+\emergencystretch=3em
 
-\title{NetRadiant-custom: Modern Lighting Pipeline Plan\\
-\large Direct PBR, shadow mapping, and SH indirect lighting for a Silent Hill 1 style game}
+\title{A Silent Hill 1 Style Town Level for Quake 3\\
+\large Direct PBR, shadow mapping, and SH indirect lighting across
+NetRadiant-custom, q3map2 and ioquake3}
 \author{Davis Wen}
-\date{16 September 2026}
+\date{Revision 6 --- 2 October 2026\\
+\small (revision 5: 2 October 2026; revision 4: 1 October 2026; revision 3: 1 October 2026; revision 2: 17 September 2026;
+revision 1: 16 September 2026)}
 
 \begin{document}
 \maketitle
 
 \section{Goal}
 
-Extend NetRadiant-custom and its build pipeline so a level designer can author, preview, and compile
-maps with a glTF-style metallic--roughness material model, physically based direct lighting with
-shadow maps, and baked indirect lighting stored as spherical harmonics (SH). The target game is a
-Silent Hill 1 style third-person title running on an ioquake3-derived engine: a fog-limited town of
-watertight streets under a low virtual sky, with watertight interiors.
+Build a playable Silent Hill 1 style town level --- a fog-bound network of watertight streets
+under a low virtual sky, with enterable interiors --- that loads in the customised ioquake3 as
+\textbf{ordinary Quake 3 content}, and extend the authoring and rendering pipeline until it looks
+the way the reference does.
 
-The plan is staged so that every stage ends with something a level designer can look at, and no
-stage requires undoing the previous one.
+The level is a Quake~3 map, not a new game. One engine binary, one gamepack, one BSP format, stock
+\texttt{scripts/*.shader} materials, and the editor's physical light entities. It is a \textbf{new} level, authored
+from the start with the enhancements in mind; enhancing existing Quake~3 levels is not part of this
+plan (§\ref{sec:prior}).
 
-\section{Guiding decisions}
+The compiled level has three targets, in order of precedence:
+\begin{enumerate}
+\item \textbf{Authoring.} NetRadiant-custom under \texttt{Q3.game} creates and edits it, including
+  its PBR materials as text, and q3map2 compiles it, with no other gamepack involved.
+\item \textbf{Stock.} An unmodified ioquake3, with \texttt{opengl1} or its default
+  \texttt{opengl2}, at default cvars runs the same pk3 as plain lightmapped Quake~3 content:
+  a lightmap baked by \texttt{sh-baker} inside q3map2 (Stage~4), base textures, vanilla shader
+  stages, fog volumes. It uses \textbf{no rend2
+  features} --- no normal or specular maps, no \texttt{r\_pbr}, no HDR lightmaps. This is what makes
+  the level uploadable to \texttt{lvlworld.com}, and it should look as faithful to the enhanced
+  target as a lightmap allows.
+\item \textbf{Enhanced.} The customised ioquake3 with \texttt{renderer\_sh} (the new sh-renderer)
+  runs the same pk3 with direct PBR, shadow maps and SH indirect. PBR levels are developed for
+  this target.
+\end{enumerate}
+Original, non-PBR Quake~3 levels are unaffected: they keep running on \texttt{opengl2}. Every
+enhancement is ignored by the stock target. None replaces stock data. §\ref{sec:contract} turns this
+into rules every stage must satisfy.
+
+\section{What changed in revision 6}\label{sec:rev6}
+
+The compiler does not have to reproduce any original look: there are no original levels to
+rebuild, and what ships is the pk3. It must run on vanilla \texttt{opengl1}/\texttt{opengl2} and
+carry everything \texttt{renderer\_sh} needs. Within that, the easiest path in the editor wins.
 
 \begin{description}[style=nextline]
-\item[Keep q3map2's BSP and VIS stages untouched.]
-  CSG, the BSP tree, portals, leak detection, t-junctions, patch tessellation, fog volumes,
-  collision lumps, and the file formats are exactly what we do not want to rewrite.
-\item[Replace the light stage with a separate tool.]
-  The existing \texttt{sh-baker} (Embree, tinygltf) gains a BSP reader and becomes the light stage.
-  q3map2's \texttt{-light} is used only to allocate lightmap UVs, or dropped once the baker atlases
-  on its own.
-\item[No BSP format change for thick walls.]
-  The BSP brush and brushside lumps keep every plane of every solid brush, including void-facing
-  planes whose draw surfaces q3map2 strips. The engine reconstructs closed convex hulls from those
-  lumps at load and uses them as front-face-culled shadow casters.
-\item[Editor preview of direct lighting is the fast iteration loop.]
-  Editor preview of baked SH is optional and last, because it needs lightmap UVs on source
-  geometry, which is a new subsystem.
-\item[Lock units and colour spaces in Stage~1.]
-  Every later comparison against the engine depends on light units, exposure, and sRGB handling
-  being final in the benchmark map.
+\item[Lights: the editor's physical model, not q3map2's.] The light entities the editor already
+  previews --- \texttt{light} (point; \texttt{intensity} radiant flux, \texttt{radius} cutoff),
+  \texttt{light\_spot} (\texttt{intensity}, \texttt{radius}, \texttt{cone}, \texttt{cone\_inner},
+  \texttt{target} or \texttt{angles}) and \texttt{light\_sun} (irradiance \texttt{intensity},
+  \texttt{angles}), with \texttt{\_shadows} on spots and suns --- are the one light model, shared by
+  the editor preview, \texttt{sh-baker} and \texttt{renderer\_sh}. Point lights never cast; one sun
+  is honoured. Keys keep their names. There is no q3map2 light model to copy, no constant $K$ and
+  no calibration against q3map2 lightmaps. The editor does not read \texttt{q3map\_sun}.
+  §\ref{sec:units}.
+\item[\texttt{Q3.game} gets the PBR entity module (A6).] A tracked overlay in
+  \texttt{setup/data/gamepacks/pbr/} installs \texttt{games/Q3.game} --- the downloaded one with
+  \texttt{entities="pbr"} --- and \texttt{Q3.game/baseq3/\_pbr\_lights.ent}, defining
+  \texttt{light}, \texttt{light\_spot} and \texttt{light\_sun} with the physical keys. Its name
+  sorts before \texttt{entities.ent}, and the first entity class of a name is kept, so its
+  \texttt{light} wins. It is installed with \texttt{sh install-gamepack.sh setup/data/gamepacks/pbr
+  install/gamepacks} after the downloaded packs. A6 is folded into
+  \texttt{q3-shader-pbr-materials}.
+\item[Vanilla compatibility of the light entities.] The stock game prints \texttt{light\_spot
+  doesn't have a spawn function} (and the same for \texttt{light\_sun}) once per entity
+  (\texttt{code/game/g\_spawn.c:281}) and discards it; \texttt{light} is freed silently by
+  \texttt{SP\_light}. Harmless; the stock check allowlists the line. \texttt{-keeplights} keeps every
+  light in the entity lump for \texttt{renderer\_sh}. q3map2 treats any classname prefixed
+  \texttt{light} as a light (\texttt{light.cpp:330}), so its placeholder lightmap uses its own
+  reading of them.
+\item[\texttt{sh-baker} writes the vanilla lightmap.] Stage~4.3 always writes irradiance into the
+  BSP lightmap pages, plus the light grid and vertex colours, from the same lights, besides the SH
+  side file. This is no longer optional or conditional on 0.3. The irradiance-to-byte encoding is
+  ours to choose so the result looks good on vanilla, for example a roll-off rather than a hard clip
+  at the overbright limit. Until 4.3 lands, q3map2 \texttt{-light} produces a placeholder lightmap
+  that is not expected to match the preview. 0.3 measures the \texttt{sh-baker} lightmap after 4.3.
+\item[q3map2 stays the host.] BSP, \texttt{-meta}, \texttt{-vis}, lightmap UV pages, light-grid
+  points and vertex lists remain q3map2's; only its lighting maths (\texttt{-light}) is replaced.
+\item[Emissive strength has the \texttt{.mtr} meaning.] No scale constant $S$ and no
+  \texttt{include/pbrunits.h}: emissive radiance is texel $\times$ \texttt{rgbGen const} colour
+  $\times$ \texttt{qer\_pbr\_emissiveStrength}, in the same units as \texttt{.mtr}
+  \texttt{emissivestrength}.
+\item[The editor's shadow-caster rule is authoritative.] Never cast: sky, fog, hint, areaportal,
+  \texttt{noshadows}, water, slime, lava, and \texttt{trans} without \texttt{alphashadow}. Solid
+  caulk casts; alpha-tested shaders cast through their preview alpha test; other drawn opaque
+  surfaces cast. \texttt{sh-baker} follows the editor; nothing claims to mirror q3map2.
+\item[\texttt{pbr.game} stays frozen; its light entities move.] A7 still deletes \texttt{pbr.game}
+  and the \texttt{.mtr} parser but keeps the \texttt{pbr} entity module, which \texttt{Q3.game}
+  now uses.
+\item[Work tracking.] \texttt{q3-stock-lights} is deleted. The changes are
+  \texttt{q3-shader-pbr-materials} (A1--A3, A6) and \texttt{q3-bench-and-stock-check} (A4, A5). The
+  benchmark keeps its lights as they are; only \texttt{bench.mtr} becomes
+  \texttt{scripts/bench.shader}, with no \texttt{q3map\_sun} conversion and no brightness re-tune in
+  the stock engine (brightness is tuned in the editor preview). The stock check drops calibration
+  mode. It still compiles with \texttt{-meta -keeplights}, \texttt{-vis -saveprt}, \texttt{-light
+  -patchshadows}; the last gives the placeholder lightmap.
+\item[Engine parity.] 3.4 is parity with the editor's physical light model. The \texttt{-shbake}
+  stage learns \texttt{qer\_pbr\_*} and the editor's caster rule.
 \end{description}
 
-\section{Current state of the editor (relevant facts)}
+\section{What changed in revision 5}\label{sec:rev5}
+
+Kept for the record. Revision 6 supersedes its light decisions --- q3map2's model, the constant
+$K$ and its calibration, \texttt{q3map\_sun} suns, \texttt{\_sh\_shadows} and the emissive scale
+$S$ --- along with the stock-engine brightness tuning of the benchmark, the optional lightmap write
+and the \texttt{q3-stock-lights} change (§\ref{sec:rev6}).
+
+\begin{description}[style=nextline]
+\item[PBR levels target sh-renderer only; rend2's PBR features are not used.]
+  rend2 is built around the lightmap and cannot run a BRDF over metallic--roughness, occlusion and
+  normal maps the way sh-renderer does. Revisions 3 and 4 shipped data for it anyway (a
+  \texttt{normalMap} stage, a generated \texttt{\_s} pack, \texttt{lm\_*.hdr} calibrated to rend2).
+  That is withdrawn. PBR data lives only in top-level \texttt{qer\_pbr\_*} keywords, including the
+  normal map (\texttt{qer\_pbr\_normal}), and shader stages stay vanilla. Original non-PBR levels
+  fall back to \texttt{opengl2} as before.
+\item[The stock target is the lvlworld fallback, and \texttt{opengl1} is back in.]
+  With no rend2 keywords in shader text, \texttt{renderergl1} no longer rejects the shaders, so the
+  stock check runs both \texttt{opengl1} and \texttt{opengl2} at default cvars. Its fidelity comes
+  from q3map2's lightmaps; §0.3 measures how close it gets.
+\item[One pk3.] The base/overlay split and the rend2-PBR pack are dropped. One pk3 carries the BSP,
+  shaders, base textures, lightmaps, PBR maps and, later, the SH side file. Stock renderers never
+  reference the PBR files.
+\item[The normal-map syntax of revision 4 was wrong anyway.] rend2 has no \texttt{normalMap
+  <image>} keyword: a normal map is a stage containing \texttt{stage normalMap} and \texttt{map
+  <image>}, and the bare form makes rend2 reject the shader (\texttt{renderergl2/tr\_shader.cpp:870},
+  \texttt{:1267}).
+\item[Lights: q3map2's model, exactly, scaled by one constant.] The editor preview reproduces
+  q3map2's falloff, spot cone and suns and multiplies by one constant $K$ derived from the lightmap
+  path; \texttt{renderer\_sh} adopts the same model (3.4). q3map2's \texttt{light}$\times 7500$ is a
+  radiant \emph{intensity}, not a flux. Point lights do not cast shadows in the preview. The
+  per-light shadow switch is \texttt{\_sh\_shadows}. §\ref{sec:units}.
+\item[Compile flags.] \texttt{-keeplights} is a BSP-stage option (\texttt{bsp.cpp:658}), not a light
+  option; \texttt{-patchshadows} is added to \texttt{-light} because q3map2's Quake~3 default leaves
+  patches unshadowed while the preview's patches cast.
+\item[Work tracking.] Tasks A1--A6 are specified as three openspec changes:
+  \texttt{q3-shader-pbr-materials} (A1--A3), \texttt{q3-bench-and-stock-check} (A4--A5) and
+  \texttt{q3-stock-lights} (A6).
+\end{description}
+
+\section{What changed in revision 4}\label{sec:rev4}
+
+Kept for the record. Revision 5 supersedes its use of rend2's \texttt{normalMap} stage, the
+overlay pk3 and \texttt{lm\_*.hdr} (§\ref{sec:rev5}); revision 6 supersedes its handing of q3map2's
+parsed lights to the baker (§\ref{sec:rev6}).
+
+\begin{description}[style=nextline]
+\item[The export pipeline was a prior attempt, not the pipeline.]
+  \texttt{ioq3-map-exporter} and \texttt{ioq3-materialize} were built to export existing Quake~3
+  levels and enhance them with no editor in the loop. That did not work well: those levels are
+  inherently incompatible with the modern pipeline. Revisions 2 and 3 treated both tools as live
+  consumers and drew conclusions from them --- that \texttt{.mtr} ``has no consumer'', that PBR
+  maps would be generated and found by file-name suffix, that the exporter's light scale was part
+  of the chain. Those conclusions are withdrawn. The move onto Quake~3 shader conventions stands,
+  for a different and stronger reason: the stock target cannot load anything else.
+\item[PBR materials are authored as text in \texttt{.shader} files.]
+  As original NetRadiant does for Quake~3 shaders, with no material GUI. Roughness, metallic,
+  occlusion and their factors are top-level \texttt{qer\_pbr\_*} keywords; the normal map is rend2's
+  own \texttt{normalMap} stage; base colour and emissive are ordinary stages. §\ref{sec:materials}.
+\item[The prefix is \texttt{qer\_pbr\_}.]
+  ``qer'' is QuakeEd Radiant, the namespace for editor hints. Both ioquake3 renderers skip any
+  top-level keyword starting with \texttt{qer} (\texttt{renderergl2/tr\_shader.cpp:1718}), and
+  q3map2 ignores unknown \texttt{qer\_} keywords while it warns on unknown \texttt{q3map\_} ones
+  (\texttt{shaders.cpp}, ``Unknown q3map\_* directive''). The keywords are read by the editor,
+  q3map2's SH stage and \texttt{renderer\_sh}; the prefix is chosen because stock engines skip it.
+\item[The suffix convention of revision 3 is withdrawn.]
+  Maps are named explicitly in shader text. What remains is a naming hazard: stock rend2
+  auto-loads \texttt{<image>\_n}, \texttt{\_nh} and \texttt{\_s} siblings even without a keyword,
+  so those suffixes are reserved (§\ref{sec:materials}).
+\item[SH baking moves into q3map2.]
+  The prior pipeline baked SH into a single xatlas atlas over an exported glTF and rendered that
+  glTF; nothing ever mapped back to the BSP. Revision 4 links \texttt{sh-baker} into q3map2 as a
+  library and bakes into q3map2's own lightmap pages, through a new \texttt{-shbake} stage.
+  \texttt{sh-baker} gains a library API that serves both xatlas atlases and multi-page layouts,
+  delivered as reviewed pull requests to its repository. Stage~4 is rewritten.
+\item[The exporter's light conversion leaves the chain.]
+  q3map2 hands its own parsed lights to the baker, so the q3map2 interpretation reaches the bake
+  directly. The units section drops the exporter row.
+\item[Open: parser reuse for \texttt{renderer\_sh}.]
+  Revision 2 planned for \texttt{renderer\_sh} to consume the exporter's parsing code
+  (\texttt{libioq3\_map}). With the exporter out of the pipeline this is a decision, not a given.
+  §\ref{sec:open}.
+\end{description}
+
+\section{Earlier revisions}
+
+\textbf{Revision 3} made the three targets explicit; dropped \texttt{renderergl1}, which rejects a
+whole shader on an unknown keyword (\texttt{renderergl1/tr\_shader.cpp:972}, \texttt{:1588},
+default shader at \texttt{:2491}); froze \texttt{pbr.game} and made \texttt{Q3.game} the only
+authoring target; found that a PBR specular map is not stock-safe; made q3map2's light
+interpretation authoritative (withdrawn by revision 6); required a complete BSP lightmap; recognised that stock rend2 loads
+\texttt{lm\_*.hdr}; added the base/overlay packaging and the stock-engine check. Its
+material-suffix convention was withdrawn by revision 4; dropping \texttt{renderergl1}, shipping
+\texttt{lm\_*.hdr} and the base/overlay packaging are withdrawn by revision 5
+(§\ref{sec:rev5}). The rest stands.
+
+\textbf{Revision 2} reframed the target as a Quake~3 level rather than a new game; moved lights onto
+the stock \texttt{light}/\texttt{target}/\texttt{q3map\_sun} convention (withdrawn by revision 6);
+found that
+\texttt{-keeplights} already exists (\texttt{bsp.cpp:658}, persisted as \texttt{\_keepLights} at
+\texttt{writebsp.cpp:230}); measured what rend2 already ships; decided that \texttt{sh-renderer}
+becomes \texttt{renderer\_sh} (§3.1); and re-ordered the work so that fog, darkness and the
+flashlight come before SH indirect. Its rationale for retiring \texttt{.mtr} rested on the export
+pipeline and is replaced by revision 4's.
+
+\textbf{Retained from the completed editor work} (stage1 and stage2 changes, already archived):
+the GLSL PBR programs and the HDR/tonemap resolve path, the whole shadow-map subsystem (cascades,
+spot atlas, bias scheme, PCF, \texttt{radiant/cascade.h}), the \texttt{IShader} PBR accessors
+(\texttt{include/ishaders.h:137--139}), light plumbing in the entity plugin, the benchmark map, and
+the units and shadow-constant documentation. \textbf{Retargeted:} how a material is
+\emph{identified}, not how it is shaded, and which game the light entities are authored under.
+
+\section{Compatibility contract}\label{sec:contract}
+
+Rules every stage satisfies. ``Stock'' means ioquake3 with \texttt{cl\_renderer opengl1} or
+\texttt{opengl2} and default cvars.
+
+\begin{tabular}{@{}p{0.17\textwidth}p{0.42\textwidth}p{0.35\textwidth}@{}}
+\toprule
+Content & Rule & Grounds \\
+\midrule
+Shader text & Vanilla Quake~3 shader keywords only, plus top-level \texttt{qer\_pbr\_*}. No rend2
+  keywords (\texttt{stage}, \texttt{specularReflectance}, \texttt{gloss}, \texttt{roughness},
+  \texttt{normalScale}, \ldots) and no other custom keywords. &
+  An unknown keyword invalidates the whole shader in both renderers (\texttt{renderergl2/tr\_shader.cpp:1267},
+  \texttt{renderergl1/tr\_shader.cpp:972}); top-level \texttt{qer*}/\texttt{q3map*} are skipped by
+  both, but not inside stages. \\
+Materials & As §\ref{sec:materials}. & \\
+rend2 siblings & No image named \texttt{<base>\_n}, \texttt{\_nh} or \texttt{\_s} next to a stage
+  image. &
+  rend2 loads those with no keyword (\texttt{renderergl2/tr\_shader.cpp:2150--2215}) and would
+  apply PBR data through its lightmap path. \\
+Lights & \texttt{light}, \texttt{light\_spot}, \texttt{light\_sun} with the editor's physical keys
+  (\texttt{intensity}, \texttt{radius}, \texttt{cone}, \texttt{cone\_inner}, \texttt{\_color},
+  \texttt{target}/\texttt{angles}, \texttt{\_shadows}), kept by \texttt{-keeplights}. &
+  §\ref{sec:units}. The stock game never uses light entities. \\
+Entities & Classnames the game code spawns, plus \texttt{light\_spot} and \texttt{light\_sun}.
+  Other enhanced-only parameters are extra keys. & Unknown keys are ignored. An unknown classname is
+  discarded after one \texttt{doesn't have a spawn function} line (\texttt{g\_spawn.c:281}), which
+  the stock check allowlists for those two. \\
+Fog & Stock fog volumes (\texttt{fogparms}). & Works on every target;
+  \texttt{renderer\_sh} implements the same semantics. \\
+Lightmaps & The BSP lightmap lump is always complete and is the stock target's only lighting; it
+  is baked by \texttt{-shbake} (4.3), with q3map2 \texttt{-light} as the placeholder until then. No
+  \texttt{lm\_\%04d.hdr} and no deluxe maps are shipped. &
+  rend2 would load \texttt{maps/<name>/lm\_\%04d.hdr} at \texttt{r\_hdr 1}
+  (\texttt{tr\_bsp.cpp:279--326}) and apply it in place of the lump. \\
+\bottomrule
+\end{tabular}
+
+\textbf{Packaging.} One pk3 per level, as uploaded to \texttt{lvlworld.com}: the BSP,
+\texttt{scripts/*.shader}, base-colour and emissive images, the lightmaps, the
+\texttt{qer\_pbr\_*} maps (normal, metallic--roughness, occlusion) and, from Stage~4, the SH side
+file. Stock renderers never reference the PBR files; \texttt{renderer\_sh} reads all of it. The cost
+is download size.
+
+\subsection{Verification}\label{sec:verify}
+
+The stock check (\texttt{tools/stockcheck/}) runs the fork's ioquake3 build
+(\texttt{ioq3-custom/ioq3/build/Release}). Its renderers were machine-converted to C++ and are
+otherwise original; each run records the fork's commit so drift is traceable. Matrix:
+\texttt{cl\_renderer opengl1} and \texttt{opengl2}, default cvars. Each run uses a clean temporary
+basepath and homepath, \texttt{+set developer 1 +set logfile 2 +devmap <map>}, then for each
+documented view \texttt{setviewpos}, a settle wait, \texttt{viewpos} (the reported eye position is
+recorded, because \texttt{setviewpos} pushes the player forward) and \texttt{screenshot}. It fails
+on any \texttt{WARNING} line not on a reviewed allowlist (which also holds the
+\texttt{light\_spot}/\texttt{light\_sun} \texttt{doesn't have a spawn function} lines), on
+\texttt{R\_FindImageFile could not find}, and on \texttt{Couldn't find image file for shader} (\texttt{developer} only,
+\texttt{tr\_shader.cpp:3336}). The compile fails on a leak or on q3map2's \texttt{Unknown
+q3map\_* directive}. The engine only parses shaders a map uses, so the check covers exactly the
+shaders the map references. The enhanced check is the same run with \texttt{cl\_renderer sh}.
+There is no calibration mode: nothing is matched against q3map2's lightmap.
+
+\subsection{Open decisions}\label{sec:open}
 
 \begin{itemize}
-\item Gamepacks are data: \texttt{gamepacks/games/*.game} plus a matching directory. The editor
-  scans them at start; no code change is needed to add a game.
-\item Material parsing is compiled into \texttt{plugins/shaders}. Three hard-coded languages exist
-  (Quake~3, Doom~3, Quake~4), selected by the \texttt{shaders} attribute of the \texttt{.game} file.
-  The Doom~3/Quake~4 path already resolves diffuse, bump, and specular textures per material.
-\item The camera has a lighting draw mode that renders one additive GLSL pass per light
-  (\texttt{radiant/renderstate.cpp}, \texttt{GLSLBumpProgram}) using map light entities as omni
-  lights with attenuation textures. Brush and patch vertices already carry tangent and bitangent.
-\item Rendering goes straight to the 8-bit window buffer; there is no framebuffer object in the
-  camera path. The context is created by \texttt{QOpenGLWidget} with no explicit version request.
-\item The editor has no notion of lightmap UVs; q3map2's light stage allocates them.
-\item The build menu is a per-gamepack XML list of command lines; each q3map2 stage is a separate
-  invocation that reads and writes the BSP.
+\item \textbf{Game code.} baseq3 needs nothing built but has no flashlight on any target. A small
+  mod's cgame can attach a light to the player with \texttt{trap\_R\_AddLightToScene} on every
+  engine, stock included; that call is omni-only (\texttt{tr\_public.h:75}: origin, intensity,
+  colour), so a spot flashlight needs a \texttt{refexport\_t} extension that only the customised
+  engine has, with the omni light as the stock fallback. The BSP and pk3 rules do not depend on the
+  choice.
+\item \textbf{BSP and shader parsing in \texttt{renderer\_sh}.} Reuse the exporter's parsing code
+  (\texttt{libioq3\_map}: BSP lumps, patch triangulation, shader scripts, entities), or write the
+  runtime's own. The first is less code; the second avoids carrying a library whose parent tool is
+  out of the pipeline. q3map2's SH stage does not depend on this: it uses q3map2's own parsing.
 \end{itemize}
 
-\section{Stage 1: Direct light and PBR materials}
+\section{Material authoring}\label{sec:materials}
 
-\textbf{Outcome.} A gamepack, a material format, light entity definitions, and a lit editor preview
-good enough to author the first benchmark map with final storage formats.
+A PBR material is an ordinary lightmapped Quake~3 shader, written in \texttt{scripts/*.shader} in
+the editor's Shader Editor or any text editor. Its stages are vanilla; all PBR data is in top-level
+\texttt{qer\_pbr\_*} keywords, which every stock renderer skips:
 
-\subsection{1.1 Material format and parser}
+\begin{verbatim}
+textures/town/brick
+{
+    qer_editorimage textures/town/brick_c
+    qer_pbr_normal textures/town/brick_nrm             // tangent space, linear
+    qer_pbr_metallicRoughness textures/town/brick_mr   // G = roughness, B = metallic
+    qer_pbr_occlusion textures/town/brick_ao           // R = occlusion
+    qer_pbr_roughnessFactor 0.8
+    q3map_lightmapSampleSize 8
+    {
+        map $lightmap
+        rgbGen identity
+    }
+    {
+        map textures/town/brick_c          // base colour
+        blendFunc GL_DST_COLOR GL_ZERO
+        rgbGen identity
+    }
+}
+\end{verbatim}
+
+\begin{tabular}{@{}p{0.30\textwidth}p{0.42\textwidth}p{0.22\textwidth}@{}}
+\toprule
+Property & Written as & \texttt{.mtr} equivalent \\
+\midrule
+Base colour (sRGB) & The image of the stage the lightmap multiplies. Stages are written
+  explicitly. & \texttt{basecolor} \\
+Normal (linear) & \texttt{qer\_pbr\_normal <image>}: tangent space, OpenGL Y-up. & \texttt{normal} \\
+Metallic--roughness (linear) & \texttt{qer\_pbr\_metallicRoughness <image>}: G roughness,
+  B metallic. Without it, metallic is \texttt{qer\_pbr\_metallicFactor} (default 0) and roughness
+  is \texttt{qer\_pbr\_roughnessFactor} (default 1). & \texttt{metallicroughness} \\
+Occlusion (linear) & \texttt{qer\_pbr\_occlusion <image>}: R occlusion. & \texttt{occlusion} \\
+Factors & \texttt{qer\_pbr\_roughnessFactor <f>}, \texttt{qer\_pbr\_metallicFactor <f>},
+  \texttt{qer\_pbr\_baseColorFactor <r> <g> <b>}. With a metallic--roughness map they default to
+  1 and multiply it, as in glTF. &
+  \texttt{*factor} \\
+Emissive (sRGB) & An additive stage (\texttt{blendFunc add}) carrying the emission image, optional
+  \texttt{rgbGen const}. \texttt{qer\_pbr\_emissiveStrength <f>} (default 1) scales it with the
+  \texttt{.mtr} meaning: radiance $=$ texel $\times$ colour $\times$ strength. Stock renderers draw
+  the stage unscaled. &
+  \texttt{emissive} \\
+\bottomrule
+\end{tabular}
+
 \begin{itemize}
-\item Define a text material format modelled on the glTF metallic--roughness schema, brace-compatible
-  with the Doom~3 parser: \texttt{basecolor}, \texttt{normal}, \texttt{metallicroughness},
-  \texttt{occlusion}, \texttt{emissive}, plus \texttt{metallicFactor}, \texttt{roughnessFactor},
-  \texttt{emissiveFactor}, \texttt{emissiveStrength}, alpha mode and cutoff, double-sided.
-\item Keep \texttt{qer\_editorimage}, \texttt{surfaceparm}, and \texttt{q3map\_} keys so q3map2 and
-  the editor's brush classification keep working. Decide whether the baker reads the same files.
-\item Add a fourth shader language: new \texttt{parsePBR} on \texttt{ShaderTemplate}, a new
-  \texttt{SHADERLANGUAGE\_} value, a module in \texttt{plugins/shaders/plugin.cpp} setting the
-  directory and extension, and a \texttt{shaders="pbr"} value for the \texttt{.game} file.
-\item Extend \texttt{IShader} in \texttt{include/ishaders.h} with the extra textures and factors.
-\item Colour space: base colour and emissive are sRGB and decoded in the shader; normal, metallic--
-  roughness, and occlusion are linear. Check the texture preference paths (gamma, compression) so the
-  loaders do not alter these.
+\item \textbf{Why emissive is a stage.} An additive stage is how Quake~3 already draws glow, so the
+  stock target shows it unchanged; \texttt{sh-baker} already bakes additive layers as area lights
+  (``Bake additive SH\_material\_layers surfaces as area lights'', \texttt{843237b}), so the glow
+  also reaches the lightmap once 4.3 lands; \texttt{q3map\_surfacelight} is not needed.
+\item \textbf{Factors are enhanced-only.} The stock target never sees \texttt{qer\_pbr\_baseColorFactor};
+  where the stock look matters, bake the factor into the texture instead.
+\item \textbf{Reserved suffixes.} Never name an image \texttt{<base>\_n}, \texttt{<base>\_nh} or
+  \texttt{<base>\_s}, where \texttt{<base>} is a stage image: rend2 picks those up with no keyword
+  (\texttt{renderergl2/tr\_shader.cpp:2150--2215}). The example above uses \texttt{\_nrm},
+  \texttt{\_mr} and \texttt{\_ao}.
+\item \textbf{No rend2 stage keywords.} \texttt{stage normalMap}, \texttt{stage specularMap},
+  \texttt{roughness} and the rest are rend2-only and make \texttt{renderergl1} reject the shader.
+\item \textbf{Non-PBR shaders.} A lightmapped opaque shader without \texttt{qer\_pbr\_*} keywords
+  is shaded in the editor preview (and in \texttt{renderer\_sh}) as a fully rough dielectric with
+  its base colour, and \texttt{sh-baker} bakes it the same way.
+\item \textbf{Editor support} is Stage~2.2: the Quake~3 shader parser reads all of the above and
+  fills the existing \texttt{IShader} PBR accessors, the Shader Editor completes the new keywords,
+  and the lighting preview renders the result.
 \end{itemize}
 
-\subsection{1.2 Light entities and units}
+\section{Current state (verified)}
+
+\subsection{The engine: ioquake3, renderer modules now C++}
+
 \begin{itemize}
-\item Entity definitions for point, spot, and sun lights with the keys the engine will read:
-  colour, intensity in physical units, radius, cone angles, and shadow flags.
-\item The sun lives on worldspawn or a dedicated entity, so Stage~2 can read it without a format
-  change. Direction and colour also feed \texttt{q3map\_sun} for compatibility.
-\item Plumb the new keys through the entity plugin into \texttt{RendererLight} (origin, colour,
-  radius exist; add direction, cone, intensity).
+\item The renderer is a runtime-loaded module: \texttt{code/client/cl\_main.c:3184} registers
+  \texttt{cl\_renderer} (default \texttt{opengl2}, \texttt{CVAR\_ARCHIVE|CVAR\_LATCH}), builds
+  \texttt{renderer\_<name>} and resolves \texttt{GetRefAPI} (\texttt{:3204}). \texttt{renderergl1}
+  and \texttt{renderergl2} ship side by side; a new backend is a sibling, not a replacement.
+\item \textbf{Both renderer modules are now C++} (\texttt{0135354f}, ``CPP Renderers''), and
+  \texttt{tr\_public.h} already carries \texttt{extern "C"} guards (\texttt{:25}, \texttt{:214}).
+  The \texttt{refexport\_t}/\texttt{refimport\_t} boundary is therefore usable from C++ directly.
+  \textbf{This obsoletes the separate C-ABI wrapper} previously planned for \texttt{sh-renderer}
+  (\texttt{ioq3-custom/docs/c\_interface\_design.tex}); only the control inversion --- initialise
+  against an existing GL context, expose discrete load/update/render/resize/shutdown calls, point
+  the GL loader at the engine's --- remains necessary.
+\item \texttt{renderergl2} (rend2) already implements, off or on by cvar in
+  \texttt{tr\_init.cpp}: \texttt{r\_pbr} (\texttt{:1241}, default \textbf{0}), \texttt{r\_hdr}
+  (\texttt{:1201}, default 1), \texttt{r\_toneMap} (\texttt{:1206}), \texttt{r\_normalMapping} and
+  \texttt{r\_specularMapping} (\texttt{:1225--1227}, both default 1), \texttt{r\_deluxeMapping}
+  (\texttt{:1229}), \texttt{r\_cubeMapping} (\texttt{:1236}), \texttt{r\_sunlightMode}
+  (\texttt{:1271}, cascaded sun shadows), \texttt{r\_dlightMode} (\texttt{:1252}; $\geq 2$ gives
+  per-pixel dynamic lights \emph{with} projected shadows), plus SSAO and a tonemap post chain.
+\item Under \texttt{USE\_PBR}, \texttt{glsl/lightall\_fp.glsl:398--404} is metallic--roughness with
+  $F_0 = \mathrm{mix}(0.04, \text{basecolor}, \text{metallic})$, Disney diffuse and GGX-ish
+  specular. Maps come from the stage keywords \texttt{normalMap} (\texttt{tr\_shader.cpp:881}) and
+  \texttt{specularMap} (\texttt{:894}), the \texttt{roughness} keyword (\texttt{:976}), or the
+  \texttt{\_n}/\texttt{\_nh}/\texttt{\_s} siblings it loads without a keyword (\texttt{:2150--2215}).
+\item \textbf{Specular map interpretation depends on client cvars.} With \texttt{r\_pbr 0} (default)
+  it is RGB reflectance plus alpha gloss; with \texttt{r\_pbr 1}, red is gloss under
+  \texttt{r\_glossType} (default 1, smoothness) and green is metallic. Colour space differs too:
+  \texttt{lightall\_fp.glsl:394} uses \texttt{diffuse.rgb *= diffuse.rgb}, a gamma-2.0
+  approximation, where the editor uses the exact piecewise sRGB curve.
+\item \textbf{rend2 loads external HDR lightmaps}: \texttt{maps/<name>/lm\_\%04d.hdr},
+  promoting the lightmap atlas to \texttt{GL\_RGBA16} when the first one exists and \texttt{r\_hdr}
+  is on (\texttt{tr\_bsp.cpp:279--326}).
+\item \textbf{None of rend2's PBR, specular, normal-map or HDR-lightmap features are used}
+  (revision 5). They are listed here because the contract must keep rend2 from picking them up by
+  accident.
 \end{itemize}
 
-\subsection{1.3 Float framebuffer and tonemap}
+\subsection{The prior attempt}\label{sec:prior}
+
+\texttt{ioq3-map-exporter} (\texttt{.pk3} $\to$ IBSP $\to$ glTF), \texttt{ioq3-materialize}
+(Real-ESRGAN upscale, DeepBump normals, ORM packing), \texttt{sh-baker} and \texttt{sh-renderer}
+were built to enhance existing levels such as \texttt{q3dm1} and \texttt{mpteam3}. How the bake was
+wired, which is why it does not carry over as-is:
 \begin{itemize}
-\item Add a half-float colour target plus depth in the camera path, with a resolve pass that applies
-  exposure and a tonemap. Physical light units clip in an 8-bit buffer before tonemapping can happen.
-\item Pulled forward from Stage~2 because shadow maps need framebuffer objects anyway.
+\item The exporter writes each vertex's q3map2 lightmap coordinates, which are local to one
+  lightmap page, as \texttt{TEXCOORD\_1}.
+\item \texttt{sh-baker} ignores them: its loader reads only \texttt{TEXCOORD\_0}
+  (\texttt{src/loader.cpp:170}, \texttt{:212}). It builds a fresh atlas with xatlas, splitting
+  vertices along chart seams, and fails unless everything fits one page
+  (\texttt{src/atlas.cpp:110--207}); \texttt{--skip\_parameterization} still repacks the charts.
+  It writes a new glTF with its own \texttt{TEXCOORD\_1} (\texttt{src/saver.cpp:769}).
+\item \texttt{sh-renderer} renders that glTF (\texttt{src/loader.cpp:142}, \texttt{:941}), never
+  the BSP.
 \end{itemize}
+\textbf{Carried over:} \texttt{sh-renderer} as \texttt{renderer\_sh} (Stage~3) and \texttt{sh-baker}
+as a library linked into q3map2 (Stage~4). \texttt{ioq3-materialize} and the exporter's glTF output
+are not part of this plan; the exporter's parsing code is an open decision (§\ref{sec:open}).
 
-\subsection{1.4 Lighting program}
+\subsection{The editor and q3map2}
+
 \begin{itemize}
-\item New GLSL program replacing Blinn--Phong: GGX distribution, Smith geometry, Schlick Fresnel,
-  Disney diffuse, ported from \texttt{sh-renderer/glsl/radiance.frag}.
-\item Keep the editor's per-light additive pass structure. Do not port Forward+ tiling; the editor
-  already culls lights per surface on the CPU.
-\item Base pass draws emissive plus a constant ambient. Point and spot lights accumulate on top.
+\item Gamepacks are data; the lighting draw mode, the half-float target and tonemap resolve, and
+  sun-cascade plus spot-atlas shadow maps are implemented and documented
+  (\texttt{radiant/renderstate.cpp}, \texttt{radiant/cascade.h},
+  \texttt{install/gamepacks/pbr.game/README.md}).
+\item The gating on ``is this a PBR game'' is a single string test,
+  \texttt{renderstate.cpp:2202}, against the \texttt{.game} \texttt{shaders} key; per-material
+  dispatch already exists (\texttt{renderstate.cpp:3054}, \texttt{m\_shader->isPBR()}), so a mixed
+  material set already renders correctly.
+\item Text authoring of PBR materials exists today only as \texttt{.mtr} under \texttt{pbr.game}
+  (\texttt{ShaderTemplate::parsePBR}, \texttt{plugins/shaders/shaders.cpp:1498}), which the stock
+  target cannot load. The Shader Editor (\texttt{radiant/gtkdlgs.cpp:599}) highlights and completes
+  Quake~3 and q3map2 keywords; its table has none of rend2's.
+\item \texttt{Q3.game} already authors and compiles stock maps; it lacks the PBR keywords and the
+  lighting preview.
+\item q3map2 assigns lightmap coordinates and pages during \texttt{-light}
+  (\texttt{SetupSurfaceLightmaps}, \texttt{light.cpp:2964}); they are final after
+  \texttt{StoreSurfaceLightmaps} (\texttt{lightmaps\_ydnar.cpp:2253}). It has no \texttt{.hdr}
+  writer. It builds with \texttt{-std=c++20 -fno-exceptions -fno-rtti} from the top-level
+  \texttt{Makefile} (\texttt{:138}) and is GPL-2.0-or-later (\texttt{q3map2.h:9--11}).
 \end{itemize}
 
-\subsection{1.5 Gamepack and benchmark map}
+\section{Shortest path to a walkable town}
+
+Ranked by effect on the goal per unit of work. Items 1--3 need no new subsystem.
+
+\begin{tabular}{@{}rp{0.44\textwidth}p{0.40\textwidth}@{}}
+\toprule
+& Item & Why it comes first \\
+\midrule
+1 & Author the town under \texttt{Q3.game} and pass the stock check (Stage 0) & Nothing blocks it.
+    Until the map exists, no rendering change can be judged, and every exit criterion below refers
+    to it. \\
+2 & Stand up the stock check (Stage 0.4) & A small script. Keeps the pk3 lvlworld-safe from the
+    first map; how faithful the lvlworld build looks is measured once Stage~4 bakes its lightmap
+    (0.3). \\
+3 & Fog, darkness, carried flashlight (Stage 1) & This is what reads as Silent Hill. Mostly
+    content, cvars and one carried dynamic light. \\
+4 & PBR materials and preview in \texttt{Q3.game} (Stage 2) & Text authoring of the town's
+    materials, previewed in the editor. Its first step is additive and can land at once. \\
+5 & \texttt{renderer\_sh} and engine parity (Stage 3) & The large build-out. Deliverable in
+    tiers, because \texttt{opengl2} stays available throughout. \\
+6 & SH indirect baked by q3map2 (Stage 4) & Largest piece; makes interiors and fog-lit ambience
+    read without hand-placed fill, but is not what defines the reference look. The
+    \texttt{sh-baker} library work can proceed in parallel from now. \\
+\bottomrule
+\end{tabular}
+
+\section{Stage 0: The town, with today's tools}
+
+\textbf{Outcome.} A walkable street block, authored under \texttt{Q3.game}, compiled by the stock
+pipeline, passing the stock check, with the town's visibility conventions already in force.
+
+\subsection{0.1 Convert the benchmark map}
 \begin{itemize}
-\item Gamepack: \texttt{.game} file, entity definitions, default build menu, shader list.
-\item Benchmark map: one street block with two building interiors, a low sky ceiling, a fog volume,
-  a sun, several point and spot lights, and materials exercising every map type.
-\item Exit criterion: the map looks the same in the editor lighting mode and in the engine's
-  direct-light-only path, within exposure tolerance.
+\item \texttt{pbr.game/base/maps/bench.map} is already a street block with two enterable
+  interiors, a low sky ceiling, a fog volume, a sun and spot lights. Copy it into the
+  \texttt{benchmark} mod directory (\texttt{content/benchmark/}), rewrite \texttt{bench.mtr} as
+  \texttt{scripts/bench.shader} in the form of §\ref{sec:materials} and rename the \texttt{\_n}
+  images. Its \texttt{light}, \texttt{light\_spot} and \texttt{light\_sun} entities stay as they are
+  (revision 6); brightness is tuned in the editor preview, not in the stock engine.
+\item It becomes the parity and regression asset for every later stage, under the Quake~3 gamepack.
+  It is the only map that needs this rewrite, because no further content is authored in
+  \texttt{pbr.game}.
 \end{itemize}
 
-\section{Stage 2: Shadow mapping}
-
-\textbf{Outcome.} Sun and spot shadows in the editor preview, cast by closed brush volumes, and a
-proof in the engine that hull reconstruction from the BSP gives the same result.
-
-\subsection{2.1 Caster pass}
+\subsection{0.2 First town block}
 \begin{itemize}
-\item Depth-only program drawing all brush faces with front-face culling. Because every brush is a
-  closed convex volume in the editor, the far side of each wall becomes the caster and the effective
-  bias is the wall thickness (second-depth technique). No hand-tuned bias per map.
-\item Cache the shadow maps and invalidate on scene change or light change; the editor scene changes
-  rarely, so per-frame cost is only sampling.
+\item Author under \texttt{Q3.game} and the conventions in the world-building section: low sky
+  ceiling, structural shells, detail ornament, fog colour matched to sky, hint brushes across
+  streets, area portals in doorways. Materials follow §\ref{sec:materials} from the first shader.
+\item Compile \texttt{q3map2 -meta -keeplights}, \texttt{-vis -saveprt}, \texttt{-light -patchshadows};
+  leak-free is the gate. \texttt{-keeplights} is a BSP-stage option that keeps the light entities
+  in the entity lump for the real-time direct path. \texttt{-light} gives a placeholder lightmap and
+  allocates the lightmap pages; \texttt{-shbake} (4.3) replaces its contents. No \texttt{-deluxe}:
+  deluxe maps are a rend2 feature.
+\item Exit criterion: walkable in ioquake3 at playable framerate, PVS behaving like an indoor
+  level, and the stock check of 0.4 passes.
 \end{itemize}
 
-\subsection{2.2 Sun cascades, then spot atlas}
+\subsection{0.3 Measure the stock fallback}
 \begin{itemize}
-\item Cascaded shadow maps for the sun first, since a low sky ceiling makes the thin-wall question
-  hardest there. Then the spot light shadow atlas.
-\item Port \texttt{ComputeShadow}, \texttt{ComputeSunShadow}, and the Poisson PCF from
-  \texttt{radiance.frag} unchanged once the samplers and cascade uniforms exist.
+\item After 4.3, run the block on \texttt{opengl1} and \texttt{opengl2} at stock defaults --- target
+  2, the lvlworld build, with \texttt{sh-baker}'s lightmap --- and capture the documented views
+  beside the editor's lighting preview and \texttt{renderer\_sh}.
+\item \textbf{Deliverable: a written verdict} on how faithful the lightmapped fallback is and what
+  it misses (normal-map detail, specular). It judges the lightmap encoding of 4.3 and may send it
+  back for tuning. Before 4.3 the placeholder lightmap is only checked for loading and warnings.
 \end{itemize}
 
-\subsection{2.3 Thin receivers}
+\subsection{0.4 Stand up the stock check}
 \begin{itemize}
-\item Patches and models are thin in the editor too. Use normal-offset bias for them, or make them
-  receivers only.
+\item Script the matrix of §\ref{sec:verify} in \texttt{tools/stockcheck/}. Run it on the
+  benchmark map and the town block; add the enhanced run once \texttt{renderer\_sh} reaches Tier 1.
+\item Exit criterion: both maps pass on \texttt{opengl1} and \texttt{opengl2}. From here on every
+  stage's exit criterion includes this check.
 \end{itemize}
 
-\subsection{2.4 Engine-side hull reconstruction (validation)}
+\section{Stage 1: The Silent Hill look}
+
+\textbf{Outcome.} The block reads as the reference: near-zero visibility, darkness with a moving
+pool of light, no discernible skyline.
+
 \begin{itemize}
-\item In ioquake3, rebuild each collision brush's convex hull from the brush and brushside lumps at
-  load, and use the hulls as the front-face-culled caster mesh. Draw surfaces remain the receivers.
-\item Known gaps: brushes with non-solid shaders are dropped from the collision lumps. If such a
-  brush must cast, mark its material so the compiler keeps it, or emit it separately. q3map2's bevel
-  planes are redundant on the polytope and do not disturb the intersection.
-\item Exit criterion: the benchmark map's shadows match between editor and engine.
+\item \textbf{Fog is the primary aesthetic, not a VIS trick.} Tune fog volume density and colour
+  against the sky, with the far plane at fog opacity distance. Decide in \texttt{renderer\_sh}
+  whether fog composites before or after the tonemap --- the reference look depends on which --- and
+  keep the stock fallback's \texttt{fogparms} reading close to it.
+\item \textbf{Carried flashlight.} A player-attached dynamic spot light, shadow-casting, is the
+  defining mechanic. It needs the game-code decision of §\ref{sec:open}. In \texttt{renderer\_sh}
+  it is a shadowed spot using the editor's spot atlas scheme; the stock fallback gets the omni
+  dynamic light that \texttt{trap\_R\_AddLightToScene} provides.
+\item \textbf{Darkness budget.} With physical units and a tonemap, the ambient floor is what
+  separates ``dark and readable'' from ``black''. Fix an exposure and ambient for the town and
+  record them next to the map, as the benchmark already does.
+\item Exit criterion: a side-by-side against Silent Hill 1 reference stills that the author
+  accepts. This is a judgement call, deliberately, and it gates nothing downstream.
 \end{itemize}
 
-\section{Stage 3: Lightmap UVs, SH indirect, and the compiled format}
+\section{Stage 2: Retarget the editor onto Quake 3 conventions}
 
-\textbf{Outcome.} Baked SH indirect lighting in the engine via a light stage replacement, with no
-change to the BSP format.
+\textbf{Outcome.} One gamepack. PBR materials are authored as text under \texttt{Q3.game}, and the
+lighting preview predicts the engine because both read the same data the same way.
 
-\subsection{3.1 Baker as the light stage}
+\subsection{2.1 Decision: \texttt{pbr.game} is frozen}
+
+\textbf{Decided (revision 3).} No new content is authored in \texttt{pbr.game}; \texttt{Q3.game} is
+the only authoring target. A map authored in \texttt{pbr.game} uses \texttt{.mtr} materials, which
+the stock target cannot load, so it violates target 1 directly. Its light entities are not the
+problem: revision 6 moves them to \texttt{Q3.game} (2.2 step 4). Authoring geometry and shader text
+in \texttt{Q3.game} needs no editor change; the PBR keywords, the lighting preview and the light
+entities arrive with 2.2.
+
+The retarget is code work, not a \texttt{.game} edit. Module selection at
+\texttt{radiant/plugin.cpp:196--199} takes exactly one module per key, and neither assignment
+gives both stock shaders and the preview:
 \begin{itemize}
-\item Add a BSP reader to \texttt{sh-baker}: draw surfaces, lightmap UVs, materials, and brush hulls
-  for casters. Entities for lights and sun.
-\item Pipeline: \texttt{q3map2 -meta}, \texttt{q3map2 -vis}, \texttt{q3map2 -light -fast} for UV
-  allocation only, then \texttt{sh\_baker} in place of the real light stage.
-\item Later, optionally atlas in the baker and write lightmap coordinates into the draw surfaces
-  directly, dropping the \texttt{-light} step.
+\item \texttt{shaders="quake3"} clears \texttt{g\_pbrGame} (\texttt{renderstate.cpp:2202}), and
+  with it the PBR shading path (\texttt{:3054}) and both shadow atlases ---
+  \texttt{renderstate.cpp:2165} returns early before building them.
+\item \texttt{shaders="pbr"} points the loader at \texttt{materials/*.mtr} with
+  \texttt{g\_enableDefaultShaders=false}, so stock \texttt{scripts/*.shader} files stop loading
+  and bare textures get no fallback shader.
 \end{itemize}
 
-\subsection{3.2 Output and engine loading}
+\subsection{2.2 The retarget, in landing order}
+
+\begin{enumerate}
+\item \textbf{Parse the material keywords} (additive; lands first). Teach the Quake~3 shader
+  parser in \texttt{plugins/shaders/shaders.cpp} the \texttt{qer\_pbr\_*} keywords and emissive from
+  the additive stage, and fill the existing \texttt{IShader} PBR accessors from them; the base
+  colour is the image of the stage the lightmap multiplies. \texttt{isPBR()} becomes ``declares any
+  \texttt{qer\_pbr\_} keyword''. rend2 stage keywords are not read (revision 5). \emph{Done (\texttt{q3-shader-pbr-materials}).}
+\item \textbf{Shader Editor completion.} Add the \texttt{qer\_pbr\_*} keywords to the keyword table
+  in \texttt{radiant/gtkdlgs.cpp}, with argument hints. \emph{Done (\texttt{q3-shader-pbr-materials}).}
+\item \textbf{Lighting mode under \texttt{Q3.game}.} Replace the \texttt{renderstate.cpp:2202}
+  game-identity test with a preference. With steps 1--3 the town's materials preview in the editor. \emph{Done (\texttt{q3-shader-pbr-materials}).}
+\item \textbf{Light entities under \texttt{Q3.game}} (revision 6; part of the first openspec
+  change). Install the overlay of §\ref{sec:rev6}: \texttt{games/Q3.game} with
+  \texttt{entities="pbr"} and \texttt{Q3.game/baseq3/\_pbr\_lights.ent}. The existing
+  \texttt{LIGHTTYPE\_PBR} path then previews \texttt{light}, \texttt{light\_spot} and
+  \texttt{light\_sun} under \texttt{Q3.game}, with no change to the light code. Point lights do not
+  cast shadows. \emph{Done (\texttt{q3-shader-pbr-materials}).}
+\item \textbf{Fold and delete.} Move the surviving gamepack content --- build menu entries
+  (including \texttt{-shbake} once Stage~4 lands), the benchmark map, the shadow and units
+  documentation --- into the Quake~3 pack; retire \texttt{SHADERLANGUAGE\_PBR} and the
+  \texttt{.mtr} parser; delete \texttt{pbr.game}. The \texttt{pbr} entity module stays, because
+  \texttt{Q3.game} uses it.
+\end{enumerate}
+Exit criterion: the town block renders in the editor's lighting mode under \texttt{Q3.game}, with
+screenshots from the documented views recorded. Numerical parity with
+\texttt{renderer\_sh} is 3.4's criterion.
+
+\section{Stage 3: \texttt{renderer\_sh} and engine-side parity}
+
+\textbf{Outcome.} A second renderer module that carries the project, then direct PBR and shadows
+matching the editor preview.
+
+\subsection{3.1 Decision: build the Quake 3 feature set out in sh-renderer}
+
+\textbf{Decided.} The missing feature set is added to \texttt{sh-renderer}, which becomes
+\texttt{renderer\_sh}. \texttt{renderergl2} is left untouched. Rejected: modifying rend2 to host
+sh-renderer's SH reconstruction and Forward+ culling.
+
+Rationale:
 \begin{itemize}
-\item External lightmap images (already supported by the engine) for the L0 band, plus a side file
-  with the three packed SH textures matching \texttt{GetLightmapTexel} in \texttt{radiance.frag}.
-\item Engine loads the side file and runs the indirect BRDF. No BSP lump changes.
+\item \textbf{The work is additive.} Nearly every item in the inventory below is a new module in a
+  codebase whose architecture is already written down and enforced. Hosting SH in rend2 would
+  instead mean editing its shader-permutation system, its backend command buffer and its
+  \texttt{tess} batching --- where its accumulated complexity lives, and what is hardest to reason
+  about from outside.
+\item \textbf{The two renderers coexist, so an incomplete one costs nothing.}
+  \texttt{cl\_renderer} is a latched cvar: \texttt{renderer\_sh} can lack sky, marks and
+  cinematics and still be useful for walking the town and judging light, with \texttt{opengl2} one
+  cvar away as an A/B reference on the same map. Modifying rend2 has the opposite property --- a
+  half-finished integration degrades a renderer that works today, and that renderer is the stock
+  target.
+\item \textbf{The architectural directives survive.} GL 4.6, DSA-only, Forward+, SSBOs stay intact
+  rather than being recorded as superseded.
 \end{itemize}
 
-\subsection{3.3 Editor preview of baked SH (optional, last)}
+\textbf{What changes in sh-renderer's inputs.} It renders the BSP, not a glTF: draw surfaces with
+their q3map2 lightmap coordinates, materials from the shader text of §\ref{sec:materials}, the SH
+bands from the side file of Stage~4. Its glTF loader stays for its own tests and tools. The parser it uses is the open decision of §\ref{sec:open}.
+
+\textbf{The one part that is not additive}, and is planned as a refactor rather than a feature:
+\texttt{sh-renderer} currently owns its process. It uses \texttt{glog}, \texttt{gflags}, its own
+file I/O, and its own GLFW window and frame loop. As a renderer module it must route logging
+through \texttt{ri.Printf}/\texttt{ri.Error}, configuration through \texttt{ri.Cvar\_Get},
+\emph{all} file access through \texttt{ri.FS\_ReadFile} so assets come from \texttt{.pk3} via the
+engine's VFS, allocation through \texttt{ri.Hunk\_Alloc}, and must initialise against an
+already-current GL context with glad pointed at the engine's loader. This touches every module's
+edges. Do it first, before any feature work, so no feature is ported twice.
+
+\subsection{3.2 Free: link, do not reimplement}
+
+\texttt{code/renderercommon/} is format and utility code rather than renderer architecture, and is
+already compiled into both existing modules: image decoders for TGA, JPG, PNG, BMP, PCX and PVR,
+plus \texttt{tr\_font.c}, \texttt{tr\_noise.c}, \texttt{tr\_subs.c} and \texttt{puff.c}. Link it.
+\texttt{tr\_public.h} and \texttt{tr\_types.h} define the ABI and are shared by definition.
+
+\subsection{3.3 Feature inventory}
+
+\texttt{refexport\_t} has 37 entry points. Ordered below by whether the town is playable without
+the item. The LOC figures are the corresponding rend2 sources, as an order-of-magnitude scope
+reference --- not as code to copy.
+
+\textbf{Tier 1 --- required to boot and walk the map.}
 \begin{itemize}
-\item Requires lightmap UVs on source brush faces and patches that match the compiled atlas, either
-  by matching surfaces back to the BSP or by an editor-side atlas (xatlas or similar).
-\item Only worth doing if designers need indirect preview inside the editor; the engine and the
-  existing \texttt{sh-renderer} viewer cover it otherwise.
+\item Module skeleton: \texttt{GetRefAPI}, the \texttt{refexport\_t} table,
+  \texttt{BeginFrame}/\texttt{EndFrame}/\texttt{Shutdown}, and the control inversion off GLFW.
+\item The \texttt{ri.*} refactor of §3.1.
+\item \texttt{LoadWorld} from \texttt{.bsp}, plus \texttt{SetWorldVisData}, \texttt{inPVS} and
+  PVS-based cluster culling, and \texttt{GetEntityToken} (cgame reads the entity lump through the
+  renderer).
+\item Materials from shader text: the base-colour stage, the \texttt{qer\_pbr\_*} keywords,
+  additive emissive stages, and the defaults of §\ref{sec:materials} where absent.
+\item 2D: \texttt{SetColor}, \texttt{DrawStretchPic}, \texttt{RegisterShaderNoMip}. Without these
+  there is no HUD, no menu and no console --- an ortho quad batcher, small but unavoidable.
+\item Frame protocol: \texttt{ClearScene}, \texttt{AddRefEntityToScene}, \texttt{RenderScene},
+  \texttt{BeginRegistration}\slash\allowbreak\texttt{EndRegistration}, \texttt{LightForPoint},
+  \texttt{AddLightToScene}.
+\item MD3: \texttt{RegisterModel}, \texttt{RegisterSkin}, \texttt{ModelBounds},
+  \texttt{LerpTag}, and vertex-morph interpolation between frames --- players, weapons and items,
+  with \texttt{LerpTag} attaching weapons to hands. (\texttt{tr\_model} 1378 + \texttt{tr\_mesh}
+  407 LOC.)
 \end{itemize}
+
+\textbf{Tier 2 --- playable, but visibly wrong without it.}
+\begin{itemize}
+\item \textbf{Sky} (\texttt{tr\_sky}, 859 LOC). Highest priority of this tier for this project
+  specifically: the low sky ceiling is the town's defining structural element.
+\item \textbf{Fog volumes}, with the stock \texttt{fogparms} semantics so the same map reads the
+  same on both targets. The primary aesthetic of Stage 1; the town does not read without them.
+\item Multi-stage shader runtime: \texttt{tcMod}, \texttt{rgbGen}, blend funcs, \texttt{animMap},
+  \texttt{deformVertexes} (\texttt{tr\_shade\_calc}, 825 LOC, plus part of \texttt{tr\_shader},
+  3898). Already designed in \texttt{ioq3-custom/docs/layer\_material\_compositing.tex}.
+\item \texttt{MarkFragments} --- bullet holes and blood decals (\texttt{tr\_marks}, 467 LOC).
+\item \texttt{AddPolyToScene} --- cgame's particle and effect path leans on it heavily.
+\end{itemize}
+
+\textbf{Tier 3 --- stub or defer.}
+\begin{itemize}
+\item \texttt{DrawStretchRaw}, \texttt{UploadCinematic}, \texttt{TakeVideoFrame} --- video
+  playback and capture.
+\item \texttt{RegisterFont}, \texttt{RemapShader}, \texttt{AddAdditiveLightToScene}.
+\item Skeletal models, MDR and IQM (\texttt{tr\_model\_iqm}, 1850 LOC). \texttt{baseq3} does not
+  use them; needed only if the project's own characters are skeletal, which is undesigned.
+\item Flares (\texttt{tr\_flares}, 575 LOC), portals and mirrors.
+\end{itemize}
+
+Exit criterion for Stage 3.3: the town block is walkable under \texttt{cl\_renderer sh} with a
+working HUD and player model, screenshots from the documented views can be compared against the
+stock fallback on the same map, and the stock check still passes on the same pk3.
+
+\subsection{3.4 Direct light parity}
+\begin{itemize}
+\item Lights come from the entity lump, preserved by \texttt{-keeplights}, read with the editor's
+  physical model (§\ref{sec:units}): \texttt{light}, \texttt{light\_spot}, \texttt{light\_sun} and
+  their keys, with no conversion constant. This replaces sh-renderer's glTF light scale
+  (\texttt{kLightIntensityScale}, \texttt{src/loader.cpp:18}) and \texttt{ComputeLightRadius}
+  (\texttt{src/loader.cpp:719}).
+\item Exit criterion: the editor lighting preview and the engine's direct-light-only render agree
+  from the documented camera, within the tolerance already written down for the benchmark map.
+\end{itemize}
+
+\subsection{3.5 Shadow parity and hull reconstruction}
+\begin{itemize}
+\item Rebuild each collision brush's convex hull from the brush and brushside lumps at load, and
+  use the hulls as front-face-culled casters; draw surfaces remain receivers. No BSP format change:
+  the lumps already keep every plane of every solid brush, including void-facing ones.
+\item Known gap: brushes with non-solid shaders are dropped from the collision lumps. If such a
+  brush must cast, mark its material to keep it, or emit casters separately.
+\item Reconcile against the editor's scheme, which deliberately uses \emph{first}-depth casters
+  with normal-offset and slope-scaled bias rather than second depth, because second depth is
+  undefined for patches and models. The constants and their provenance are already tabulated in
+  the gamepack README; that table moves with the pack in Stage 2.
+\item Exit criterion: the town block's shadows match between editor and engine.
+\end{itemize}
+
+\section{Stage 4: SH indirect, baked by q3map2}
+
+\textbf{Outcome.} \texttt{sh-baker}, inside q3map2, bakes the editor's lights into q3map2's own
+lightmap pages: SH bands for \texttt{renderer\_sh}, and the stock lightmap, light grid and vertex
+colours for the lvlworld build. No BSP format change.
+
+\subsection{4.1 Decision: link \texttt{sh-baker} into q3map2}
+
+\textbf{Decided.} q3map2 links \texttt{sh-baker} as a library and bakes SH into the lightmap pages it
+has already allocated, in a new \texttt{-shbake} stage. Rejected:
+\begin{itemize}
+\item \textbf{Exporter, glTF, xatlas atlas} (the prior pipeline). The bake lives in a separate
+  atlas over a separate, vertex-split mesh; nothing maps it back to the BSP, so
+  \texttt{renderer\_sh} would have to render a second geometry and keep fog, shader stages, PVS
+  and patches in step with it.
+\item \textbf{Writing xatlas coordinates back into the BSP.} Needs the draw surfaces rewritten to
+  hold split vertices and patches converted to triangles (\texttt{-patchmeta}) --- the largest
+  option.
+\end{itemize}
+Grounds: q3map2 already has the BSP, shader parsing, patch tessellation, image loading, the light
+entities, lightmap page allocation and light-grid points. The stage passes the editor's light
+entities to \texttt{sh-baker} unchanged, so units agree by construction (§\ref{sec:units}). Baking
+in q3map2's lightmap space means \texttt{renderer\_sh} uses the BSP's own coordinates with no
+mapping file, and the same bake fills the stock lightmap (revision 6).
+
+\subsection{4.2 \texttt{sh-baker} as a library}
+
+Delivered as pull requests to \texttt{sh-baker}, reviewed and merged by its maintainer. Each keeps
+the CLI's current behaviour and its tests passing.
+\begin{enumerate}
+\item \textbf{Library boundary.} A shared-library target with a public header free of tinygltf,
+  Embree, glog and gflags types (Eigen and the standard library only), safe to include under
+  \texttt{-fno-exceptions -fno-rtti}. Logging through a caller-supplied callback (110
+  \texttt{LOG} calls today). glTF loading and saving become an optional module. No
+  \texttt{-march=native} in the library's default build.
+\item \textbf{Multi-page UV layouts.} Each geometry carries a lightmap page index; a layout lists
+  one size per page; the rasterizer works one page at a time. xatlas becomes one producer of a
+  layout and may emit several pages rather than failing when \texttt{atlasCount > 1}
+  (\texttt{atlas.cpp:201}). This is what makes one API serve both xatlas and q3map2's pages.
+\item \textbf{Bake session.} \texttt{BakeSHLightMap} creates the Embree device and BVH on every
+  call (\texttt{baker.cpp:95--96}, released at \texttt{:202--203}). A session builds them and the
+  light trees once and bakes page by page, with progress and cancel callbacks.
+\item \textbf{Outputs.} The SH side-file format (L0, L1, L2 per page), irradiance per page and at
+  given points (for the BSP lightmap, the light grid and vertex colours), plus an optional Radiance
+  \texttt{.hdr} dump of L0 for inspection. No rend2 layout.
+\end{enumerate}
+The existing light and environment types already cover what q3map2 passes in: point, spot,
+directional, area lights and a Preetham sky; material-less geometry is already a pure occluder.
+
+\subsection{4.3 The \texttt{-shbake} stage in q3map2}
+
+\begin{itemize}
+\item \textbf{Placement.} \texttt{q3map2 -meta}, \texttt{-vis}, \texttt{-light}, then
+  \texttt{q3map2 -shbake} on the finished BSP. Lightmap coordinates and pages are final only after
+  \texttt{StoreSurfaceLightmaps}, so \texttt{-light} still runs to allocate them (its lighting is
+  overwritten; \texttt{-light -fast} suffices), and a separate stage keeps the bake out of
+  \texttt{light.cpp}'s internals.
+\item \textbf{Scene.} Draw surfaces --- planar, meta, triangle soups, and patches tessellated with
+  interpolated lightmap coordinates --- each tagged with its lightmap page. Materials from q3map2's
+  shader info: the base-colour image, the \texttt{qer\_pbr\_*} maps and factors (q3map2's shader
+  parser learns them), additive stages as emitters. Lights are the editor's \texttt{light},
+  \texttt{light\_spot} and \texttt{light\_sun} entities read with the physical model of
+  §\ref{sec:units}, not q3map2's light parsing. Occluders follow the editor's shadow-caster rule
+  (§\ref{sec:rev6}), with solid brush hulls matching 3.5.
+\item \textbf{Bake and write.} One session, one bake per page, dilation per page. All bands to
+  the side file in \texttt{maps/<name>/}, inside the level's single pk3. Never
+  \texttt{lm\_*.hdr}, which stock rend2 would load. Always also write direct plus indirect
+  irradiance into the BSP's 8-bit lightmap lump, the light grid (ambient, directed, direction from
+  SH at the grid points) and vertex colours, so the lvlworld build carries the same light
+  \texttt{renderer\_sh} shows. The irradiance-to-byte encoding is chosen here (§\ref{sec:units}).
+\item \textbf{Gaps the stage reports.} q3map2-only light inputs --- \texttt{spawnflags},
+  \texttt{fade}, \texttt{q3map\_sun}, \texttt{q3map\_skylight}, \texttt{q3map\_surfacelight} ---
+  are not read; the stage warns on them.
+\item \textbf{Build.} \texttt{sh-baker} builds with its own CMake and flags; q3map2's
+  \texttt{Makefile} links it only under an opt-in flag (\texttt{SH\_BAKER=1}), so a default q3map2
+  build needs neither Embree nor TBB. The stage lives in a new \texttt{light\_sh.cpp}.
+\item \textbf{Licence.} \texttt{sh-baker} is MIT, compatible with q3map2's GPL-2.0-or-later. Embree
+  and TBB are Apache-2.0, compatible with GPLv3 but not GPLv2, so a q3map2 binary built with
+  \texttt{SH\_BAKER=1} is distributed under GPLv3, which ``or any later version'' permits.
+\end{itemize}
+
+\subsection{4.4 Runtime and exit}
+\begin{itemize}
+\item \texttt{renderer\_sh} reads the side file and runs the indirect BRDF: Ramamoorthi--Hanrahan
+  cosine convolution for diffuse, SH evaluated along the reflection vector for specular. A map
+  without the side file falls back to the BSP lightmap.
+\item Exit criterion: the town block passes the stock check, and \texttt{renderer\_sh} renders all
+  three bands.
+\item Editor preview of baked SH stays optional and last. The editor has no lightmap coordinates on
+  source geometry, and the engine covers the need.
+\end{itemize}
+
+\section{Units and colour space (cross-cutting)}\label{sec:units}
+
+\textbf{Decided (revision 6): the editor's physical light model is the one light model.} The
+editor preview, \texttt{sh-baker} (through \texttt{-shbake}) and \texttt{renderer\_sh} read the same
+entities the same way. Nothing reproduces q3map2's \texttt{-light}, and there is no conversion
+constant between consumers.
+\begin{itemize}
+\item \textbf{Point.} \texttt{light}: \texttt{intensity} is radiant flux (default 50000); radiant
+  intensity is $\texttt{intensity}/4\pi$, falling off with the inverse square of the distance in raw
+  map units; culled beyond \texttt{radius} (default 256). Never casts shadows.
+\item \textbf{Spot.} \texttt{light\_spot}: the same flux concentrated in the cone, radiant intensity
+  $\texttt{intensity}/(2\pi(1-\cos\texttt{cone}))$; \texttt{cone} is the outer half-angle (default
+  45°), \texttt{cone\_inner} the inner one (default 30°), smoothstep between; direction from
+  \texttt{target}, else \texttt{angles}; culled beyond \texttt{radius}.
+\item \textbf{Sun.} \texttt{light\_sun}: \texttt{intensity} is the irradiance on a surface facing it
+  (default 3), direction from \texttt{angles}, no cutoff. One sun is honoured, the first in map
+  order. \texttt{q3map\_sun} is not read.
+\item \textbf{Colour and shadows.} \texttt{\_color} is linear RGB. Spots and suns cast unless
+  \texttt{\_shadows 0}.
+\item \textbf{Lightmap encoding.} \texttt{-shbake} converts irradiance to the 8-bit lightmap lump.
+  The stock renderers at default cvars in a window shift lightmap bytes by 2, so a byte saturates
+  at 64; the encoding is chosen to look good there, for example a roll-off toward that limit rather
+  than a hard clip. It is recorded with the stage and judged by 0.3.
+\item \textbf{The placeholder.} q3map2's own reading of light entities (its $\times 7500$
+  intensity, distance clamp and envelope) affects only the placeholder lightmap before 4.3 and is
+  not matched.
+\end{itemize}
+
+\begin{tabular}{@{}lp{0.28\textwidth}p{0.44\textwidth}@{}}
+\toprule
+Consumer & Current scale & Where \\
+\midrule
+\texttt{sh-renderer} & $\times 1/200$ on the glTF intensity; replaced by reading the entities (3.4) &
+  \texttt{sh-renderer/src/loader.cpp:18}, \texttt{kLightIntensityScale} \\
+Editor & flux in the tens of thousands, raw map units, no metre conversion; this is the model &
+  \texttt{install/gamepacks/pbr.game/README.md} \\
+\texttt{sh-baker} & physical intensity from its glTF loader & set by \texttt{-shbake} from the
+  entities, unchanged \\
+\bottomrule
+\end{tabular}
+
+\vspace{4pt}
+One spatial unit is fixed for all consumers: raw map units, as the editor and q3map2 use.
 
 \section{World-building conventions for the town}
 
-These are authoring rules, not code, but they determine whether the visibility system works.
+Authoring rules, not code, but they determine whether the visibility system works and whether the
+reference look is reachable.
 
 \begin{itemize}
-\item \textbf{Low sky ceiling just above the camera.} VIS treats sky as opaque, so the town becomes a
-  network of corridors walled by buildings, and the PVS behaves like an indoor level.
-\item \textbf{Building shells are structural brushes.} Only structural brushes block VIS. Ornament is
-  detail. Props, pipes, and clutter are models.
+\item \textbf{Low sky ceiling just above the camera.} VIS treats sky as opaque, so the town becomes
+  a network of corridors walled by buildings and the PVS behaves like an indoor level.
 \item \textbf{Fog colour equals sky colour.} Buildings end at the ceiling; with matched colours both
-  fade to the same value and the seam disappears. Far plane set at fog opacity distance.
-\item \textbf{Hint brushes across long streets} at intervals so far clusters drop out; area portals in
-  doors between street and interiors.
+  fade to the same value and the seam disappears. Far plane at fog opacity distance.
+\item \textbf{Building shells are structural brushes.} Only structural brushes block VIS. Ornament is
+  detail. Props, pipes and clutter are models.
+\item \textbf{Hint brushes across long streets} at intervals so far clusters drop out; area portals
+  in doors between street and interiors.
 \item \textbf{Clamp camera pitch} so the ceiling is never inspected from below.
-\item \textbf{Set worldspawn \texttt{\_blocksize}} to zero or a large value for the flat town to
+\item \textbf{Set worldspawn \texttt{\_blocksize}} to zero or a large value for the flat town, to
   avoid pointless axial splits.
+\item \textbf{Silhouette over detail.} At reference fog density, only near-field surfaces are
+  legible; budget texture and geometry effort into the first few metres and into readable
+  silhouettes at the fog limit.
+\item \textbf{Author for a moving light.} Surfaces are seen by a flashlight cone at grazing angles,
+  which is the worst case for normal maps and the best case for them to matter. Judge materials
+  under the carried light, not under the sun.
+\item \textbf{Lightmapped surfaces only}, so every surface receives SH and baked light (4.3).
+\item \textbf{Use a spot where occlusion matters.} Point lights do not cast shadows in the editor
+  preview; a \texttt{light\_spot} does.
+\item \textbf{Stock content only.} Every entity, key and shader keyword obeys
+  §\ref{sec:contract} and §\ref{sec:materials}; the stock check is the arbiter.
 \end{itemize}
 
 \section{Risks}
@@ -219,35 +910,75 @@ These are authoring rules, not code, but they determine whether the visibility s
 \toprule
 Risk & Mitigation \\
 \midrule
-Light units or colour space differ between editor and engine &
-  Fixed in Stage~1.5 by comparing the benchmark map; treat as a blocking exit criterion. \\
+Stock rend2 picks up PBR data by accident &
+  The contract: reserved suffixes, no rend2 keywords, no \texttt{lm\_*.hdr}. The stock check runs
+  the shipped pk3. \\
+The fork's renderers drift from upstream &
+  Accepted: they are machine-converted to C++ and otherwise original. Each stock-check run records
+  the fork's commit. \\
+The lvlworld build looks flat next to \texttt{renderer\_sh} &
+  Expected: no normal maps, no specular. Stage~4 writes baked direct and indirect light into the
+  lightmap lump with an encoding tuned for vanilla; 0.3 measures it. \\
+Enhanced-only factors make the stock look diverge &
+  Bake factors into textures where the stock look matters. \\
+The placeholder lightmap differs from the preview until 4.3 &
+  Accepted: before 4.3 the stock check gates only on loading and warnings. \\
+\texttt{light\_spot}/\texttt{light\_sun} print a line in the stock game &
+  Harmless (the entity is discarded); allowlisted in the stock check. \\
+The overlay overwrites the downloaded \texttt{Q3.game} &
+  The overlay is tracked in \texttt{setup/data/gamepacks/pbr/}; re-run its install after
+  re-downloading the gamepacks. \\
+\texttt{sh-baker} library work disturbs its CLI &
+  Each PR keeps the CLI's behaviour and tests; the library API is reviewed before q3map2 uses it. \\
+q3map2's lightmap pages are a worse layout than xatlas's &
+  Density is controlled per shader (\texttt{q3map\_lightmapSampleSize}), globally
+  (\texttt{-samplesize}) and by page size (\texttt{-lightmapsize}, \texttt{-external}). Accepted in
+  exchange for a bake that maps to the BSP. \\
+Embree and TBB complicate q3map2's build &
+  Opt-in \texttt{SH\_BAKER=1}; the default build is unchanged. \\
+The \texttt{renderer\_sh} feature set is open-ended &
+  The accepted cost of the §3.1 decision. Bounded by the tiering in §3.3: Tier 1 is walkable, Tier
+  3 is stubbed indefinitely. \texttt{opengl2} remains the fallback for anything unimplemented, so
+  no gap blocks play. \\
+The \texttt{ri.*} refactor spreads through sh-renderer &
+  The one non-additive part of §3.1; done first, before feature work, so nothing is ported twice. \\
+Point lights over-light occluded areas in the preview &
+  Authoring convention: spots where occlusion matters. \\
 Texture loader preferences alter colour data &
   Audit gamma and compression paths before choosing where linearisation happens. \\
-Non-solid brushes needed as casters are dropped from collision lumps &
+Non-solid brushes needed as casters are dropped from the collision lumps &
   Material key to keep them, or a small editor-side caster export. \\
 Long straight streets defeat the PVS &
   Fog far plane plus hint brushes; accept that the fog is the real culler there. \\
-Editor SH preview is expensive &
-  Scoped optional and last; not on the critical path. \\
 Qt GL context lacks needed features for FBO and half-float &
-  Request an explicit 3.3 compatibility profile in \texttt{QSurfaceFormat}; the legacy code keeps working. \\
+  Explicit 3.3 compatibility profile in \texttt{QSurfaceFormat}; the legacy code keeps working. \\
 \bottomrule
 \end{tabular}
 
 \section{Dependency summary}
 
-\begin{tabular}{@{}llp{0.55\textwidth}@{}}
+\begin{tabular}{@{}llp{0.52\textwidth}@{}}
 \toprule
 Item & Depends on & Note \\
 \midrule
-1.4 Lighting program & 1.1, 1.2, 1.3 & Needs materials, light keys, and a float target. \\
-1.5 Benchmark map & 1.1--1.4 & Locks units and formats. \\
-2.1 Caster pass & 1.3 & Reuses FBO plumbing. \\
-2.2 Cascades & 1.2 & Needs the sun definition. \\
-2.4 Engine hulls & 1.5 & Needs the benchmark map to compare against. \\
-3.1 Baker & 1.1, 1.5 & Reads the material format; validated on the benchmark map. \\
-3.2 Engine SH loading & 3.1, 2.4 & Direct and indirect combine in the engine's radiance shader. \\
-3.3 Editor SH preview & 3.2 & Optional. \\
+0.1 Convert bench map & --- & Unblocked; also the parity asset for everything below. \\
+0.2 First town block & 0.1 & Unblocked, under \texttt{Q3.game}, with \texttt{-keeplights}. \\
+0.3 Measure stock fallback & 0.2, 4.3 & Zero code. Judges \texttt{sh-baker}'s lightmap on the
+  lvlworld build. \\
+0.4 Stock check & 0.1 & Fork build plus \texttt{tools/stockcheck/}; gates every later stage. \\
+1 Silent Hill look & 0.2, 0.3 & Content and cvars; the flashlight needs the game-code decision. \\
+2.2 steps 1--4 & --- & Additive; materials, preview and light entities under \texttt{Q3.game}. \\
+2.2 step 5 & 0.1 & Deletes \texttt{pbr.game}; keeps the \texttt{pbr} entity module. \\
+3.1 \texttt{ri.*} refactor & --- & Decided; not additive, so it goes first. \\
+3.3 Tier 1 features & 3.1, 0.2 & Walkable town under \texttt{cl\_renderer sh}. \\
+3.3 Tier 2 features & Tier 1 & Sky and fog first; they define the town. \\
+3.4 Direct light parity & 2.2, Tier 1 & Editor and engine read lights identically. \\
+3.5 Shadow parity & 3.4 & Hull reconstruction validated against the town block. \\
+4.2 \texttt{sh-baker} PRs & --- & Can start now; reviewed and merged one at a time. \\
+4.3 \texttt{-shbake} & 4.2, 0.2, 0.4 & Bakes SH and the stock lightmap, grid and vertex colours
+  into q3map2's pages; stock check on the single pk3. \\
+4.4 SH at runtime & 4.3, Tier 1 & All bands from the side file. \\
+4.x Editor SH preview & 4.4 & Optional. \\
 \bottomrule
 \end{tabular}
 
