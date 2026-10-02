@@ -1,5 +1,8 @@
 # PBR gamepack
 
+> **Frozen.** The benchmark now lives in `content/benchmark/` as a Quake 3 mod (vanilla shaders with `qer_pbr_*`
+> keywords, previewed under `Q3.game`). The copy below is kept unchanged until task A7 deletes this pack.
+
 Quake 3 map format with glTF-style metallic-roughness materials and physically based lights.
 This pack is the Stage 1 deliverable of the PBR plan: material format, light entities, editor lighting preview.
 

@@ -19,7 +19,7 @@ The bench's lights stay as they are. After `q3-shader-pbr-materials` (which also
   - The frozen `pbr.game` copy is left untouched.
 - **Compile flags.** `-meta -keeplights`, then `-vis -saveprt`, then `-light -patchshadows`. `-keeplights` is a BSP-stage option that keeps every light entity in the BSP for `renderer_sh`. The `-light` lightmap is a placeholder: q3map2 treats every classname starting with `light` as one of its own lights and reads none of the physical keys, so its lightmap isn't expected to match the preview. sh-baker writes the real lightmap later (B5), and A9 judges it.
 - **Documented views.** `content/benchmark/maps/bench.cameras` lists the requested views. The stock check records the eye position the engine actually reached (`setviewpos` pushes the player forward), and later editor captures reuse that recorded position.
-- **One pk3.** `benchmark.pk3` holds the BSP, its lightmaps, shaders, every image, the PBR maps included, and nothing else. Stock renderers never reference the PBR images.
+- **One pk3.** `benchmark.pk3` holds the BSP, its lightmaps, the levelshot, shaders, every image, the PBR maps included, and nothing else. Stock renderers never reference the PBR images.
 - **Stock check (A5).** `tools/stockcheck/stockcheck.py`:
   1. compiles the mod in an isolated temporary basepath with the bundled q3map2, failing on a leak or on `Unknown q3map_* directive`;
   2. packs the pk3;
@@ -49,6 +49,7 @@ None. `pbr-gamepack` keeps describing the frozen bench until A7 deletes the pack
   - `maps/bench.map`, `maps/bench.cameras`;
   - `scripts/bench.shader`, `scripts/shaderlist.txt`;
   - `textures/bench/*` (renamed copies);
+  - `levelshots/bench.jpg`;
   - `README.md`.
 - `.gitignore` gains the compile outputs under `content/` and `stockcheck-out/`.
 - New `tools/stockcheck/`: `stockcheck.py`, `allowlist.txt` and `README.md`. It needs Python 3 with Pillow (present).

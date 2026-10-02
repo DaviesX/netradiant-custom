@@ -66,10 +66,11 @@ See `proposal.md` for motivation and `specs/` for required behaviour. Plan rev. 
 
 `viewpos` prints even when `setviewpos` was ignored, so a run fails when a recorded position is more than 256 units from its request. The knockback drift is about 130 units at most. The `sign` request equals the spawn point, so an ignored teleport there is harmless. The editor capture of a view uses the `opengl1` run's values with pitch 0, because drift varies from run to run.
 
-The three requests are:
+The four requests are:
 - `sign`: `-96 -64 24 90`;
 - `south-interior`: near the pillar under the downward spot;
-- `arch`: facing the west patch arch.
+- `arch`: facing the west patch arch. The patch is one-sided and culled from below, so at eye height the view shows mainly its sun shadow on the west wall, which is the occlusion case it exists for;
+- `street`: from the west end looking northeast, framing the fog volume, the sign, the glass and the fence, which no other view shows.
 
 Each view is placed so the drift ends in open space.
 
@@ -79,13 +80,14 @@ Each view is placed so the drift ends in open space.
 2. Run q3map2 with `-fs_basepath <tmp> -fs_homepath <tmp>/home -fs_game benchmark` on the copied `.map`, so the compile sees exactly the tree under test and never `~/.q3a`.
 3. Pack `benchmark.pk3` from the compiled copy.
 4. For each renderer, make a second, fresh root with the pak symlinks and only `benchmark/benchmark.pk3`. Write `stockcheck.cfg` into the homepath's `benchmark/`.
-5. Launch `ioquake3` from its own directory with `+set fs_basepath <root> +set fs_homepath <root>/home +set fs_game benchmark +set cl_renderer <r> +set developer 1 +set logfile 2 +set r_mode -1 +set r_customwidth 1280 +set r_customheight 720 +set r_fullscreen 0 +set cg_draw2D 0 +set cg_drawGun 0 +set com_introPlayed 1 +exec stockcheck.cfg`, with a 120-second timeout.
+5. Launch `ioquake3` from its own directory with `+set fs_basepath <root> +set fs_homepath <root>/home +set fs_game benchmark +set cl_renderer <r> +set developer 1 +set logfile 2 +set r_mode -1 +set r_customwidth 1280 +set r_customheight 720 +set r_fullscreen 0 +set cg_draw2D 0 +set cg_drawGun 0 +set con_notifytime 0 +set com_introPlayed 1 +exec stockcheck.cfg`, with a 120-second timeout.
 6. Convert the TGA screenshots to PNG with Pillow, and copy the logs, PNGs and `views.txt` to `stockcheck-out/<timestamp>/`.
 
 ### Packaging by allowlist
 
 The packer includes only:
 - `maps/<map>.bsp` and q3map2's external lightmaps, if any;
+- the levelshot `levelshots/<map>.jpg` or `.tga`, the loading-screen image. Without one the engine prints `Couldn't find image file for shader levelshots/<map>.tga`, a missing-image failure. The bench's levelshot is cut from its `opengl1` `sign` screenshot;
 - `scripts/*.shader` and `scripts/shaderlist.txt`;
 - image files (`.tga`, `.jpg`, `.png`) under `textures/`.
 
@@ -94,6 +96,8 @@ Everything else is left out: `.map`, `.prt`, `.srf`, `*.import`, READMEs. Missin
 ### The allowlist starts with the two spawn-function messages
 
 It starts with exactly two entries, `light_spot doesn't have a spawn function` and `light_sun doesn't have a spawn function`, each with a comment citing `g_spawn.c:281`. The check matches every line of this form, not only `WARNING` lines, so any other classname without a spawn function still fails the run. Every further entry is added only after a human reads the warning and records why it's benign. A short list with a failing benign warning is better than a broad list hiding a real one.
+
+Missing-image lines are failures even when a `WARNING` entry would match them. The one exception is an image the engine looks up for itself and replaces with a built-in fallback: `renderergl2` asks for `gfx/2d/sunflare`, which stock paks lack, and builds it from the flare image (`tr_shader.cpp:3862–3878`), printing `Couldn't find image file for shader gfx/2d/sunflare` on every run. Such a line is excused only by an entry anchored at both ends that spells out the whole message as a literal (plain characters and escaped punctuation, no wildcards), so no general pattern can hide a missing content image.
 
 ## Risks / Trade-offs
 

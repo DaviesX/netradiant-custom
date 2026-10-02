@@ -1,0 +1,26 @@
+# Allowlisted engine and game log lines: one regular expression per line, searched in each log line with its
+# colour codes removed. Each entry needs a comment saying why it is benign.
+# A missing image (R_FindImageFile could not find, Couldn't find image file for shader) is excused only by an
+# entry anchored at both ends that spells out the whole message literally (no wildcards), and only for an image
+# the engine looks up for itself and replaces with a built-in fallback. Never add one for an image the content
+# references.
+
+# The editor's spot and sun light entities stay in the BSP for renderer_sh (q3map2 -keeplights). The stock game
+# has no spawn function for them and frees each with this line (code/game/g_spawn.c:281); the map still plays.
+^light_spot doesn't have a spawn function$
+^light_sun doesn't have a spawn function$
+
+# developer 1 notes each image a shader names as .tga that the paks hold as .jpg (all of stock Quake 3's are);
+# the engine loads the .jpg, so the image is present.
+^WARNING: \S+\.tga not present, using \S+\.jpg instead$
+
+# The stock game and UI QVMs (pak8) register their single-player record cvars as both ROM and ARCHIVE; the engine
+# drops the ROM flag and says so. Nothing to do with the map.
+^WARNING: Unsetting CVAR_ROM from cvar 'g_sp(Scores[1-5]|Awards|Videos)', since it is also CVAR_ARCHIVE$
+
+# The stock cgame and UI load gfx/colors/black with different mip/clamp flags; the engine reuses the first copy.
+^WARNING: reused image gfx/colors/black\.tga with mixed flags \(\d+ vs \d+\)$
+
+# renderergl2 looks up a sun-flare image that stock paks lack and builds the shader from its flare image instead
+# (renderergl2/tr_shader.cpp:3862-3878). Printed on every opengl2 run, whatever the map.
+^Couldn't find image file for shader gfx/2d/sunflare$

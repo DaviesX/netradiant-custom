@@ -1,0 +1,8 @@
+# View requests for the stock check: name, player origin x y z, yaw (degrees).
+# setviewpos pushes the player up to about 130 units forward along the yaw, so each request
+# has at least 160 units of open floor ahead. The eye position the opengl1 run records in
+# views.txt is the authoritative one; editor captures reuse it with pitch 0.
+sign -96 -64 24 90
+south-interior -300 -400 24 0
+arch -150 -150 24 135
+street -470 -100 24 30

@@ -7,3 +7,14 @@
 /.cache/
 /.clang*
 /compile_commands.json
+# q3map2 compile outputs in the content mods
+/content/*/maps/*.bsp
+/content/*/maps/*.prt
+/content/*/maps/*.srf
+/content/*/maps/*.lin
+/content/*/maps/*.bak
+/content/*/maps/*.autosave.map
+/content/*/maps/lm_*
+/content/*/maps/*/lm_*
+# stock check output
+/stockcheck-out/

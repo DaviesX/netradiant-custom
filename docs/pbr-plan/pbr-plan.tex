@@ -265,7 +265,8 @@ Lightmaps & The BSP lightmap lump is always complete and is the stock target's o
 \bottomrule
 \end{tabular}
 
-\textbf{Packaging.} One pk3 per level, as uploaded to \texttt{lvlworld.com}: the BSP,
+\textbf{Packaging.} One pk3 per level, as uploaded to \texttt{lvlworld.com}: the BSP, the
+levelshot (\texttt{levelshots/<map>.jpg}; without one the engine reports a missing image),
 \texttt{scripts/*.shader}, base-colour and emissive images, the lightmaps, the
 \texttt{qer\_pbr\_*} maps (normal, metallic--roughness, occlusion) and, from Stage~4, the SH side
 file. Stock renderers never reference the PBR files; \texttt{renderer\_sh} reads all of it. The cost
@@ -277,14 +278,20 @@ The stock check (\texttt{tools/stockcheck/}) runs the fork's ioquake3 build
 (\texttt{ioq3-custom/ioq3/build/Release}). Its renderers were machine-converted to C++ and are
 otherwise original; each run records the fork's commit so drift is traceable. Matrix:
 \texttt{cl\_renderer opengl1} and \texttt{opengl2}, default cvars. Each run uses a clean temporary
-basepath and homepath, \texttt{+set developer 1 +set logfile 2 +devmap <map>}, then for each
-documented view \texttt{setviewpos}, a settle wait, \texttt{viewpos} (the reported eye position is
-recorded, because \texttt{setviewpos} pushes the player forward) and \texttt{screenshot}. It fails
-on any \texttt{WARNING} line not on a reviewed allowlist (which also holds the
-\texttt{light\_spot}/\texttt{light\_sun} \texttt{doesn't have a spawn function} lines), on
-\texttt{R\_FindImageFile could not find}, and on \texttt{Couldn't find image file for shader} (\texttt{developer} only,
-\texttt{tr\_shader.cpp:3336}). The compile fails on a leak or on q3map2's \texttt{Unknown
-q3map\_* directive}. The engine only parses shaders a map uses, so the check covers exactly the
+basepath and homepath holding only the stock paks and the pk3, \texttt{+set developer 1 +set
+logfile 2 +devmap <map>}, then for each documented view (\texttt{maps/<map>.cameras})
+\texttt{setviewpos}, a settle wait, \texttt{viewpos} (the reported eye position is recorded in
+\texttt{views.txt}, because \texttt{setviewpos} pushes the player forward) and
+\texttt{screenshot}. It fails on any \texttt{WARNING} line or \texttt{<classname> doesn't have a
+spawn function} line not on a reviewed allowlist (which starts with the
+\texttt{light\_spot}/\texttt{light\_sun} spawn-function lines), on \texttt{R\_FindImageFile could
+not find}, and on \texttt{Couldn't find image file for shader} (\texttt{developer} only,
+\texttt{tr\_shader.cpp:3336}). A missing image is excused only by an allowlist entry naming the
+exact line of an image the engine replaces with a built-in fallback (\texttt{renderergl2}'s
+\texttt{gfx/2d/sunflare}). It also fails on a missing screenshot, on a \texttt{viewpos} that is
+missing or more than 256 units from its request (an ignored teleport), on an abnormal exit and on
+a timeout. The compile (\texttt{-meta -keeplights}, \texttt{-vis -saveprt}, \texttt{-light
+-patchshadows}) fails on a leak or on q3map2's \texttt{Unknown q3map\_* directive}. The engine only parses shaders a map uses, so the check covers exactly the
 shaders the map references. The enhanced check is the same run with \texttt{cl\_renderer sh}.
 There is no calibration mode: nothing is matched against q3map2's lightmap.
 

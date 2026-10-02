@@ -1,8 +1,9 @@
-## Purpose
+# benchmark-map Specification
 
+## Purpose
 The Quake 3 benchmark map: stock content that exercises every material feature, light type and occlusion case the pipeline must preview, compile and render. It is the parity and regression asset for every later stage.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Benchmark lives in the benchmark mod directory
 The benchmark SHALL be stored in the repository under `content/benchmark/`, laid out as a Quake 3 mod directory (`maps/`, `scripts/`, `textures/`). It SHALL be usable by the editor under `Q3.game` with `fs_game benchmark` and by ioquake3 with `+set fs_game benchmark`. It SHALL need no game code beyond baseq3's, and SHALL contain no test-only content.
@@ -77,18 +78,18 @@ The map SHALL compile with the bundled q3map2 using `-meta -keeplights`, then `-
 - **THEN** q3map2 reports no leak and no unknown directive, and the BSP's entity lump retains the light entities
 
 ### Requirement: Documented views
-`maps/bench.cameras` SHALL list named view requests, one per line: name, player origin x y z, yaw. It SHALL include `sign`, from the `info_player_start` origin facing the emissive sign. The authoritative position of a view is the eye position recorded by the stock check's `opengl1` run, and editor captures of a view SHALL use that recorded position and yaw from the same check run.
+`maps/bench.cameras` SHALL list named view requests, one per line: name, player origin x y z, yaw. It SHALL include `sign`, from the `info_player_start` origin facing the emissive sign, and the views together SHALL show the fence and the glass. The authoritative position of a view is the eye position recorded by the stock check's `opengl1` run, and editor captures of a view SHALL use that recorded position and yaw from the same check run.
 
 #### Scenario: Shared views
 - **WHEN** the editor capture of `sign` is taken at the position the stock check recorded
 - **THEN** both images frame the same scene within the difference in field of view
 
 ### Requirement: Single pk3 packaging
-The benchmark SHALL package as one `benchmark.pk3`. It contains the BSP and its lightmaps, `scripts/*.shader` and `shaderlist.txt`, and every image under `textures/`, the PBR maps included. It contains no other files (no `.map`, `.prt`, editor metadata or `*.import` files).
+The benchmark SHALL package as one `benchmark.pk3`. It contains the BSP and its lightmaps, the levelshot `levelshots/bench.jpg`, `scripts/*.shader` and `shaderlist.txt`, and every image under `textures/`, the PBR maps included. The levelshot is the loading-screen image; without it the engine prints `Couldn't find image file for shader levelshots/bench.tga`. It contains no other files (no `.map`, `.prt`, editor metadata or `*.import` files).
 
 #### Scenario: Pack contents
 - **WHEN** `benchmark.pk3` is listed
-- **THEN** every entry is a BSP, a lightmap image, a shader script, the shader list or an image under `textures/`, and every image a stage references is present
+- **THEN** every entry is a BSP, a lightmap image, the levelshot, a shader script, the shader list or an image under `textures/`, and every image a stage references is present
 
 ### Requirement: Stock screenshots reviewed by the author
 The author SHALL review the stock check's screenshots of every view on both renderers for content errors: every shader renders with its own image (no missing-texture or default image), the fence is masked, the glass is blended and the sky draws. Lighting SHALL NOT be judged, because the lightmap is a placeholder. The acceptance date SHALL be recorded in `content/benchmark/README.md`.
