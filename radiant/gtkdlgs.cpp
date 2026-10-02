@@ -950,6 +950,28 @@ static const std::vector<ShaderFormat> g_shaderGeneralFormats{
 			"lequal",
 		}
 	},
+	// PBR material data for the lighting preview, sh-baker and renderer_sh; stock renderers skip qer* keywords
+	{
+		"qer_pbr_normal %t", c_pageQER, c_colorKeyLv1
+	},
+	{
+		"qer_pbr_metallicRoughness %t", c_pageQER, c_colorKeyLv1
+	},
+	{
+		"qer_pbr_occlusion %t", c_pageQER, c_colorKeyLv1
+	},
+	{
+		"qer_pbr_roughnessFactor %f", c_pageQER, c_colorKeyLv1
+	},
+	{
+		"qer_pbr_metallicFactor %f", c_pageQER, c_colorKeyLv1
+	},
+	{
+		"qer_pbr_baseColorFactor %f %f %f", c_pageQER, c_colorKeyLv1
+	},
+	{
+		"qer_pbr_emissiveStrength %f", c_pageQER, c_colorKeyLv1
+	},
 	{
 		"light %p", c_pageGlob, c_colorKeyLv1
 	},

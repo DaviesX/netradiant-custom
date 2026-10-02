@@ -14,6 +14,19 @@ On first start choose "PBR" in the game dialog. When asked for the engine path, 
 
 Lighting preview is camera render mode "Lighting" (`Shift+]` / `Shift+[` cycle modes, `F3` toggles).
 
+The pack also gives **Quake III Arena** (`Q3.game`) the physical light entities: `games/Q3.game` is the downloaded
+game file with `entities="pbr"`, and `Q3.game/baseq3/_pbr_lights.ent` defines `light`, `light_spot` and
+`light_sun` (it loads before the stock `entities.ent`, so its `light` wins). `install-gamepacks.sh`, which the
+default `make` target runs, installs this pack after the downloaded ones. On an existing install, or after
+installing the downloaded packs by hand, run
+
+```
+sh install-gamepack.sh setup/data/gamepacks/pbr install/gamepacks
+```
+
+Stock ioquake3 prints `light_spot doesn't have a spawn function` (and the same for `light_sun`) once per entity
+when it loads such a map; that is harmless, since the lights are only kept in the BSP for `renderer_sh`.
+
 ## Layout
 
 ```
@@ -170,14 +183,18 @@ hundreds of map units per texel, so the cascade range is capped at `c_shadowDist
 project outside the last cascade and render lit, not shadowed. If the engine's camera range turns out to differ
 from `[1, 4096]`, the inherited normalised-depth bias means something different there and will need re-deriving.
 
-Surfaces excluded from the caster set, by material: `surfaceparm sky` (a low sky ceiling would otherwise occlude
-the sun everywhere), `fog` (its faces bound a volume the light travels through, not a surface that stops it),
-`nodraw`, `playerclip`, `botclip`, `areaportal`, and `noshadows`, `trigger` or `hint` (all three map to the same
-editor flag). Alpha-masked materials cast through their mask, so a fence casts its cut-out
-pattern. Alpha-blended materials cast a **solid** shadow: a single depth map cannot represent partial occlusion, so
-`alphaMode blend` is drawn at full opacity and the benchmark map's glass casts the shadow of an opaque pane.
-Put `surfaceparm noshadows` on such a material to take it out of the caster set; for glass that is usually what
-you want.
+Surfaces excluded from the caster set, by material (the editor's caster rule, which the SH baker follows; it
+applies to `.mtr` materials and Quake 3 shaders alike): `surfaceparm sky` (a low sky ceiling would otherwise
+occlude the sun everywhere), `fog` (its faces bound a volume the light travels through, not a surface that stops
+it), `water`, `slime` and `lava`, non-solid `nodraw`, `playerclip`, `botclip`, `areaportal`, `noshadows`,
+`trigger` or `hint` (all three map to the same editor flag), and `surfaceparm trans` unless the material also has
+`surfaceparm alphashadow`. Solid `nodraw` (caulk) casts. Alpha-tested materials cast through their alpha test, so
+a fence casts its cut-out pattern: a `.mtr` mask discards below its cutoff, and a Quake 3 shader uses its base
+colour stage's `alphaFunc` (`GT0`, `LT128` or `GE128`), not `qer_alphafunc`. Alpha-blended materials without
+`trans` cast a **solid** shadow: a single depth map cannot represent partial occlusion, so `alphaMode blend` is
+drawn at full opacity and the benchmark map's glass casts the shadow of an opaque pane. Put `surfaceparm noshadows`
+on a `.mtr` material, or `surfaceparm trans` on a Quake 3 shader, to take it out of the caster set; for glass that
+is usually what you want. (The `.mtr` parser doesn't read `trans` or `alphashadow`.)
 
 Shadow maps persist between frames. The spot atlas is regenerated when the scene graph changes or any light is
 attached, detached or edited; the sun cascades are regenerated for those and also whenever the camera moves,

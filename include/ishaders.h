@@ -40,6 +40,10 @@ enum
 	QER_BOTCLIP = 1 << 10,
 	QER_SKY = 1 << 11,
 	QER_NOSHADOWS = 1 << 12, ///< surfaceparm noshadows, trigger or hint: the surface never occludes a light
+	QER_NOLIGHTMAP = 1 << 13, ///< surfaceparm nolightmap
+	QER_SURFTRANS = 1 << 14, ///< surfaceparm trans: never occludes a light unless QER_ALPHASHADOW is also set
+	QER_ALPHASHADOW = 1 << 15, ///< surfaceparm alphashadow: occludes a light through its alpha test
+	QER_SURFSKY = 1 << 16, ///< Quake 3 surfaceparm sky; QER_SKY stays owned by skyparms, so the editor's sky filter is unchanged
 };
 
 struct qtexture_t;
@@ -134,8 +138,9 @@ public:
 
 	virtual qtexture_t* lightFalloffImage() const = 0;
 
-// PBR (glTF metallic-roughness) material data; only meaningful when isPBR() is true.
-// Textures are loaded while lighting is enabled, like the bump/specular maps.
+// PBR (glTF metallic-roughness) material data. isPBR() is the classification (a .mtr material, or a Quake 3
+// shader declaring a qer_pbr_ keyword); the textures are loaded while lighting is enabled, like the
+// bump/specular maps, for PBR and preview-lit shaders.
 	virtual bool isPBR() const = 0;
 	virtual qtexture_t* getBaseColor() const = 0;
 	virtual qtexture_t* getNormal() const = 0;
@@ -150,6 +155,11 @@ public:
 	virtual EAlphaMode getAlphaMode() const = 0;
 	virtual float getAlphaCutoff() const = 0;
 	virtual bool isDoubleSided() const = 0;
+// Lighting preview: whether the surface is shaded by the BRDF (.mtr materials, and lightmapped opaque
+// Quake 3 shaders), and the alpha test it uses there and in the shadow caster pass. This is the stage
+// alphaFunc for Quake 3 shaders, separate from qer_alphafunc (getAlphaFunc), which drives textured mode.
+	virtual bool isPreviewLit() const = 0;
+	virtual void getPreviewAlphaFunc( EAlphaFunc *func, float *ref ) const = 0;
 };
 
 typedef Callback<void(const char*)> ShaderNameCallback;

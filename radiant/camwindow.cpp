@@ -27,6 +27,8 @@
 
 #include "camwindow.h"
 
+#include <QCheckBox>
+
 #include "debugging/debugging.h"
 
 #include "iscenegraph.h"
@@ -188,9 +190,13 @@ bool Camera_lightingShadows(){
 	return g_camwindow_globals_private.m_lightingShadows;
 }
 
-/// Lighting draw mode exists for Doom 3 style games and for PBR games.
+/// Lighting draw mode exists for Doom 3 style games and while the PBR lighting preview is active.
 inline bool Camera_lightingModeAvailable(){
 	return g_pGameDescription->mGameType == "doom3" || ShaderCache_pbrGame();
+}
+/// Games where lighting mode can exist at all; the preview preference can switch it on and off at run time.
+inline bool Camera_lightingModeOffered(){
+	return g_pGameDescription->mGameType == "doom3" || ShaderCache_pbrPreviewOffered() || ShaderCache_pbrLanguageGame();
 }
 
 
@@ -2471,7 +2477,7 @@ void CamWnd_constructToolbar( QToolBar* toolbar ){
 }
 
 void CamWnd_registerShortcuts(){
-	if ( Camera_lightingModeAvailable() ) {
+	if ( Camera_lightingModeOffered() ) {
 		command_connect_accelerator( "TogglePreview" );
 	}
 
@@ -2510,10 +2516,10 @@ void CamWnd_SetMode( camera_draw_mode mode ){
 }
 
 void CamWnd_TogglePreview(){
-	// gametype must be doom3 for this function to work
-	// if the gametype is not doom3 something is wrong with the
-	// global command list or somebody else calls this function.
-	ASSERT_MESSAGE( Camera_lightingModeAvailable(), "CamWnd_TogglePreview called although the game has no lighting mode" );
+	// registered for games that offer lighting mode; the PBR lighting preview preference can turn it off
+	if ( !Camera_lightingModeAvailable() ) {
+		return;
+	}
 
 	// switch between textured and lighting mode
 	CamWnd_SetMode( ( CamWnd_GetMode() == cd_lighting ) ? cd_texture : cd_lighting );
@@ -2563,7 +2569,8 @@ void GlobalCamera_LookThroughCamera(){
 
 
 void RenderModeImport( int value ){
-	CamWnd_SetMode( static_cast<camera_draw_mode>( ( value < 0 || value >= camera_draw_mode_count )? cd_texture : value ) );
+	const bool valid = value >= 0 && value < camera_draw_mode_count && ( value != cd_lighting || Camera_lightingModeAvailable() );
+	CamWnd_SetMode( static_cast<camera_draw_mode>( valid ? value : cd_texture ) );
 }
 typedef FreeCaller<void(int), RenderModeImport> RenderModeImportCaller;
 
@@ -2624,6 +2631,30 @@ void LightingAmbientImport( float value ){
 }
 typedef FreeCaller<void(float), LightingAmbientImport> LightingAmbientImportCaller;
 
+/// The "PBR lighting preview" preference: leaves lighting mode before the preview turns off, then rebuilds the
+/// shader states so the PBR programs are created or destroyed. No restart is needed.
+void PBRPreviewImport( bool value ){
+	if ( ShaderCache_pbrLanguageGame() || value == ShaderCache_getPBRPreview() ) {
+		return; // forced on by the pbr material language, or unchanged
+	}
+	if ( !value ) {
+		g_lightingModeDeferred = false;
+		if ( camera_t::draw_mode == cd_lighting ) {
+			CamWnd_SetMode( cd_texture ); // releases the shadow atlases and PBR programs; the HDR target goes on the next draw
+		}
+	}
+	ShaderCache_setPBRPreview( value );
+	if ( g_camwnd != 0 ) {
+		CamWnd_Update( *g_camwnd );
+	}
+}
+typedef FreeCaller<void(bool), PBRPreviewImport> PBRPreviewImportCaller;
+
+void PBRPreviewExport( const BoolImportCallback& importer ){
+	importer( ShaderCache_getPBRPreview() );
+}
+typedef FreeCaller<void(const BoolImportCallback&), PBRPreviewExport> PBRPreviewExportCaller;
+
 void LightingShadowsImport( bool value ){
 	g_camwindow_globals_private.m_lightingShadows = value;
 	if ( g_camwnd != 0 ) {
@@ -2664,7 +2695,7 @@ void Camera_constructPreferences( PreferencesPage& page ){
 	const char* render_modes[]{ "Wireframe", "Flatshade", "Textured", "Textured+Wire", "Lighting" };
 	page.appendCombo(
 	    "Render Mode",
-	    StringArrayRange( render_modes, std::size( render_modes ) - ( Camera_lightingModeAvailable()? 0 : 1 ) ),
+	    StringArrayRange( render_modes, std::size( render_modes ) - ( Camera_lightingModeOffered()? 0 : 1 ) ),
 	    IntImportCallback( RenderModeImportCaller() ),
 	    IntExportCallback( RenderModeExportCaller() )
 	);
@@ -2694,7 +2725,15 @@ void Camera_constructPreferences( PreferencesPage& page ){
 	                    0
 	                  );
 
-	if ( ShaderCache_pbrGame() ) {
+	if ( ShaderCache_pbrPreviewOffered() || ShaderCache_pbrLanguageGame() ) {
+		QCheckBox* preview = page.appendCheckBox(
+		    "", "PBR lighting preview",
+		    PBRPreviewImportCaller(),
+		    PBRPreviewExportCaller()
+		);
+		if ( ShaderCache_pbrLanguageGame() ) { // the pbr material language has no other way to draw its materials
+			preview->setEnabled( false );
+		}
 		page.appendSpinner( "Lighting exposure", 0.001, 1000.0,
 		                    FloatImportCallback( LightingExposureImportCaller() ),
 		                    FloatExportCallback( FloatExportCaller( g_camwindow_globals_private.m_lightingExposure ) ),
@@ -2754,7 +2793,7 @@ void CamWnd_Construct(){
 //	GlobalCommands_insert( "LookThroughSelected", makeCallbackF( GlobalCamera_LookThroughSelected ) );
 //	GlobalCommands_insert( "LookThroughCamera", makeCallbackF( GlobalCamera_LookThroughCamera ) );
 
-	if ( Camera_lightingModeAvailable() ) {
+	if ( Camera_lightingModeOffered() ) {
 		GlobalCommands_insert( "TogglePreview", makeCallbackF( CamWnd_TogglePreview ), QKeySequence( "F3" ) );
 	}
 
@@ -2809,6 +2848,10 @@ void CamWnd_Construct(){
 	GlobalPreferenceSystem().registerPreference( "CubicScale", IntImportStringCaller( g_camwindow_globals.m_nCubicScale ), IntExportStringCaller( g_camwindow_globals.m_nCubicScale ) );
 	GlobalPreferenceSystem().registerPreference( "ColorCameraBackground", Vector3ImportStringCaller( g_camwindow_globals.color_cameraback ), Vector3ExportStringCaller( g_camwindow_globals.color_cameraback ) );
 	GlobalPreferenceSystem().registerPreference( "ColorCameraSelection", Vector3ImportStringCaller( g_camwindow_globals.color_selbrushes3d ), Vector3ExportStringCaller( g_camwindow_globals.color_selbrushes3d ) );
+	// before CameraRenderMode, which can only restore lighting mode while the preview is on
+	if ( ShaderCache_pbrPreviewOffered() && !ShaderCache_pbrLanguageGame() ) {
+		GlobalPreferenceSystem().registerPreference( "LightingPBRPreview", makeBoolStringImportCallback( PBRPreviewImportCaller() ), makeBoolStringExportCallback( PBRPreviewExportCaller() ) );
+	}
 	GlobalPreferenceSystem().registerPreference( "CameraRenderMode", makeIntStringImportCallback( RenderModeImportCaller() ), makeIntStringExportCallback( RenderModeExportCaller() ) );
 	GlobalPreferenceSystem().registerPreference( "CameraMSAA", IntImportStringCaller( g_camwindow_globals_private.m_MSAA ), IntExportStringCaller( g_camwindow_globals_private.m_MSAA ) );
 	GlobalPreferenceSystem().registerPreference( "StrafeMode", IntImportStringCaller( g_camwindow_globals_private.m_strafeMode ), IntExportStringCaller( g_camwindow_globals_private.m_strafeMode ) );

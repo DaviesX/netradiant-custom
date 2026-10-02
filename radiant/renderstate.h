@@ -24,8 +24,18 @@
 void ShaderCache_setBumpEnabled( bool enabled );
 void ShaderCache_extensionsInitialised();
 
-/// True when the active game uses the pbr material language: lighting mode renders with the PBR programs and HDR resolve.
+/// True while the PBR lighting preview is active: lighting mode renders with the PBR programs and HDR resolve.
+/// It is always on for a .game with shaders="pbr", and follows the "PBR lighting preview" preference for other
+/// type="q3" games.
 bool ShaderCache_pbrGame();
+/// True when the game offers the "PBR lighting preview" preference (type="q3").
+bool ShaderCache_pbrPreviewOffered();
+/// True when the game's material language is pbr, which forces the preview on.
+bool ShaderCache_pbrLanguageGame();
+/// The preference value (always true for shaders="pbr"). Setting it rebuilds the shader states; leave lighting
+/// mode first when turning it off.
+bool ShaderCache_getPBRPreview();
+void ShaderCache_setPBRPreview( bool enabled );
 
 /// Called once by the render loop, after the scene passes and before the overlay passes
 /// (or at the end if there are no overlays), so the camera can resolve the HDR target.

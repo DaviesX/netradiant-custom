@@ -301,6 +301,8 @@ typedef std::list<ShaderVariable> ShaderArguments;
 
 typedef std::pair<ShaderVariable, ShaderVariable> BlendFuncExpression;
 
+struct Quake3Stage;
+
 class ShaderTemplate
 {
 	std::size_t m_refcount;
@@ -342,6 +344,12 @@ public:
 	float m_alphaCutoff;
 	bool m_doubleSided;
 
+// lighting preview data shared by both languages
+	bool m_fromMtr;      ///< parsed from a .mtr material: PBR loader for the editor image, no Doom 3 bump path
+	bool m_previewLit;   ///< shaded by the lighting preview's BRDF
+	IShader::EAlphaFunc m_previewAlphaFunc; ///< alpha test of the lighting preview and the shadow caster pass
+	float m_previewAlphaRef;
+
 	ShaderTemplate() :
 		m_refcount( 0 ),
 		m_AlphaFunc( IShader::eAlways ),
@@ -355,7 +363,11 @@ public:
 		m_emissiveStrength( 1 ),
 		m_alphaMode( IShader::eAlphaOpaque ),
 		m_alphaCutoff( 0.5f ),
-		m_doubleSided( false ){
+		m_doubleSided( false ),
+		m_fromMtr( false ),
+		m_previewLit( false ),
+		m_previewAlphaFunc( IShader::eAlways ),
+		m_previewAlphaRef( 0 ){
 		m_nFlags = 0;
 		m_fTrans = 1;
 	}
@@ -386,12 +398,18 @@ public:
 	bool parseDoom3( Tokeniser& tokeniser );
 	bool parseQuake3( Tokeniser& tokeniser );
 	bool parsePBR( Tokeniser& tokeniser );
+	void deriveQuake3( const std::vector<Quake3Stage>& stages, bool qerTrans, bool metallicFactorSet );
 	bool parseTemplate( Tokeniser& tokeniser );
 
 
 	void CreateDefault( const char *name ){
 		if ( g_enableDefaultShaders ) {
 			m_textureName = name;
+			if ( g_shaderLanguage == SHADERLANGUAGE_QUAKE3 ) { // the engine draws a bare texture as lightmap x texture
+				m_baseColor = name;
+				m_previewLit = true;
+				m_metallicFactor = 0;
+			}
 		}
 		else
 		{
@@ -980,7 +998,7 @@ public:
 		return m_pDiffuse;
 	}
 	qtexture_t* getBump() const override {
-		return m_template.m_pbr ? 0 : m_pBump; // PBR materials never take the Doom 3 bump path
+		return m_template.m_fromMtr ? 0 : m_pBump; // .mtr materials never take the Doom 3 bump path
 	}
 	qtexture_t* getSpecular() const override {
 		return m_pSpecular;
@@ -1029,6 +1047,18 @@ public:
 	bool isDoubleSided() const override {
 		return m_template.m_doubleSided;
 	}
+	bool isPreviewLit() const override {
+		return m_template.m_previewLit;
+	}
+	void getPreviewAlphaFunc( EAlphaFunc *func, float *ref ) const override {
+		*func = m_template.m_previewAlphaFunc;
+		*ref = m_template.m_previewAlphaRef;
+	}
+	/// PBR textures are loaded for every PBR-classified or preview-lit shader, and for every alpha-tested one,
+	/// whose base colour the shadow caster pass samples
+	bool loadsLightingTextures() const {
+		return m_template.m_pbr || m_template.m_previewLit || m_template.m_previewAlphaFunc != IShader::eAlways;
+	}
 // get shader name
 	const char* getName() const override {
 		return m_Name.c_str();
@@ -1071,8 +1101,8 @@ public:
 // -----------------------------------------
 
 	void realise(){
-		// PBR editor images bypass the gamma table like every other texture the material references
-		m_pTexture = m_template.m_pbr
+		// .mtr editor images bypass the gamma table like every other texture the material references
+		m_pTexture = m_template.m_fromMtr
 		           ? evaluateTexture( m_template.m_textureName, m_template.m_params, m_args, pbrTextureLoader() )
 		           : evaluateTexture( m_template.m_textureName, m_template.m_params, m_args );
 
@@ -1115,7 +1145,7 @@ public:
 			m_pSpecular = evaluateTexture( m_template.m_specular, m_template.m_params, m_args );
 			m_pLightFalloffImage = evaluateTexture( m_template.m_lightFalloffImage, m_template.m_params, m_args );
 
-			if ( m_template.m_pbr ) {
+			if ( loadsLightingTextures() ) {
 				const LoadImageCallback loader = pbrTextureLoader();
 				m_pBaseColor = evaluateTexture( m_template.m_baseColor.empty() ? TextureExpression( "_white" ) : m_template.m_baseColor, m_template.m_params, m_args, loader );
 				m_pNormal = evaluateTexture( m_template.m_normal.empty() ? TextureExpression( "_flat" ) : m_template.m_normal, m_template.m_params, m_args, loader );
@@ -1167,7 +1197,7 @@ public:
 
 			GlobalTexturesCache().release( m_pLightFalloffImage );
 
-			if ( m_template.m_pbr ) {
+			if ( loadsLightingTextures() ) {
 				GlobalTexturesCache().release( m_pBaseColor );
 				GlobalTexturesCache().release( m_pNormal );
 				GlobalTexturesCache().release( m_pMetallicRoughness );
@@ -1296,6 +1326,196 @@ void FreeShaders(){
 	g_ActiveShadersChangedNotify();
 }
 
+/// \brief One stage of a Quake 3 shader, as far as the lighting preview needs it.
+struct Quake3Stage
+{
+	CopiedString m_map;            ///< map, clampMap or the first animMap frame; empty when the stage has none
+	bool m_blend = false;          ///< has a blendFunc
+	BlendFactor m_src = BLEND_ONE;
+	BlendFactor m_dst = BLEND_ZERO;
+	bool m_constColour = false;
+	Vector3 m_colour = Vector3( 1, 1, 1 );
+	bool m_tcGenEnvironment = false;
+	IShader::EAlphaFunc m_alphaFunc = IShader::eAlways;
+	float m_alphaRef = 0;
+	bool m_rend2 = false;          ///< uses a rend2 keyword: ignored by the derivation
+
+	bool hasMap() const {
+		return !m_map.empty() && !m_rend2;
+	}
+	bool isLightmap() const {
+		return string_equal_nocase( m_map.c_str(), "$lightmap" );
+	}
+	bool isWhiteImage() const {
+		return string_equal_nocase( m_map.c_str(), "$whiteimage" );
+	}
+	/// filter, GL_DST_COLOR GL_ZERO or GL_ZERO GL_SRC_COLOR
+	bool multiplies() const {
+		return m_blend && ( ( m_src == BLEND_DST_COLOUR && m_dst == BLEND_ZERO ) || ( m_src == BLEND_ZERO && m_dst == BLEND_SRC_COLOUR ) );
+	}
+	/// add, GL_ONE GL_ONE or GL_SRC_ALPHA GL_ONE
+	bool adds() const {
+		return m_blend && m_dst == BLEND_ONE && ( m_src == BLEND_ONE || m_src == BLEND_SRC_ALPHA );
+	}
+	/// blend or GL_SRC_ALPHA GL_ONE_MINUS_SRC_ALPHA
+	bool blends() const {
+		return m_blend && m_src == BLEND_SRC_ALPHA && m_dst == BLEND_ONE_MINUS_SRC_ALPHA;
+	}
+};
+
+void PBR_readLineArguments( Tokeniser& tokeniser, std::size_t line, std::vector<CopiedString>& args );
+
+/// rend2 stage keywords: renderergl1 rejects a shader using any of them
+const char* const c_rend2StageKeywords[] = {
+	"stage", "normalMap", "bumpMap", "specularMap", "specularReflectance", "specularExponent",
+	"gloss", "roughness", "normalScale", "specularScale", "parallaxDepth",
+};
+
+bool Quake3Stage_isRend2Keyword( const char* keyword ){
+	for ( const char* rend2 : c_rend2StageKeywords )
+	{
+		if ( string_equal_nocase( keyword, rend2 ) ) {
+			return true;
+		}
+	}
+	return false;
+}
+
+inline const char* Quake3Stage_mapName( const char* token, CopiedString& name ){
+	if ( *token == '$' ) {
+		name = token;
+	}
+	else
+	{
+		parseTextureName( name, token );
+	}
+	return name.c_str();
+}
+
+/// \brief Reads the stage keywords the lighting preview uses; every other keyword is ignored.
+void Quake3Stage_parseLine( Quake3Stage& stage, const char* keyword, const std::vector<CopiedString>& args ){
+	if ( string_equal_nocase( keyword, "map" ) || string_equal_nocase( keyword, "clampMap" ) ) {
+		if ( !args.empty() ) {
+			Quake3Stage_mapName( args[0].c_str(), stage.m_map );
+		}
+	}
+	else if ( string_equal_nocase( keyword, "animMap" ) ) { // animMap <frequency> <first frame> ...
+		if ( args.size() > 1 ) {
+			Quake3Stage_mapName( args[1].c_str(), stage.m_map );
+		}
+	}
+	else if ( string_equal_nocase( keyword, "blendFunc" ) ) {
+		if ( args.size() == 1 ) {
+			const char* blend = args[0].c_str();
+			if ( string_equal_nocase( blend, "add" ) ) {
+				stage.m_blend = true, stage.m_src = BLEND_ONE, stage.m_dst = BLEND_ONE;
+			}
+			else if ( string_equal_nocase( blend, "filter" ) ) {
+				stage.m_blend = true, stage.m_src = BLEND_DST_COLOUR, stage.m_dst = BLEND_ZERO;
+			}
+			else if ( string_equal_nocase( blend, "blend" ) ) {
+				stage.m_blend = true, stage.m_src = BLEND_SRC_ALPHA, stage.m_dst = BLEND_ONE_MINUS_SRC_ALPHA;
+			}
+		}
+		else if ( args.size() >= 2 ) {
+			stage.m_blend = true;
+			stage.m_src = evaluateBlendFactor( ShaderValue( args[0].c_str() ), ShaderParameters(), ShaderArguments() );
+			stage.m_dst = evaluateBlendFactor( ShaderValue( args[1].c_str() ), ShaderParameters(), ShaderArguments() );
+		}
+	}
+	else if ( string_equal_nocase( keyword, "rgbGen" ) ) {
+		if ( !args.empty() && string_equal_nocase( args[0].c_str(), "const" ) ) { // rgbGen const ( r g b )
+			float c[3];
+			std::size_t n = 0;
+			for ( std::size_t i = 1; i < args.size() && n < 3; ++i )
+			{
+				if ( string_parse_float( args[i].c_str(), c[n] ) ) {
+					++n;
+				}
+			}
+			if ( n == 3 ) {
+				stage.m_constColour = true;
+				stage.m_colour = Vector3( c[0], c[1], c[2] );
+			}
+		}
+	}
+	else if ( string_equal_nocase( keyword, "tcGen" ) || string_equal_nocase( keyword, "texGen" ) ) {
+		stage.m_tcGenEnvironment = !args.empty() && string_equal_nocase( args[0].c_str(), "environment" );
+	}
+	else if ( string_equal_nocase( keyword, "alphaFunc" ) ) {
+		const char* func = args.empty() ? "" : args[0].c_str();
+		if ( string_equal_nocase( func, "GT0" ) ) {
+			stage.m_alphaFunc = IShader::eGreater, stage.m_alphaRef = 0;
+		}
+		else if ( string_equal_nocase( func, "LT128" ) ) {
+			stage.m_alphaFunc = IShader::eLess, stage.m_alphaRef = 0.5f;
+		}
+		else if ( string_equal_nocase( func, "GE128" ) ) {
+			stage.m_alphaFunc = IShader::eGEqual, stage.m_alphaRef = 0.5f;
+		}
+	}
+}
+
+/// \brief Reads a qer_pbr_ keyword's arguments into the template. A malformed argument keeps the default and warns.
+bool ShaderTemplate_parsePBRKeyword( ShaderTemplate& self, const char* keyword, const std::vector<CopiedString>& args, bool& metallicFactorSet ){
+	const auto warn = [&]( const char* expected ){
+		globalWarningStream() << "WARNING: shader " << self.getName() << ": " << keyword << " expects " << expected << "; keeping its default\n";
+	};
+	const auto texture = [&]( TextureExpression& texture ){
+		if ( args.empty() ) {
+			warn( "a texture path" );
+		}
+		else
+		{
+			parseTextureName( texture, args[0].c_str() );
+		}
+	};
+	const auto number = [&]( float& value ){
+		float f;
+		if ( args.empty() || !string_parse_float( args[0].c_str(), f ) ) {
+			warn( "a number" );
+			return false;
+		}
+		value = f;
+		return true;
+	};
+
+	if ( string_equal_nocase( keyword, "qer_pbr_normal" ) ) {
+		texture( self.m_normal );
+	}
+	else if ( string_equal_nocase( keyword, "qer_pbr_metallicRoughness" ) ) {
+		texture( self.m_metallicRoughness );
+	}
+	else if ( string_equal_nocase( keyword, "qer_pbr_occlusion" ) ) {
+		texture( self.m_occlusion );
+	}
+	else if ( string_equal_nocase( keyword, "qer_pbr_roughnessFactor" ) ) {
+		number( self.m_roughnessFactor );
+	}
+	else if ( string_equal_nocase( keyword, "qer_pbr_metallicFactor" ) ) {
+		metallicFactorSet |= number( self.m_metallicFactor );
+	}
+	else if ( string_equal_nocase( keyword, "qer_pbr_emissiveStrength" ) ) {
+		number( self.m_emissiveStrength );
+	}
+	else if ( string_equal_nocase( keyword, "qer_pbr_baseColorFactor" ) ) {
+		float c[3];
+		if ( args.size() < 3 || !string_parse_float( args[0].c_str(), c[0] ) || !string_parse_float( args[1].c_str(), c[1] ) || !string_parse_float( args[2].c_str(), c[2] ) ) {
+			warn( "three numbers" );
+		}
+		else
+		{
+			self.m_baseColorFactor = Vector4( c[0], c[1], c[2], 1 );
+		}
+	}
+	else
+	{
+		globalWarningStream() << "WARNING: shader " << self.getName() << ": unknown keyword " << keyword << " ignored\n";
+		return false;
+	}
+	return true;
+}
+
 bool ShaderTemplate::parseQuake3( Tokeniser& tokeniser ){
 	// name of the qtexture_t we'll use to represent this shader (this one has the "textures\" before)
 	m_textureName = m_Name;
@@ -1304,6 +1524,11 @@ bool ShaderTemplate::parseQuake3( Tokeniser& tokeniser ){
 
 	// we need to read until we hit a balanced }
 	int depth = 0;
+	std::vector<Quake3Stage> stages;
+	std::vector<CopiedString> args;
+	bool rend2Warned = false;
+	bool qerTrans = false;
+	bool metallicFactorSet = false;
 	for (;; )
 	{
 		tokeniser.nextLine();
@@ -1314,7 +1539,9 @@ bool ShaderTemplate::parseQuake3( Tokeniser& tokeniser ){
 		}
 
 		if ( string_equal( token, "{" ) ) {
-			++depth;
+			if ( ++depth == 2 ) {
+				stages.emplace_back();
+			}
 			continue;
 		}
 		else if ( string_equal( token, "}" ) ) {
@@ -1329,13 +1556,39 @@ bool ShaderTemplate::parseQuake3( Tokeniser& tokeniser ){
 			continue;
 		}
 
-		if ( depth == 1 ) {
+		if ( depth == 2 && !stages.empty() ) {
+			// the tokeniser reuses its token buffer: keep the keyword before reading the arguments
+			const CopiedString keyword( token );
+			args.clear();
+			PBR_readLineArguments( tokeniser, tokeniser.getLine(), args );
+			if ( Quake3Stage_isRend2Keyword( keyword.c_str() ) ) {
+				stages.back().m_rend2 = true;
+				if ( !rend2Warned ) {
+					rend2Warned = true;
+					globalWarningStream() << "WARNING: shader " << getName() << ": stage keyword " << keyword.c_str()
+					                      << " is a rend2 extension that renderergl1 rejects; put PBR data in qer_pbr_* keywords\n";
+				}
+			}
+			else
+			{
+				Quake3Stage_parseLine( stages.back(), keyword.c_str(), args );
+			}
+		}
+		else if ( depth == 1 && string_equal_nocase_n( token, "qer_pbr_", 8 ) ) {
+			const CopiedString keyword( token );
+			args.clear();
+			PBR_readLineArguments( tokeniser, tokeniser.getLine(), args );
+			m_pbr = true; // classification: any qer_pbr_ keyword
+			ShaderTemplate_parsePBRKeyword( *this, keyword.c_str(), args, metallicFactorSet );
+		}
+		else if ( depth == 1 ) {
 			if ( string_equal_nocase( token, "qer_nocarve" ) ) {
 				m_nFlags |= QER_NOCARVE;
 			}
 			else if ( string_equal_nocase( token, "qer_trans" ) ) {
 				RETURN_FALSE_IF_FAIL( Tokeniser_getFloat( tokeniser, m_fTrans ) );
 				m_nFlags |= QER_TRANS;
+				qerTrans = true;
 			}
 			else if ( string_equal_nocase( token, "qer_editorimage" ) ) {
 				RETURN_FALSE_IF_FAIL( Tokeniser_parseTextureName( tokeniser, m_textureName ) );
@@ -1446,11 +1699,88 @@ bool ShaderTemplate::parseQuake3( Tokeniser& tokeniser ){
 				else if ( string_equal_nocase( surfaceparm, "botclip" ) ) {
 					m_nFlags |= QER_BOTCLIP;
 				}
+				else if ( string_equal_nocase( surfaceparm, "nolightmap" ) ) {
+					m_nFlags |= QER_NOLIGHTMAP;
+				}
+				else if ( string_equal_nocase( surfaceparm, "trans" ) ) {
+					m_nFlags |= QER_SURFTRANS;
+				}
+				else if ( string_equal_nocase( surfaceparm, "alphashadow" ) ) {
+					m_nFlags |= QER_ALPHASHADOW;
+				}
+				else if ( string_equal_nocase( surfaceparm, "noshadows" )
+				       || string_equal_nocase( surfaceparm, "trigger" )
+				       || string_equal_nocase( surfaceparm, "hint" ) ) {
+					m_nFlags |= QER_NOSHADOWS;
+				}
+				else if ( string_equal_nocase( surfaceparm, "sky" ) ) {
+					m_nFlags |= QER_SURFSKY;
+				}
 			}
 		}
 	}
 
+	deriveQuake3( stages, qerTrans, metallicFactorSet );
 	return true;
+}
+
+/// \brief Derives the lighting preview data of a Quake 3 shader from its stages (spec: pbr-material-format).
+void ShaderTemplate::deriveQuake3( const std::vector<Quake3Stage>& stages, bool qerTrans, bool metallicFactorSet ){
+	// base colour: the stage multiplied with the $lightmap stage, the earlier of the pair when both pairings exist
+	const Quake3Stage* base = 0;
+	const auto lightmap = std::find_if( stages.begin(), stages.end(), []( const Quake3Stage& stage ){ return stage.isLightmap() && !stage.m_rend2; } );
+	if ( lightmap != stages.end() ) {
+		if ( lightmap != stages.begin() && lightmap->multiplies() && ( lightmap - 1 )->hasMap() ) {
+			base = &*( lightmap - 1 );
+		}
+		else if ( lightmap + 1 != stages.end() && ( lightmap + 1 )->multiplies() && ( lightmap + 1 )->hasMap() ) {
+			base = &*( lightmap + 1 );
+		}
+	}
+	if ( base == 0 ) { // otherwise the first stage map that isn't the lightmap
+		for ( const Quake3Stage& stage : stages )
+		{
+			if ( stage.hasMap() && !stage.isLightmap() ) {
+				base = &stage;
+				break;
+			}
+		}
+	}
+	if ( base != 0 ) {
+		m_baseColor = base->isWhiteImage() ? "_white" : base->m_map.c_str();
+	}
+
+	// emissive: the first additive stage that isn't the lightmap, a white image or an environment map
+	for ( const Quake3Stage& stage : stages )
+	{
+		if ( stage.adds() && stage.hasMap() && !stage.isLightmap() && !stage.isWhiteImage() && !stage.m_tcGenEnvironment ) { // hasMap() excludes rend2 stages
+			m_emissive = stage.m_map.c_str();
+			m_emissiveFactor = stage.m_constColour ? stage.m_colour : Vector3( 1, 1, 1 );
+			break;
+		}
+	}
+
+	const bool lightmapped = lightmap != stages.end();
+	const bool blended = qerTrans || ( base != 0 && base->blends() );
+
+	if ( base != 0 && base->m_alphaFunc != IShader::eAlways ) {
+		m_previewAlphaFunc = base->m_alphaFunc;
+		m_previewAlphaRef = base->m_alphaRef;
+		m_alphaMode = IShader::eAlphaMask;
+		m_alphaCutoff = base->m_alphaRef;
+	}
+	else if ( blended ) {
+		m_alphaMode = IShader::eAlphaBlend;
+	}
+	m_doubleSided = ( m_nFlags & QER_CULL ) != 0 && m_Cull == IShader::eCullNone;
+
+	m_previewLit = lightmapped && !blended
+	               && ( m_nFlags & ( QER_SKY | QER_SURFSKY | QER_FOG | QER_NOLIGHTMAP ) ) == 0;
+
+	// Quake 3 defaults: without a metallic-roughness map metallic is its factor (default 0), roughness its factor (default 1)
+	if ( m_metallicRoughness.empty() && !metallicFactorSet ) {
+		m_metallicFactor = 0;
+	}
 }
 
 class Layer
@@ -1497,6 +1827,8 @@ inline float PBR_argFloat( const std::vector<CopiedString>& args, std::size_t in
 /// Unknown keywords are skipped to the end of their line; nested brace blocks are skipped entirely.
 bool ShaderTemplate::parsePBR( Tokeniser& tokeniser ){
 	m_pbr = true;
+	m_fromMtr = true;
+	m_previewLit = true; // .mtr materials are always lit, blended ones included
 	m_textureName = "";
 	m_Cull = IShader::eCullBack;
 	bool transSet = false;
@@ -1644,6 +1976,8 @@ bool ShaderTemplate::parsePBR( Tokeniser& tokeniser ){
 		m_nFlags |= QER_ALPHATEST;
 		m_AlphaFunc = IShader::eGEqual;
 		m_AlphaRef = m_alphaCutoff;
+		m_previewAlphaFunc = IShader::eGEqual;
+		m_previewAlphaRef = m_alphaCutoff;
 	}
 	else if ( m_alphaMode == IShader::eAlphaBlend ) {
 		m_nFlags |= QER_TRANS;
@@ -2021,6 +2355,7 @@ void Shaders_Load(){
 		{
 			LoadShaderFile( shadername( path, sh ) );
 		}
+		globalOutputStream() << "Loaded " << g_shaderDefinitions.size() << " shader definitions\n";
 	}
 
 	//StringPool_analyse( ShaderPool::instance() );

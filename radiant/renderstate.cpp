@@ -450,10 +450,50 @@ public:
 GLSLSkyboxProgram g_skyboxGLSL;
 
 
-bool g_pbrGame = false; // set in ShaderCache_Construct from the .game "shaders" key
+// The PBR lighting preview: on for .game shaders="pbr", and a per-game camera preference ("PBR lighting preview")
+// for every other type="q3" game. ShaderCache_pbrGame() answers "is the preview active".
+bool g_pbrPreview = true; // the preference value; only consulted for type="q3" games
+
+inline GLenum IShader_alphaFuncGL( IShader::EAlphaFunc func ){
+	switch ( func )
+	{
+	case IShader::eEqual: return GL_EQUAL;
+	case IShader::eLess: return GL_LESS;
+	case IShader::eGreater: return GL_GREATER;
+	case IShader::eLEqual: return GL_LEQUAL;
+	case IShader::eGEqual: return GL_GEQUAL;
+	default: return GL_ALWAYS;
+	}
+}
+
+bool ShaderCache_pbrLanguageGame(){
+	static const bool pbr = string_equal( GlobalRadiant().getRequiredGameDescriptionKeyValue( "shaders" ), "pbr" );
+	return pbr;
+}
+
+bool ShaderCache_pbrPreviewOffered(){
+	return g_pGameDescription->mGameType == "q3";
+}
 
 bool ShaderCache_pbrGame(){
-	return g_pbrGame;
+	return ShaderCache_pbrLanguageGame() || ( g_pbrPreview && ShaderCache_pbrPreviewOffered() );
+}
+
+bool ShaderCache_getPBRPreview(){
+	return g_pbrPreview || ShaderCache_pbrLanguageGame();
+}
+
+class OpenGLShaderCache;
+static OpenGLShaderCache* g_ShaderCache;
+void ShaderCache_setPBRPreview_impl( bool enabled );
+
+void ShaderCache_setPBRPreview( bool enabled ){
+	if ( g_ShaderCache == 0 ) { // preferences are imported before the cache exists
+		g_pbrPreview = enabled;
+	}
+	else if ( g_pbrPreview != enabled ) {
+		ShaderCache_setPBRPreview_impl( enabled );
+	}
 }
 
 // ============================================================================
@@ -772,9 +812,10 @@ class GLSLShadowProgram : public GLProgram
 {
 public:
 	GLuint m_program;
-	GLint u_alpha_cutoff;
+	GLint u_alpha_ref;
+	GLint u_alpha_func;
 
-	GLSLShadowProgram() : m_program( 0 ), u_alpha_cutoff( -1 ){
+	GLSLShadowProgram() : m_program( 0 ), u_alpha_ref( -1 ), u_alpha_func( -1 ){
 	}
 
 	void create(){
@@ -792,8 +833,10 @@ public:
 
 		gl().glUseProgram( m_program );
 		gl().glUniform1i( gl().glGetUniformLocation( m_program, "u_basecolormap" ), 0 );
-		u_alpha_cutoff = gl().glGetUniformLocation( m_program, "u_alpha_cutoff" );
-		gl().glUniform1f( u_alpha_cutoff, 0.f );
+		u_alpha_ref = gl().glGetUniformLocation( m_program, "u_alpha_ref" );
+		u_alpha_func = gl().glGetUniformLocation( m_program, "u_alpha_func" );
+		gl().glUniform1f( u_alpha_ref, 0.f );
+		gl().glUniform1i( u_alpha_func, 0 );
 		gl().glUseProgram( 0 );
 
 		GlobalOpenGL_debugAssertNoErrors();
@@ -822,9 +865,14 @@ public:
 		debug_string( "disable shadow" );
 	}
 
-	/// 0 disables the alpha mask; otherwise the caster discards texels below the cutoff.
-	void setAlphaCutoff( float cutoff ){
-		gl().glUniform1f( u_alpha_cutoff, cutoff );
+	/// The material's preview alpha test: eAlways disables it; otherwise the caster discards the texels that fail it.
+	void setAlphaTest( IShader::EAlphaFunc func, float ref ){
+		const int mode = func == IShader::eGreater ? 1
+		               : func == IShader::eLess ? 2
+		               : func == IShader::eGEqual ? 3
+		               : 0;
+		gl().glUniform1i( u_alpha_func, mode );
+		gl().glUniform1f( u_alpha_ref, ref );
 	}
 
 	void setParameters( const Vector3& viewer, const Matrix4& localToWorld, const Vector3& origin, const Vector3& colour, const Matrix4& world2light ) override {
@@ -1542,7 +1590,7 @@ public:
 			if ( lightingEnabled() ) {
 				g_bumpGLSL.create();
 				g_depthFillGLSL.create();
-				if ( g_pbrGame ) {
+				if ( ShaderCache_pbrGame() ) {
 					g_pbrGLSL.create();
 					g_pbrBaseGLSL.create();
 					g_shadowGLSL.create();
@@ -1571,7 +1619,7 @@ public:
 			if ( GlobalOpenGL().contextValid && lightingEnabled() ) {
 				g_bumpGLSL.destroy();
 				g_depthFillGLSL.destroy();
-				if ( g_pbrGame ) {
+				if ( ShaderCache_pbrGame() ) {
 					ShaderCache_releaseShadows();
 					g_pbrGLSL.destroy();
 					g_pbrBaseGLSL.destroy();
@@ -1674,7 +1722,13 @@ public:
 	}
 };
 
-static OpenGLShaderCache* g_ShaderCache;
+void ShaderCache_setPBRPreview_impl( bool enabled ){
+	// rebuilds every shader state and creates or destroys the PBR programs; the caller has left lighting mode
+	// when turning the preview off, which already released the shadow atlases and programs
+	g_ShaderCache->unrealise();
+	g_pbrPreview = enabled;
+	g_ShaderCache->realise();
+}
 
 void ShaderCache_extensionsInitialised(){
 	g_ShaderCache->extensionsInitialised();
@@ -1691,12 +1745,17 @@ void ShaderCache_setBumpEnabled( bool enabled ){
 // stage2-shadow-mapping change for why, and the pbr gamepack README for the constants.
 // ============================================================================
 
-/// \brief Never occludes: sky (a low sky ceiling would otherwise block the sun everywhere), fog (a volume, not a
+/// \brief The editor's caster rule (spec pbr-shadow-maps; the SH baker follows it).
+/// Never occludes: sky (a low sky ceiling would otherwise block the sun everywhere), fog (a volume, not a
 /// surface: its brush faces bound a region the light travels through, so treating them as occluders drops a hard
-/// shadow of the volume), and the surfaces that are not really there.
+/// shadow of the volume), liquids, the surfaces that are not really there, and surfaceparm trans unless it is
+/// also alphashadow. Alpha-tested materials cast through their preview alpha test in the caster draw.
 inline bool Shadow_materialCasts( const IShader& material ){
 	const int flags = material.getFlags();
-	if ( ( flags & ( QER_SKY | QER_FOG | QER_CLIP | QER_BOTCLIP | QER_AREAPORTAL | QER_NOSHADOWS ) ) != 0 ) {
+	if ( ( flags & ( QER_SKY | QER_SURFSKY | QER_FOG | QER_LIQUID | QER_CLIP | QER_BOTCLIP | QER_AREAPORTAL | QER_NOSHADOWS ) ) != 0 ) {
+		return false;
+	}
+	if ( ( flags & QER_SURFTRANS ) != 0 && ( flags & QER_ALPHASHADOW ) == 0 ) {
 		return false;
 	}
 	// solid nodraw is caulk: it is the sunward face of most walls and ceilings, and with back faces culled the
@@ -1760,7 +1819,9 @@ public:
 	/// \brief Draws the collected geometry into whatever depth target is bound. The caster program must be enabled.
 	void draw() const {
 		const Matrix4* transform = 0;
-		float cutoff = -1;
+		IShader::EAlphaFunc alphaFunc = IShader::eAlways;
+		float alphaRef = 0;
+		g_shadowGLSL.setAlphaTest( alphaFunc, alphaRef );
 
 		// the caller's cull state is unknown here and tiles are drawn back to back, so put GL into the state the
 		// tracking variable claims rather than assuming it; otherwise a tile whose first caster is double sided
@@ -1794,14 +1855,18 @@ public:
 				}
 			}
 
-			const float wanted = ( caster.m_material->getAlphaMode() == IShader::eAlphaMask && caster.m_material->getBaseColor() != 0 )
-			                     ? caster.m_material->getAlphaCutoff()
-			                     : 0.f;
-			if ( wanted != cutoff ) {
-				cutoff = wanted;
-				g_shadowGLSL.setAlphaCutoff( cutoff );
+			IShader::EAlphaFunc func;
+			float ref;
+			caster.m_material->getPreviewAlphaFunc( &func, &ref );
+			if ( caster.m_material->getBaseColor() == 0 ) {
+				func = IShader::eAlways;
 			}
-			if ( cutoff > 0 ) {
+			if ( func != alphaFunc || ref != alphaRef ) {
+				alphaFunc = func;
+				alphaRef = ref;
+				g_shadowGLSL.setAlphaTest( alphaFunc, alphaRef );
+			}
+			if ( alphaFunc != IShader::eAlways ) {
 				gl().glBindTexture( GL_TEXTURE_2D, caster.m_material->getBaseColor()->texture_number );
 			}
 
@@ -2162,7 +2227,7 @@ inline bool Shadow_cameraMoved( const ShadowCascadeCamera& camera ){
 }
 
 void ShaderCache_updateShadows( const ShadowCascadeCamera& camera, const Matrix4& cameraView ){
-	if ( !g_pbrGame || !g_ShaderCache->lightingEnabled() || !Shadow_ensureAtlases() ) {
+	if ( !ShaderCache_pbrGame() || !g_ShaderCache->lightingEnabled() || !Shadow_ensureAtlases() ) {
 		return;
 	}
 
@@ -2199,8 +2264,6 @@ Vector3 g_DebugShaderColours[256];
 Shader* g_defaultPointLight = 0;
 
 void ShaderCache_Construct(){
-	g_pbrGame = string_equal( GlobalRadiant().getRequiredGameDescriptionKeyValue( "shaders" ), "pbr" );
-
 	g_ShaderCache = new OpenGLShaderCache;
 	GlobalTexturesCache().attach( *g_ShaderCache );
 	GlobalShaderSystem().attach( *g_ShaderCache );
@@ -3051,9 +3114,12 @@ void OpenGLShader::construct( const char* name ){
 		// construction from IShader
 		m_shader = QERApp_Shader_ForName( name );
 
-		if ( g_ShaderCache->lightingEnabled() && g_pbrGame && m_shader->isPBR() && m_shader->getBaseColor() != 0 ) { // PBR material
+		if ( g_ShaderCache->lightingEnabled() && ShaderCache_pbrGame() && m_shader->isPreviewLit() && m_shader->getBaseColor() != 0 ) { // lit by the preview
 			const unsigned int cull = ( m_shader->isDoubleSided() || ( ( m_shader->getFlags() & QER_CULL ) != 0 && m_shader->getCull() == IShader::eCullNone ) ) ? 0 : RENDER_CULLFACE;
-			const bool masked = m_shader->getAlphaMode() == IShader::eAlphaMask;
+			IShader::EAlphaFunc alphaFunc;
+			float alphaRef;
+			m_shader->getPreviewAlphaFunc( &alphaFunc, &alphaRef );
+			const bool masked = alphaFunc != IShader::eAlways;
 			const bool blended = m_shader->getAlphaMode() == IShader::eAlphaBlend;
 
 			m_pbrBaseProgram = new GLSLPBRMaterialProgram( *m_shader, true );
@@ -3070,8 +3136,8 @@ void OpenGLShader::construct( const char* name ){
 			state.m_program = m_pbrBaseProgram;
 			if ( masked ) {
 				state.m_state |= RENDER_ALPHATEST;
-				state.m_alphafunc = GL_GEQUAL;
-				state.m_alpharef = m_shader->getAlphaCutoff();
+				state.m_alphafunc = IShader_alphaFuncGL( alphaFunc );
+				state.m_alpharef = alphaRef;
 			}
 			if ( blended ) {
 				state.m_state |= RENDER_BLEND;
@@ -3102,8 +3168,8 @@ void OpenGLShader::construct( const char* name ){
 			lightPass.m_blend_dst = GL_ONE;
 			if ( masked ) {
 				lightPass.m_state |= RENDER_ALPHATEST;
-				lightPass.m_alphafunc = GL_GEQUAL;
-				lightPass.m_alpharef = m_shader->getAlphaCutoff();
+				lightPass.m_alphafunc = IShader_alphaFuncGL( alphaFunc );
+				lightPass.m_alpharef = alphaRef;
 			}
 		}
 		else if ( g_ShaderCache->lightingEnabled() && m_shader->getBump() != 0 && m_shader->getBump()->texture_number != 0 ) { // is a bump shader
@@ -3156,27 +3222,7 @@ void OpenGLShader::construct( const char* name ){
 				state.m_state |= RENDER_ALPHATEST;
 				IShader::EAlphaFunc alphafunc;
 				m_shader->getAlphaFunc( &alphafunc, &state.m_alpharef );
-				switch ( alphafunc )
-				{
-				case IShader::eAlways:
-					state.m_alphafunc = GL_ALWAYS;
-					break;
-				case IShader::eEqual:
-					state.m_alphafunc = GL_EQUAL;
-					break;
-				case IShader::eLess:
-					state.m_alphafunc = GL_LESS;
-					break;
-				case IShader::eGreater:
-					state.m_alphafunc = GL_GREATER;
-					break;
-				case IShader::eLEqual:
-					state.m_alphafunc = GL_LEQUAL;
-					break;
-				case IShader::eGEqual:
-					state.m_alphafunc = GL_GEQUAL;
-					break;
-				}
+				state.m_alphafunc = IShader_alphaFuncGL( alphafunc );
 			}
 			state.m_colour = Vector4( m_shader->getTexture()->color, 1 );
 

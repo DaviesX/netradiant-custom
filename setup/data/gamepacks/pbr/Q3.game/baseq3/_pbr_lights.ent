@@ -1,0 +1,50 @@
+<?xml version="1.0"?>
+<!--
+ Physical light entities for Quake III Arena (installed into gamepacks/Q3.game/baseq3/ by the pbr gamepack).
+ This file sorts before entities.ent, and the first definition of a class name wins, so its "light" replaces the
+ stock q3map2 light. The definitions are copied from pbr.game/base/entities.ent; keep the two in step.
+ Light units: "intensity" is radiant flux for light and light_spot and irradiance for light_sun; distances are
+ raw map units. The editor preview, sh-baker and renderer_sh read these keys; stock Quake 3 frees "light" and
+ prints "doesn't have a spawn function" for light_spot and light_sun, which is harmless.
+-->
+<classes>
+
+<point name="light" color="1 1 0.5" box="-8 -8 -8 8 8 8">
+Point light with physical units.
+-------- KEYS --------
+<color key="_color" name="Colour" value="1 1 1">Linear RGB colour (default 1 1 1).</color>
+<real key="intensity" name="Intensity" value="50000">Radiant flux (default 50000).</real>
+<real key="radius" name="Radius" value="256">Cutoff distance in map units (default 256); the light is culled beyond it.</real>
+<targetname key="targetname" name="Target Name">Name for targeting.</targetname>
+-------- NOTES --------
+Radiant intensity is intensity / (4 pi); irradiance falls off with the inverse square of the distance in map units.
+</point>
+
+<point name="light_spot" color="1 0.7 0.3" box="-8 -8 -8 8 8 8">
+Spot light with physical units. Points along "angles", or at the entity named by "target" when set.
+-------- KEYS --------
+<color key="_color" name="Colour" value="1 1 1">Linear RGB colour (default 1 1 1).</color>
+<real key="intensity" name="Intensity" value="50000">Radiant flux (default 50000). Narrowing the cone concentrates the same flux.</real>
+<real key="radius" name="Radius" value="256">Cutoff distance in map units (default 256).</real>
+<real key="cone" name="Cone" value="45">Outer cone half-angle in degrees (default 45).</real>
+<real key="cone_inner" name="Cone Inner" value="30">Inner cone half-angle in degrees (default 30); full intensity inside, smoothstep to zero at the outer angle.</real>
+<angles key="angles" name="Pitch Yaw Roll" value="0 0 0">Direction the light travels (pitch positive looks down).</angles>
+<target key="target" name="Target">Entity to point at; takes precedence over angles.</target>
+<targetname key="targetname" name="Target Name">Name for targeting.</targetname>
+<boolean key="_shadows" name="Shadows" value="1">Whether the light casts shadows (default 1). Set 0 to light through occluders.</boolean>
+-------- NOTES --------
+Radiant intensity is intensity / (2 pi (1 - cos(cone))); inverse-square falloff in map units, culled beyond radius.
+</point>
+
+<point name="light_sun" color="1 0.9 0.6" box="-16 -16 -16 16 16 16">
+Directional sun light. At most one is honoured: with several, the first in map order is used and the editor warns.
+-------- KEYS --------
+<color key="_color" name="Colour" value="1 1 1">Linear RGB colour (default 1 1 1).</color>
+<real key="intensity" name="Intensity" value="3">Irradiance on a surface facing the sun (default 3).</real>
+<angles key="angles" name="Pitch Yaw Roll" value="60 30 0">Direction the light travels (pitch positive looks down).</angles>
+<boolean key="_shadows" name="Shadows" value="1">Whether the sun casts shadows (default 1). Set 0 to light through occluders.</boolean>
+-------- NOTES --------
+No cutoff: every lit surface receives the sun. The entity position only marks the sun in the editor.
+</point>
+
+</classes>

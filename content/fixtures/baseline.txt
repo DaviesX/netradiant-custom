@@ -1,0 +1,28 @@
+Baseline recorded before any q3-shader-pbr-materials parser change (commit dd08b38a
+plus only the "Loaded N shader definitions" log line in Shaders_Load), 2026-10-02.
+
+Q3.game, fs_game baseq3 (engine path /home/davis/q3game/q3data/):
+  Loaded 889 shader definitions
+  Error parsing shader lines: 0
+  (baseq3/scripts/shaderlist.txt lists only q3shadersCopyForRadiant, from zz-q3netpack.pk3)
+
+Q3.game, fs_game fixtures:
+  Loaded 910 shader definitions   (889 + 21 fixtures)
+  Error parsing shader lines: 0
+
+Screenshots (baseline/), editor camera automation, map content/fixtures/maps/fixtures.map, angles "0 90 0":
+  stock_clangdark.png        Q3.game baseq3   textured  origin "896 -160 32"
+  stock_cybergrate2.png      Q3.game baseq3   textured  origin "992 -160 32"
+  stock_blocks10.png         Q3.game baseq3   textured  origin "1088 -160 32"
+  fixture_lmfirst.png        Q3.game fixtures textured  origin "-1024 -160 32"
+  fixture_fence.png          Q3.game fixtures textured  origin "224 -160 32"
+  pbrgame_bench_lighting.png pbr.game         lighting, shadows on, origin "-96 -36 50", map pbr.game/base/maps/bench.map
+
+Command form (prefs forced on the command line, not saved):
+  NETRADIANT_CAMERA_SCREENSHOT=<png> NETRADIANT_CAMERA_ORIGIN="<x y z>" NETRADIANT_CAMERA_ANGLES="0 90 0" \
+    install/radiant.x86_64 -global-gamefile Q3.game -Q3.game-GameName <baseq3|fixtures> -Q3.game-CameraRenderMode 2 <map>
+  pbr.game: -global-gamefile pbr.game -pbr.game-CameraRenderMode 4 -pbr.game-LightingShadows true <bench.map>
+
+Later additions (review fixes, task 4.7): fixtures skystage and alphatrans (912 definitions with fs_game
+fixtures), placed in a second row at y = 320. alphatrans shows through a gap in fixture_lmfirst.png
+(pixels x 681-697, y 291-358); every other baseline pixel is unchanged.
