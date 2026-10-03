@@ -48,7 +48,7 @@ A1–A6b are specified as openspec changes: `q3-shader-pbr-materials` (A1–A3 a
 - [ ] **B2** sh-baker PR: multi-page UV layouts. Per-geometry page index; xatlas allowed to emit several pages. (§4.2)
 - [ ] **B3** sh-baker PR: bake session that builds the BVH and light trees once, then bakes per page, with progress and cancel callbacks. (§4.2)
 - [ ] **B4** sh-baker PR: the SH side-file format (L0–L2 per page), with an optional `.hdr` L0 dump for inspection. No rend2 layout. (§4.2)
-- [ ] **B5** q3map2 `-shbake` stage (`light_sh.cpp`, opt-in `SH_BAKER=1` in the Makefile, which compiles sh-baker's core sources and links Embree, TBB and glog). q3map2's shader parser learns `qer_pbr_*` and the editor's caster rule. Bakes from the editor's physical lights and writes the irradiance into the BSP lightmap pages, light grid and vertex colours (encoding chosen to look good on vanilla), plus the SH side file; never `lm_*.hdr`. Replaces `-light`'s lighting math; q3map2 stays the host. needs: B4, A8, A5. (§4.3)
+- [ ] **B5** q3map2 `-shbake` stage (`light_sh.cpp`, opt-in `SH_BAKER=1` in the Makefile, which compiles sh-baker's core sources from the `tools/sh-baker` submodule and links Embree, TBB and glog). q3map2's shader parser learns `qer_pbr_*` and the editor's caster rule. Bakes from the editor's physical lights and writes the irradiance into the BSP lightmap pages, light grid and vertex colours (encoding chosen to look good on vanilla), plus the SH side file; never `lm_*.hdr`. Replaces `-light`'s lighting math; q3map2 stays the host. needs: B4, A8, A5. (§4.3)
 
 ### Track C: `renderer_sh` (in `../ioq3-custom`)
 

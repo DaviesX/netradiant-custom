@@ -830,7 +830,7 @@ directional, area lights and a Preetham sky; material-less geometry is already a
   \texttt{fade}, \texttt{q3map\_sun}, \texttt{q3map\_skylight}, \texttt{q3map\_surfacelight} ---
   are not read; the stage warns on them.
 \item \textbf{Build.} Under an opt-in flag (\texttt{SH\_BAKER=1}) q3map2's \texttt{Makefile}
-  compiles \texttt{sh-baker}'s core sources from its checkout (not the glTF, CLI, visualizer or
+  compiles \texttt{sh-baker}'s core sources from the \texttt{tools/sh-baker} submodule (not the glTF, CLI, visualizer or
   test files) and links Embree, TBB and glog; a default q3map2 build needs none of them.
   \texttt{sh-baker}'s files keep their own flags (q3map2's \texttt{-fno-exceptions -fno-rtti} does
   not apply to them). The stage lives in a new \texttt{light\_sh.cpp}, which includes
