@@ -491,7 +491,7 @@ Ranked by effect on the goal per unit of work. Items 1--3 need no new subsystem.
     tiers, because \texttt{opengl2} stays available throughout. \\
 6 & SH indirect baked by q3map2 (Stage 4) & Largest piece; makes interiors and fog-lit ambience
     read without hand-placed fill, but is not what defines the reference look. The
-    \texttt{sh-baker} library work can proceed in parallel from now. \\
+    \texttt{sh-baker} changes can proceed in parallel from now. \\
 \bottomrule
 \end{tabular}
 
@@ -767,7 +767,7 @@ colours for the lvlworld build. No BSP format change.
 
 \subsection{4.1 Decision: link \texttt{sh-baker} into q3map2}
 
-\textbf{Decided.} q3map2 links \texttt{sh-baker} as a library and bakes SH into the lightmap pages it
+\textbf{Decided.} q3map2 compiles \texttt{sh-baker}'s sources into itself and bakes SH into the lightmap pages it
 has already allocated, in a new \texttt{-shbake} stage. Rejected:
 \begin{itemize}
 \item \textbf{Exporter, glTF, xatlas atlas} (the prior pipeline). The bake lives in a separate
@@ -784,16 +784,13 @@ entities to \texttt{sh-baker} unchanged, so units agree by construction (§\ref{
 in q3map2's lightmap space means \texttt{renderer\_sh} uses the BSP's own coordinates with no
 mapping file, and the same bake fills the stock lightmap (revision 6).
 
-\subsection{4.2 \texttt{sh-baker} as a library}
+\subsection{4.2 \texttt{sh-baker} changes}
 
 Delivered as pull requests to \texttt{sh-baker}, reviewed and merged by its maintainer. Each keeps
-the CLI's current behaviour and its tests passing.
+the CLI's current behaviour and its tests passing. There is no separate library boundary:
+q3map2 compiles the sources it calls and includes their headers directly (4.3), so one build sets
+the flags and Eigen's alignment, and no stable ABI is needed.
 \begin{enumerate}
-\item \textbf{Library boundary.} A shared-library target with a public header free of tinygltf,
-  Embree, glog and gflags types (Eigen and the standard library only), safe to include under
-  \texttt{-fno-exceptions -fno-rtti}. Logging through a caller-supplied callback (110
-  \texttt{LOG} calls today). glTF loading and saving become an optional module. No
-  \texttt{-march=native} in the library's default build.
 \item \textbf{Multi-page UV layouts.} Each geometry carries a lightmap page index; a layout lists
   one size per page; the rasterizer works one page at a time. xatlas becomes one producer of a
   layout and may emit several pages rather than failing when \texttt{atlasCount > 1}
@@ -832,9 +829,13 @@ directional, area lights and a Preetham sky; material-less geometry is already a
 \item \textbf{Gaps the stage reports.} q3map2-only light inputs --- \texttt{spawnflags},
   \texttt{fade}, \texttt{q3map\_sun}, \texttt{q3map\_skylight}, \texttt{q3map\_surfacelight} ---
   are not read; the stage warns on them.
-\item \textbf{Build.} \texttt{sh-baker} builds with its own CMake and flags; q3map2's
-  \texttt{Makefile} links it only under an opt-in flag (\texttt{SH\_BAKER=1}), so a default q3map2
-  build needs neither Embree nor TBB. The stage lives in a new \texttt{light\_sh.cpp}.
+\item \textbf{Build.} Under an opt-in flag (\texttt{SH\_BAKER=1}) q3map2's \texttt{Makefile}
+  compiles \texttt{sh-baker}'s core sources from its checkout (not the glTF, CLI, visualizer or
+  test files) and links Embree, TBB and glog; a default q3map2 build needs none of them.
+  \texttt{sh-baker}'s files keep their own flags (q3map2's \texttt{-fno-exceptions -fno-rtti} does
+  not apply to them). The stage lives in a new \texttt{light\_sh.cpp}, which includes
+  \texttt{sh-baker}'s headers. \texttt{sh-baker} logs through glog to stderr, not through
+  \texttt{Sys\_Printf}, so the editor's build monitor does not show those lines.
 \item \textbf{Licence.} \texttt{sh-baker} is MIT, compatible with q3map2's GPL-2.0-or-later. Embree
   and TBB are Apache-2.0, compatible with GPLv3 but not GPLv2, so a q3map2 binary built with
   \texttt{SH\_BAKER=1} is distributed under GPLv3, which ``or any later version'' permits.
@@ -952,8 +953,8 @@ The placeholder lightmap differs from the preview until 4.3 &
 The overlay overwrites the downloaded \texttt{Q3.game} &
   The overlay is tracked in \texttt{setup/data/gamepacks/pbr/}; re-run its install after
   re-downloading the gamepacks. \\
-\texttt{sh-baker} library work disturbs its CLI &
-  Each PR keeps the CLI's behaviour and tests; the library API is reviewed before q3map2 uses it. \\
+\texttt{sh-baker} changes disturb its CLI &
+  Each PR keeps the CLI's behaviour and tests; the API is reviewed before q3map2 uses it. \\
 q3map2's lightmap pages are a worse layout than xatlas's &
   Density is controlled per shader (\texttt{q3map\_lightmapSampleSize}), globally
   (\texttt{-samplesize}) and by page size (\texttt{-lightmapsize}, \texttt{-external}). Accepted in
