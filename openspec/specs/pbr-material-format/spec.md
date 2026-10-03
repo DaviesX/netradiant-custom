@@ -1,70 +1,20 @@
 # pbr-material-format Specification
 
 ## Purpose
-The `pbr` material language: `.mtr` grammar, editor classification, the material interface exposing PBR maps and factors, and colour space handling.
+PBR data in Quake 3 shaders: the `qer_pbr_*` keywords, what the editor derives from stages, the material interface exposing PBR maps and factors, and colour space handling.
 
 ## Requirements
 
-### Requirement: PBR material language is selectable per game
-The shaders plugin SHALL expose a material language named `pbr`, selected when a `.game` file sets `shaders="pbr"`. In that mode the editor SHALL load material scripts from the `materials/` directory with the `.mtr` extension, SHALL NOT generate default shaders for bare textures, and SHALL NOT use `shaderlist.txt`. The `quake3` language SHALL carry PBR data as specified by the Quake 3 requirements of this capability.
+### Requirement: Quake 3 shaders are the only PBR material language
+The shaders plugin SHALL offer no `pbr` material language. PBR material data SHALL come only from Quake 3 shaders (`shaders="quake3"`) through the `qer_pbr_*` keywords and stages this capability specifies. The `doom3` and `quake4` languages SHALL keep reading their own `materials/*.mtr` files exactly as before this change.
 
-#### Scenario: Game selects the pbr language
-- **WHEN** the active `.game` file contains `shaders="pbr"`
-- **THEN** the editor parses every `materials/*.mtr` file in the game's search paths using the PBR grammar and lists each defined material in the texture browser
+#### Scenario: Quake 3 shaders load as before
+- **WHEN** the editor starts under `Q3.game` with the `benchmark` mod
+- **THEN** the number of loaded shader definitions and the `Error parsing shader` lines in the log are the same as before this change, and every `textures/bench/*` shader carries the same PBR data
 
-#### Scenario: Other game types are unaffected
-- **WHEN** the active `.game` file sets `shaders` to `doom3` or `quake4`
-- **THEN** material parsing behaves exactly as before this change
-
-#### Scenario: Quake 3 loads the same shaders
-- **WHEN** the active `.game` file sets `shaders="quake3"`
-- **THEN** the same set of shaders loads as before this change, with the same editor images and flags, and additionally carries the derived PBR data
-
-### Requirement: PBR material grammar
-A PBR material SHALL be a material name followed by a brace-delimited block. Inside the block, the parser SHALL recognise the keywords in the table below, each on its own line, case-insensitive. Unknown keywords SHALL be skipped to the end of their line without error. Nested brace blocks SHALL be skipped entirely.
-
-| Keyword | Arguments | Default |
-|---|---|---|
-| `basecolor` | texture path | none |
-| `normal` | texture path | flat normal |
-| `metallicroughness` | texture path (G = roughness, B = metallic) | white |
-| `occlusion` | texture path (R = occlusion) | white |
-| `emissive` | texture path | black |
-| `basecolorfactor` | r g b a | 1 1 1 1 |
-| `metallicfactor` | float | 1 |
-| `roughnessfactor` | float | 1 |
-| `emissivefactor` | r g b | 0 0 0 |
-| `emissivestrength` | float | 1 |
-| `alphamode` | `opaque` / `mask` / `blend` | `opaque` |
-| `alphacutoff` | float | 0.5 |
-| `doublesided` | none | off |
-| `qer_editorimage` | texture path | falls back to `basecolor` |
-| `qer_trans` | float | none |
-| `qer_nocarve` | none | off |
-| `surfaceparm` | name | none |
-
-#### Scenario: Minimal material
-- **WHEN** a material block contains only `basecolor textures/wall/brick_c`
-- **THEN** the material resolves its base colour texture to that image, all other maps to their defaults, and the texture browser shows the base colour image
-
-#### Scenario: Unknown keyword
-- **WHEN** a material block contains a line beginning with `q3map_lightmapsamplesize 8`
-- **THEN** the parser skips the line and the material loads without error
-
-#### Scenario: Nested block
-- **WHEN** a material block contains a nested `{ ... }` block
-- **THEN** the parser skips the nested block and continues parsing the enclosing material
-
-### Requirement: Editor classification flags from PBR materials
-The parser SHALL map `surfaceparm` values `nodraw`, `nonsolid`, `water`, `lava`, `slime`, `fog`, `areaportal`, `playerclip`, `botclip`, and `sky` to the same editor flags the Quake 3 parser sets. `alphamode mask` SHALL set the alpha-test flag with the cutoff as its reference. `alphamode blend` SHALL set the translucent flag. `doublesided` SHALL set cull to none.
-
-#### Scenario: Clip material
-- **WHEN** a material contains `surfaceparm playerclip`
-- **THEN** brushes using it are classified as clip in the editor and filtered by the clip filter
-
-#### Scenario: Masked material
-- **WHEN** a material contains `alphamode mask` and `alphacutoff 0.3`
-- **THEN** the editor renders it with alpha test greater-or-equal 0.3 in textured and lighting modes
+#### Scenario: Doom 3 materials unaffected
+- **WHEN** a Doom 3 or Quake 4 gamepack is active
+- **THEN** its `.mtr` materials load with the same editor images and flags as before this change
 
 ### Requirement: Material interface exposes PBR maps and factors
 `IShader` SHALL expose accessors for the base colour, normal, metallic-roughness, occlusion, and emissive textures, and for the base colour factor, metallic factor, roughness factor, emissive factor, emissive strength, and alpha mode. When lighting is enabled, the PBR textures SHALL be loaded; when lighting is disabled they SHALL be released, matching the existing behaviour of the bump and specular textures.
@@ -76,18 +26,18 @@ The parser SHALL map `surfaceparm` values `nodraw`, `nonsolid`, `water`, `lava`,
 - **THEN** those textures are released
 
 ### Requirement: Material files are the single source for the baker
-The material scripts the editor reads SHALL be the only material description: `scripts/*.shader` for the `quake3` language and `materials/*.mtr` for the `pbr` language. The `.mtr` grammar SHALL remain a flat, line-oriented key-value format so the SH baker can parse the same files with a small reader, and `surfaceparm` and `q3map_` keys SHALL remain inside them. For Quake 3 shaders, the editor's rules for base colour, emissive, PBR keywords and defaults (this capability) are the reference that q3map2's SH stage and `renderer_sh` implement in their own parsers.
+The `scripts/*.shader` files the editor reads SHALL be the only material description. For Quake 3 shaders, the editor's rules for base colour, emissive, PBR keywords and defaults (this capability) are the reference that q3map2's SH stage and `renderer_sh` implement in their own parsers.
 
 #### Scenario: Baker reads a material
-- **WHEN** the baker parses a `.mtr` file that the editor accepts
-- **THEN** it resolves the same texture paths and factors as the editor without any intermediate export
+- **WHEN** q3map2's SH stage reads a `scripts/*.shader` entry that the editor accepts
+- **THEN** it resolves the same texture paths and factors as the editor, from the shader text, without any intermediate export
 
 #### Scenario: Another consumer reads a Quake 3 shader
 - **WHEN** q3map2's SH stage or `renderer_sh` reads a `scripts/*.shader` entry that the editor classifies as PBR
 - **THEN** applying this capability's rules yields the same base colour, maps, factors and defaults as the editor
 
 ### Requirement: Colour space handling
-Base colour and emissive textures SHALL be treated as sRGB and decoded to linear in the lighting shader. Normal, metallic-roughness, and occlusion textures SHALL be sampled as linear data. The texture gamma preference SHALL NOT be applied to any texture loaded for lighting-mode shading, nor to the editor image of a `.mtr` material. The textured-mode editor image of a Quake 3 shader SHALL keep the gamma preference, as before this change.
+Base colour and emissive textures SHALL be treated as sRGB and decoded to linear in the lighting shader. Normal, metallic-roughness, and occlusion textures SHALL be sampled as linear data. The texture gamma preference SHALL NOT be applied to any texture loaded for lighting-mode shading. The textured-mode editor image of a Quake 3 shader SHALL keep the gamma preference.
 
 #### Scenario: Gamma preference set
 - **WHEN** the texture gamma preference is set to a value other than 1.0 and a PBR material's textures are loaded
@@ -99,7 +49,7 @@ Base colour and emissive textures SHALL be treated as sRGB and decoded to linear
 
 #### Scenario: Quake 3 textured mode unchanged
 - **WHEN** the texture gamma preference is not 1.0 and a Quake 3 PBR shader is shown in textured mode
-- **THEN** its editor image looks exactly as before this change
+- **THEN** its editor image has the gamma preference applied, exactly as before this change
 
 ### Requirement: Quake 3 shaders carry PBR keywords
 When the material language is `quake3`, the parser SHALL read these top-level keywords, case-insensitive, and SHALL ignore them inside stages. Each is optional.
@@ -190,7 +140,7 @@ A Quake 3 shader SHALL be classified as PBR when, and only when, it declares at 
 - **THEN** it is not classified as PBR
 
 ### Requirement: Quake 3 shader PBR defaults
-For a Quake 3 shader without `qer_pbr_metallicRoughness`, metallic SHALL equal `qer_pbr_metallicFactor` (default 0) and roughness SHALL equal `qer_pbr_roughnessFactor` (default 1). With the map, both factors SHALL default to 1 and multiply its B and G channels. An absent occlusion map SHALL behave as 1, and an absent normal map as flat. `.mtr` materials SHALL keep their existing defaults.
+For a Quake 3 shader without `qer_pbr_metallicRoughness`, metallic SHALL equal `qer_pbr_metallicFactor` (default 0) and roughness SHALL equal `qer_pbr_roughnessFactor` (default 1). With the map, both factors SHALL default to 1 and multiply its B and G channels. An absent occlusion map SHALL behave as 1, and an absent normal map as flat.
 
 #### Scenario: Unadorned shader
 - **WHEN** a lightmapped Quake 3 shader declares no metallic-roughness map and no factors
@@ -229,11 +179,11 @@ The preview alpha test SHALL apply in lighting mode and in the shadow caster pas
 - **THEN** textured mode and the editor's filters treat it exactly as before this change
 
 ### Requirement: The emissive strength keyword
-`qer_pbr_emissiveStrength` SHALL multiply emissive radiance only. It SHALL have no effect on a shader without an emissive stage. A Quake 3 shader's emissive radiance SHALL be the decoded emissive texel × the emissive colour × `qer_pbr_emissiveStrength`, in the same units as a `.mtr` material's `emissive` × `emissivefactor` × `emissivestrength`, with no Quake 3 specific scale.
+`qer_pbr_emissiveStrength` SHALL multiply emissive radiance only. It SHALL have no effect on a shader without an emissive stage. A Quake 3 shader's emissive radiance SHALL be the decoded emissive texel × the emissive colour × `qer_pbr_emissiveStrength`, with no Quake 3 specific scale. It is added to the base pass in the same linear units as the light passes' output, before exposure and tonemapping.
 
 #### Scenario: White glow at strength 1
-- **WHEN** a shader's additive stage is a uniform white image with no `rgbGen const` and no `qer_pbr_emissiveStrength`
-- **THEN** its emissive radiance equals that of a `.mtr` material with a white emissive map, `emissivefactor 1 1 1` and `emissivestrength 1`
+- **WHEN** a shader's additive stage is a uniform white image with no `rgbGen const` and no `qer_pbr_emissiveStrength`, and it is viewed in lighting mode with ambient 0 and no light reaching it
+- **THEN** its base pass writes a linear radiance of 1 in every channel before exposure and tonemapping
 
 #### Scenario: Boosted glow
 - **WHEN** a shader with an additive glow stage declares `qer_pbr_emissiveStrength 4`

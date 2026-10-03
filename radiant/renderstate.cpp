@@ -450,8 +450,8 @@ public:
 GLSLSkyboxProgram g_skyboxGLSL;
 
 
-// The PBR lighting preview: on for .game shaders="pbr", and a per-game camera preference ("PBR lighting preview")
-// for every other type="q3" game. ShaderCache_pbrGame() answers "is the preview active".
+// The PBR lighting preview: a per-game camera preference ("PBR lighting preview") of type="q3" games.
+// ShaderCache_pbrGame() answers "is the preview active".
 bool g_pbrPreview = true; // the preference value; only consulted for type="q3" games
 
 inline GLenum IShader_alphaFuncGL( IShader::EAlphaFunc func ){
@@ -466,21 +466,16 @@ inline GLenum IShader_alphaFuncGL( IShader::EAlphaFunc func ){
 	}
 }
 
-bool ShaderCache_pbrLanguageGame(){
-	static const bool pbr = string_equal( GlobalRadiant().getRequiredGameDescriptionKeyValue( "shaders" ), "pbr" );
-	return pbr;
-}
-
 bool ShaderCache_pbrPreviewOffered(){
 	return g_pGameDescription->mGameType == "q3";
 }
 
 bool ShaderCache_pbrGame(){
-	return ShaderCache_pbrLanguageGame() || ( g_pbrPreview && ShaderCache_pbrPreviewOffered() );
+	return g_pbrPreview && ShaderCache_pbrPreviewOffered();
 }
 
 bool ShaderCache_getPBRPreview(){
-	return g_pbrPreview || ShaderCache_pbrLanguageGame();
+	return g_pbrPreview;
 }
 
 class OpenGLShaderCache;
@@ -3119,8 +3114,7 @@ void OpenGLShader::construct( const char* name ){
 			IShader::EAlphaFunc alphaFunc;
 			float alphaRef;
 			m_shader->getPreviewAlphaFunc( &alphaFunc, &alphaRef );
-			const bool masked = alphaFunc != IShader::eAlways;
-			const bool blended = m_shader->getAlphaMode() == IShader::eAlphaBlend;
+			const bool masked = alphaFunc != IShader::eAlways; // preview-lit shaders are never blended
 
 			m_pbrBaseProgram = new GLSLPBRMaterialProgram( *m_shader, true );
 			m_pbrLightProgram = new GLSLPBRMaterialProgram( *m_shader, false );
@@ -3139,18 +3133,8 @@ void OpenGLShader::construct( const char* name ){
 				state.m_alphafunc = IShader_alphaFuncGL( alphaFunc );
 				state.m_alpharef = alphaRef;
 			}
-			if ( blended ) {
-				state.m_state |= RENDER_BLEND;
-				state.m_blend_src = GL_SRC_ALPHA;
-				state.m_blend_dst = GL_ONE_MINUS_SRC_ALPHA;
-				state.m_sort = OpenGLState::eSortTranslucent;
-				state.m_depthfunc = GL_LEQUAL;
-			}
-			else
-			{
-				state.m_state |= RENDER_DEPTHWRITE;
-				state.m_sort = OpenGLState::eSortOpaque;
-			}
+			state.m_state |= RENDER_DEPTHWRITE;
+			state.m_sort = OpenGLState::eSortOpaque;
 
 			// one additive pass per light
 			OpenGLState& lightPass = appendDefaultPass();
@@ -3163,7 +3147,7 @@ void OpenGLShader::construct( const char* name ){
 			lightPass.m_colour = Vector4( 1, 1, 1, 1 );
 			lightPass.m_program = m_pbrLightProgram;
 			lightPass.m_depthfunc = GL_LEQUAL;
-			lightPass.m_sort = blended ? OpenGLState::eSortTranslucent : OpenGLState::eSortMultiFirst;
+			lightPass.m_sort = OpenGLState::eSortMultiFirst;
 			lightPass.m_blend_src = GL_ONE;
 			lightPass.m_blend_dst = GL_ONE;
 			if ( masked ) {

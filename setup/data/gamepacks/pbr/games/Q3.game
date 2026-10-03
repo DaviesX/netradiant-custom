@@ -3,7 +3,7 @@
   Overlay of the downloaded Quake III Arena game file (games/NRCPack/games/Q3.game), installed by the pbr
   gamepack after the downloaded packs. The only change is entities="pbr": the pbr entity module is the quake3
   module plus the editor's physical light entities (light, light_spot, light_sun), whose definitions come from
-  Q3.game/baseq3/_pbr_lights.ent. See pbr.game/README.md and CLAUDE.md.
+  Q3.game/baseq3/_pbr_lights.ent. See the pack's README.md (setup/data/gamepacks/pbr/) and CLAUDE.md.
 -->
 <game
   type="q3"

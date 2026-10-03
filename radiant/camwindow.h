@@ -74,7 +74,7 @@ struct camwindow_globals_t
 
 extern camwindow_globals_t g_camwindow_globals;
 
-/// Lighting draw mode preferences for PBR games (see pbr-lighting-preview spec).
+/// Lighting draw mode preferences while the PBR lighting preview is active (see pbr-lighting-preview spec).
 float Camera_lightingExposure();
 float Camera_lightingAmbient();
 

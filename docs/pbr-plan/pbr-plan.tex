@@ -94,12 +94,13 @@ carry everything \texttt{renderer\_sh} needs. Within that, the easiest path in t
   that is not expected to match the preview. 0.3 measures the \texttt{sh-baker} lightmap after 4.3.
 \item[q3map2 stays the host.] BSP, \texttt{-meta}, \texttt{-vis}, lightmap UV pages, light-grid
   points and vertex lists remain q3map2's; only its lighting maths (\texttt{-light}) is replaced.
-\item[Emissive strength has the \texttt{.mtr} meaning.] No scale constant $S$ and no
+\item[Emissive strength has no Quake~3 scale.] No scale constant $S$ and no
   \texttt{include/pbrunits.h}: emissive radiance is texel $\times$ \texttt{rgbGen const} colour
-  $\times$ \texttt{qer\_pbr\_emissiveStrength}, in the same units as \texttt{.mtr}
-  \texttt{emissivestrength}.
-\item[The editor's shadow-caster rule is authoritative.] Never cast: sky, fog, hint, areaportal,
-  \texttt{noshadows}, water, slime, lava, and \texttt{trans} without \texttt{alphashadow}. Solid
+  $\times$ \texttt{qer\_pbr\_emissiveStrength}, added to the base pass in the light passes' linear
+  units.
+\item[The editor's shadow-caster rule is authoritative.] Never cast: sky, fog, hint, trigger,
+  areaportal, \texttt{noshadows}, player and bot clip, water, slime, lava, and \texttt{trans} without
+  \texttt{alphashadow}. Solid
   caulk casts; alpha-tested shaders cast through their preview alpha test; other drawn opaque
   surfaces cast. \texttt{sh-baker} follows the editor; nothing claims to mirror q3map2.
 \item[\texttt{pbr.game} stays frozen; its light entities move.] A7 still deletes \texttt{pbr.game}
@@ -353,8 +354,9 @@ Factors & \texttt{qer\_pbr\_roughnessFactor <f>}, \texttt{qer\_pbr\_metallicFact
   1 and multiply it, as in glTF. &
   \texttt{*factor} \\
 Emissive (sRGB) & An additive stage (\texttt{blendFunc add}) carrying the emission image, optional
-  \texttt{rgbGen const}. \texttt{qer\_pbr\_emissiveStrength <f>} (default 1) scales it with the
-  \texttt{.mtr} meaning: radiance $=$ texel $\times$ colour $\times$ strength. Stock renderers draw
+  \texttt{rgbGen const}. \texttt{qer\_pbr\_emissiveStrength <f>} (default 1) scales it: radiance
+  $=$ texel $\times$ colour $\times$ strength, in the light passes' linear units with no Quake~3
+  specific scale. Stock renderers draw
   the stage unscaled. &
   \texttt{emissive} \\
 \bottomrule
@@ -449,7 +451,7 @@ are not part of this plan; the exporter's parsing code is an open decision (§\r
 \item Gamepacks are data; the lighting draw mode, the half-float target and tonemap resolve, and
   sun-cascade plus spot-atlas shadow maps are implemented and documented
   (\texttt{radiant/renderstate.cpp}, \texttt{radiant/cascade.h},
-  \texttt{install/gamepacks/pbr.game/README.md}).
+  \texttt{setup/data/gamepacks/pbr/README.md}).
 \item The gating on ``is this a PBR game'' is a single string test,
   \texttt{renderstate.cpp:2202}, against the \texttt{.game} \texttt{shaders} key; per-material
   dispatch already exists (\texttt{renderstate.cpp:3054}, \texttt{m\_shader->isPBR()}), so a mixed
@@ -617,7 +619,10 @@ gives both stock shaders and the preview:
   (including \texttt{-shbake} once Stage~4 lands), the benchmark map, the shadow and units
   documentation --- into the Quake~3 pack; retire \texttt{SHADERLANGUAGE\_PBR} and the
   \texttt{.mtr} parser; delete \texttt{pbr.game}. The \texttt{pbr} entity module stays, because
-  \texttt{Q3.game} uses it.
+  \texttt{Q3.game} uses it. The build menu entry is the overlay menu's ``Town'' build
+  (\texttt{-meta -keeplights}, \texttt{-vis -saveprt}, \texttt{-light -patchshadows}); \texttt{-shbake}
+  joins it in 4.3. The documentation is \texttt{setup/data/gamepacks/pbr/README.md}; the benchmark is
+  \texttt{content/benchmark/}. \emph{Done (\texttt{retire-pbr-game}).}
 \end{enumerate}
 Exit criterion: the town block renders in the editor's lighting mode under \texttt{Q3.game}, with
 screenshots from the documented views recorded. Numerical parity with
@@ -881,7 +886,7 @@ Consumer & Current scale & Where \\
 \texttt{sh-renderer} & $\times 1/200$ on the glTF intensity; replaced by reading the entities (3.4) &
   \texttt{sh-renderer/src/loader.cpp:18}, \texttt{kLightIntensityScale} \\
 Editor & flux in the tens of thousands, raw map units, no metre conversion; this is the model &
-  \texttt{install/gamepacks/pbr.game/README.md} \\
+  \texttt{setup/data/gamepacks/pbr/README.md} \\
 \texttt{sh-baker} & physical intensity from its glTF loader & set by \texttt{-shbake} from the
   entities, unchanged \\
 \bottomrule

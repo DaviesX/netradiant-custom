@@ -5,9 +5,8 @@ Shadow caster pass, fragment program.
 Colour writes are off, so this only has to decide whether the fragment occludes.
 Alpha-tested materials discard the texels that fail their preview alpha test, so
 a fence casts its cut-out pattern instead of a solid rectangle. The test is the
-stage alphaFunc of a Quake 3 shader (GT0, LT128, GE128) or a .mtr material's
-"alphamode mask" cutoff. u_alpha_func is 0 for every other material, which
-skips the texture fetch.
+base colour stage's alphaFunc of a Quake 3 shader (GT0, LT128, GE128).
+u_alpha_func is 0 for every other material, which skips the texture fetch.
 
 GLSL 1.20 to match the QOpenGLFunctions_2_0 binding used by the editor.
 */

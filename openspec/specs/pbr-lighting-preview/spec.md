@@ -1,19 +1,19 @@
 # pbr-lighting-preview Specification
 
 ## Purpose
-The camera lighting draw mode for the PBR lighting preview (always on for `pbr` games, a per-game preference for other Quake 3 games): physically based BRDF passes, HDR framebuffer, exposure and tonemapped resolve.
+The camera lighting draw mode for the PBR lighting preview (a per-game preference for Quake 3 games): physically based BRDF passes, HDR framebuffer, exposure and tonemapped resolve.
 
 ## Requirements
 
 ### Requirement: Lighting draw mode renders PBR materials with a physically based BRDF
-When the camera is in lighting draw mode and the PBR lighting preview is active, each lit surface SHALL be shaded with the metallic-roughness BRDF: GGX normal distribution, Smith-Schlick geometry, Schlick Fresnel with F0 = mix(0.04, basecolor, metallic), and Disney diffuse. Lit surfaces are those with a `.mtr` material and, under the `quake3` language, those whose shader is lightmapped and opaque, as specified below. Normal mapping SHALL use the per-vertex tangent frame already supplied by brushes and patches.
+When the camera is in lighting draw mode and the PBR lighting preview is active, each lit surface SHALL be shaded with the metallic-roughness BRDF: GGX normal distribution, Smith-Schlick geometry, Schlick Fresnel with F0 = mix(0.04, basecolor, metallic), and Disney diffuse. Lit surfaces are those whose Quake 3 shader is lightmapped and opaque, as specified below. Normal mapping SHALL use the per-vertex tangent frame already supplied by brushes and patches.
 
 #### Scenario: Metallic sphere
-- **WHEN** a patch sphere uses a material with `metallicfactor 1` and `roughnessfactor 0.2` under a single point light
+- **WHEN** a patch sphere uses a lightmapped shader with `qer_pbr_metallicFactor 1` and `qer_pbr_roughnessFactor 0.2` under a single point light
 - **THEN** it shows a tight specular highlight tinted by its base colour and no diffuse term
 
 #### Scenario: Rough dielectric
-- **WHEN** a surface uses `metallicfactor 0` and `roughnessfactor 1`
+- **WHEN** a surface uses a lightmapped shader with `qer_pbr_metallicFactor 0` and `qer_pbr_roughnessFactor 1`
 - **THEN** it shows a diffuse falloff with a broad, dim highlight
 
 #### Scenario: Quake 3 shader with normal map
@@ -79,11 +79,10 @@ When the active game is a Doom 3 or Quake 4 game (material language `doom3` or `
 
 ### Requirement: PBR lighting preview preference
 The editor SHALL provide a per-game camera preference, "PBR lighting preview" (boolean):
-- for games whose `.game` declares `type="q3"`, it is shown and defaults to on;
-- for every other game type, it is hidden;
-- when the `.game` declares `shaders="pbr"`, it is shown ticked and disabled.
+- for games whose `.game` declares `type="q3"`, it is shown, editable and defaults to on;
+- for every other game type, it is hidden.
 
-The preview is active while the preference is on. A change takes effect without a restart. The "Lighting exposure", "Lighting ambient" and "Lighting shadows" preferences SHALL be shown exactly when this preference is shown.
+The preview is active while the preference is on. No `.game` key forces it on. A change takes effect without a restart. The "Lighting exposure", "Lighting ambient" and "Lighting shadows" preferences SHALL be shown exactly when this preference is shown.
 
 #### Scenario: Quake 3 default
 - **WHEN** the editor starts under `Q3.game` with no saved value for the preference
@@ -102,12 +101,12 @@ The preview is active while the preference is on. A change takes effect without 
 - **THEN** the preference does not appear and lighting mode uses the existing Doom 3 program
 
 ### Requirement: Lightmapped opaque shaders are lit in the preview
-While the preview is active, a `.mtr` material SHALL be shaded by the metallic-roughness BRDF as before this change. A Quake 3 shader SHALL be shaded by it exactly when it meets all of these:
+While the preview is active, a Quake 3 shader SHALL be shaded by the metallic-roughness BRDF exactly when it meets all of these:
 - it is lightmapped: a `$lightmap` stage, or a bare texture with no script;
 - it is not blended;
 - it does not declare `surfaceparm sky`, `fog` or `nolightmap`.
 
-This applies whether or not the shader is classified as PBR. A non-PBR shader SHALL use its base colour and the Quake 3 defaults. Alpha-tested shaders SHALL be lit, with their alpha test applied.
+This applies whether or not the shader is classified as PBR. A non-PBR shader SHALL use its base colour and the Quake 3 defaults. Alpha-tested shaders SHALL be lit, with their alpha test applied. No lit surface is blended.
 
 #### Scenario: Bare baseq3 texture
 - **WHEN** a brush face uses a baseq3 texture with no `qer_pbr_` keywords, near a light

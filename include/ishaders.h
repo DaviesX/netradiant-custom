@@ -138,9 +138,9 @@ public:
 
 	virtual qtexture_t* lightFalloffImage() const = 0;
 
-// PBR (glTF metallic-roughness) material data. isPBR() is the classification (a .mtr material, or a Quake 3
-// shader declaring a qer_pbr_ keyword); the textures are loaded while lighting is enabled, like the
-// bump/specular maps, for PBR and preview-lit shaders.
+// PBR (glTF metallic-roughness) material data, filled from a Quake 3 shader's qer_pbr_ keywords and stages.
+// isPBR() is the classification (the shader declares a qer_pbr_ keyword); the textures are loaded while
+// lighting is enabled, like the bump/specular maps, for PBR and preview-lit shaders.
 	virtual bool isPBR() const = 0;
 	virtual qtexture_t* getBaseColor() const = 0;
 	virtual qtexture_t* getNormal() const = 0;
@@ -155,8 +155,8 @@ public:
 	virtual EAlphaMode getAlphaMode() const = 0;
 	virtual float getAlphaCutoff() const = 0;
 	virtual bool isDoubleSided() const = 0;
-// Lighting preview: whether the surface is shaded by the BRDF (.mtr materials, and lightmapped opaque
-// Quake 3 shaders), and the alpha test it uses there and in the shadow caster pass. This is the stage
+// Lighting preview: whether the surface is shaded by the BRDF (lightmapped, non-blended Quake 3 shaders),
+// and the alpha test it uses there and in the shadow caster pass. This is the stage
 // alphaFunc for Quake 3 shaders, separate from qer_alphafunc (getAlphaFunc), which drives textured mode.
 	virtual bool isPreviewLit() const = 0;
 	virtual void getPreviewAlphaFunc( EAlphaFunc *func, float *ref ) const = 0;

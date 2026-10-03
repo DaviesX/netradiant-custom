@@ -25,15 +25,11 @@ void ShaderCache_setBumpEnabled( bool enabled );
 void ShaderCache_extensionsInitialised();
 
 /// True while the PBR lighting preview is active: lighting mode renders with the PBR programs and HDR resolve.
-/// It is always on for a .game with shaders="pbr", and follows the "PBR lighting preview" preference for other
-/// type="q3" games.
+/// It follows the "PBR lighting preview" preference of type="q3" games.
 bool ShaderCache_pbrGame();
 /// True when the game offers the "PBR lighting preview" preference (type="q3").
 bool ShaderCache_pbrPreviewOffered();
-/// True when the game's material language is pbr, which forces the preview on.
-bool ShaderCache_pbrLanguageGame();
-/// The preference value (always true for shaders="pbr"). Setting it rebuilds the shader states; leave lighting
-/// mode first when turning it off.
+/// The preference value. Setting it rebuilds the shader states; leave lighting mode first when turning it off.
 bool ShaderCache_getPBRPreview();
 void ShaderCache_setPBRPreview( bool enabled );
 
@@ -53,7 +49,7 @@ struct ShadowCascadeCamera;
 class Matrix4;
 
 /// \brief Brings the shadow atlases up to date for this frame, if anything they depend on has changed.
-/// Called from the camera before it binds its own target, in lighting draw mode in a pbr game; the atlases and
+/// Called from the camera before it binds its own target, in lighting draw mode while the PBR lighting preview is active; the atlases and
 /// the framebuffer binding are restored before it returns. \p cameraView is the camera's modelview matrix,
 /// which cascade selection needs. No-op in any other game or draw mode.
 void ShaderCache_updateShadows( const ShadowCascadeCamera& camera, const Matrix4& cameraView );

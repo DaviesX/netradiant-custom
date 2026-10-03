@@ -344,8 +344,7 @@ public:
 	float m_alphaCutoff;
 	bool m_doubleSided;
 
-// lighting preview data shared by both languages
-	bool m_fromMtr;      ///< parsed from a .mtr material: PBR loader for the editor image, no Doom 3 bump path
+// lighting preview data, derived from Quake 3 stages
 	bool m_previewLit;   ///< shaded by the lighting preview's BRDF
 	IShader::EAlphaFunc m_previewAlphaFunc; ///< alpha test of the lighting preview and the shadow caster pass
 	float m_previewAlphaRef;
@@ -364,7 +363,6 @@ public:
 		m_alphaMode( IShader::eAlphaOpaque ),
 		m_alphaCutoff( 0.5f ),
 		m_doubleSided( false ),
-		m_fromMtr( false ),
 		m_previewLit( false ),
 		m_previewAlphaFunc( IShader::eAlways ),
 		m_previewAlphaRef( 0 ){
@@ -397,7 +395,6 @@ public:
 
 	bool parseDoom3( Tokeniser& tokeniser );
 	bool parseQuake3( Tokeniser& tokeniser );
-	bool parsePBR( Tokeniser& tokeniser );
 	void deriveQuake3( const std::vector<Quake3Stage>& stages, bool qerTrans, bool metallicFactorSet );
 	bool parseTemplate( Tokeniser& tokeniser );
 
@@ -998,7 +995,7 @@ public:
 		return m_pDiffuse;
 	}
 	qtexture_t* getBump() const override {
-		return m_template.m_fromMtr ? 0 : m_pBump; // .mtr materials never take the Doom 3 bump path
+		return m_pBump;
 	}
 	qtexture_t* getSpecular() const override {
 		return m_pSpecular;
@@ -1101,10 +1098,7 @@ public:
 // -----------------------------------------
 
 	void realise(){
-		// .mtr editor images bypass the gamma table like every other texture the material references
-		m_pTexture = m_template.m_fromMtr
-		           ? evaluateTexture( m_template.m_textureName, m_template.m_params, m_args, pbrTextureLoader() )
-		           : evaluateTexture( m_template.m_textureName, m_template.m_params, m_args );
+		m_pTexture = evaluateTexture( m_template.m_textureName, m_template.m_params, m_args );
 
 		if ( m_pTexture->texture_number == 0 ) {
 			m_notfound = m_pTexture;
@@ -1815,188 +1809,6 @@ void PBR_readLineArguments( Tokeniser& tokeniser, std::size_t line, std::vector<
 	}
 }
 
-inline float PBR_argFloat( const std::vector<CopiedString>& args, std::size_t index, float fallback ){
-	float f;
-	if ( index < args.size() && string_parse_float( args[index].c_str(), f ) ) {
-		return f;
-	}
-	return fallback;
-}
-
-/// \brief Parses a PBR material: a flat, line oriented key-value block modelled on glTF metallic-roughness.
-/// Unknown keywords are skipped to the end of their line; nested brace blocks are skipped entirely.
-bool ShaderTemplate::parsePBR( Tokeniser& tokeniser ){
-	m_pbr = true;
-	m_fromMtr = true;
-	m_previewLit = true; // .mtr materials are always lit, blended ones included
-	m_textureName = "";
-	m_Cull = IShader::eCullBack;
-	bool transSet = false;
-
-	tokeniser.nextLine();
-
-	int depth = 0;
-	std::vector<CopiedString> args;
-	for (;; )
-	{
-		const char* token = tokeniser.getToken();
-
-		if ( token == 0 ) {
-			return false;
-		}
-
-		if ( string_equal( token, "{" ) ) {
-			++depth;
-			continue;
-		}
-		else if ( string_equal( token, "}" ) ) {
-			--depth;
-			if ( depth < 0 ) { // underflow
-				return false;
-			}
-			if ( depth == 0 ) { // end of material
-				break;
-			}
-			continue;
-		}
-
-		if ( depth != 1 ) { // inside a nested block: skip
-			continue;
-		}
-
-		// the tokeniser reuses its token buffer: keep the keyword before reading the arguments
-		const CopiedString keyword( token );
-		token = keyword.c_str();
-		args.clear();
-		PBR_readLineArguments( tokeniser, tokeniser.getLine(), args );
-
-		if ( string_equal_nocase( token, "basecolor" ) ) {
-			if ( !args.empty() ) parseTextureName( m_baseColor, args[0].c_str() );
-		}
-		else if ( string_equal_nocase( token, "normal" ) ) {
-			if ( !args.empty() ) parseTextureName( m_normal, args[0].c_str() );
-		}
-		else if ( string_equal_nocase( token, "metallicroughness" ) ) {
-			if ( !args.empty() ) parseTextureName( m_metallicRoughness, args[0].c_str() );
-		}
-		else if ( string_equal_nocase( token, "occlusion" ) ) {
-			if ( !args.empty() ) parseTextureName( m_occlusion, args[0].c_str() );
-		}
-		else if ( string_equal_nocase( token, "emissive" ) ) {
-			if ( !args.empty() ) parseTextureName( m_emissive, args[0].c_str() );
-		}
-		else if ( string_equal_nocase( token, "basecolorfactor" ) ) {
-			m_baseColorFactor = Vector4( PBR_argFloat( args, 0, 1 ), PBR_argFloat( args, 1, 1 ), PBR_argFloat( args, 2, 1 ), PBR_argFloat( args, 3, 1 ) );
-		}
-		else if ( string_equal_nocase( token, "metallicfactor" ) ) {
-			m_metallicFactor = PBR_argFloat( args, 0, 1 );
-		}
-		else if ( string_equal_nocase( token, "roughnessfactor" ) ) {
-			m_roughnessFactor = PBR_argFloat( args, 0, 1 );
-		}
-		else if ( string_equal_nocase( token, "emissivefactor" ) ) {
-			m_emissiveFactor = Vector3( PBR_argFloat( args, 0, 0 ), PBR_argFloat( args, 1, 0 ), PBR_argFloat( args, 2, 0 ) );
-		}
-		else if ( string_equal_nocase( token, "emissivestrength" ) ) {
-			m_emissiveStrength = PBR_argFloat( args, 0, 1 );
-		}
-		else if ( string_equal_nocase( token, "alphamode" ) ) {
-			if ( !args.empty() && string_equal_nocase( args[0].c_str(), "mask" ) ) {
-				m_alphaMode = IShader::eAlphaMask;
-			}
-			else if ( !args.empty() && string_equal_nocase( args[0].c_str(), "blend" ) ) {
-				m_alphaMode = IShader::eAlphaBlend;
-			}
-			else
-			{
-				m_alphaMode = IShader::eAlphaOpaque;
-			}
-		}
-		else if ( string_equal_nocase( token, "alphacutoff" ) ) {
-			m_alphaCutoff = PBR_argFloat( args, 0, 0.5f );
-		}
-		else if ( string_equal_nocase( token, "doublesided" ) ) {
-			m_doubleSided = true;
-		}
-		else if ( string_equal_nocase( token, "qer_editorimage" ) ) {
-			if ( !args.empty() ) parseTextureName( m_textureName, args[0].c_str() );
-		}
-		else if ( string_equal_nocase( token, "qer_trans" ) ) {
-			m_fTrans = PBR_argFloat( args, 0, 1 );
-			m_nFlags |= QER_TRANS;
-			transSet = true;
-		}
-		else if ( string_equal_nocase( token, "qer_nocarve" ) ) {
-			m_nFlags |= QER_NOCARVE;
-		}
-		else if ( string_equal_nocase( token, "surfaceparm" ) ) {
-			const char* surfaceparm = args.empty() ? "" : args[0].c_str();
-
-			if ( string_equal_nocase( surfaceparm, "fog" ) ) {
-				m_nFlags |= QER_FOG;
-				m_nFlags |= QER_TRANS;
-				if ( !transSet ) {
-					m_fTrans = 0.35f;
-				}
-			}
-			else if ( string_equal_nocase( surfaceparm, "nodraw" ) ) {
-				m_nFlags |= QER_NODRAW;
-			}
-			else if ( string_equal_nocase( surfaceparm, "nonsolid" ) ) {
-				m_nFlags |= QER_NONSOLID;
-			}
-			else if ( string_equal_nocase( surfaceparm, "water" ) ||
-			          string_equal_nocase( surfaceparm, "lava" ) ||
-			          string_equal_nocase( surfaceparm, "slime") ){
-				m_nFlags |= QER_LIQUID;
-			}
-			else if ( string_equal_nocase( surfaceparm, "areaportal" ) ) {
-				m_nFlags |= QER_AREAPORTAL;
-			}
-			else if ( string_equal_nocase( surfaceparm, "playerclip" ) ) {
-				m_nFlags |= QER_CLIP;
-			}
-			else if ( string_equal_nocase( surfaceparm, "botclip" ) ) {
-				m_nFlags |= QER_BOTCLIP;
-			}
-			else if ( string_equal_nocase( surfaceparm, "sky" ) ) {
-				m_nFlags |= QER_SKY;
-			}
-			else if ( string_equal_nocase( surfaceparm, "noshadows" ) ||
-			          string_equal_nocase( surfaceparm, "trigger" ) ||
-			          string_equal_nocase( surfaceparm, "hint" ) ) {
-				m_nFlags |= QER_NOSHADOWS;
-			}
-		}
-		// anything else (q3map_*, comments in unknown syntax, ...) is skipped
-	}
-
-	// editor classification derived from the material
-	if ( m_alphaMode == IShader::eAlphaMask ) {
-		m_nFlags |= QER_ALPHATEST;
-		m_AlphaFunc = IShader::eGEqual;
-		m_AlphaRef = m_alphaCutoff;
-		m_previewAlphaFunc = IShader::eGEqual;
-		m_previewAlphaRef = m_alphaCutoff;
-	}
-	else if ( m_alphaMode == IShader::eAlphaBlend ) {
-		m_nFlags |= QER_TRANS;
-		if ( !transSet ) {
-			m_fTrans = 1;
-		}
-	}
-	if ( m_doubleSided ) {
-		m_Cull = IShader::eCullNone;
-		m_nFlags |= QER_CULL;
-	}
-
-	if ( m_textureName.empty() ) {
-		m_textureName = m_baseColor;
-	}
-
-	return true;
-}
-
 std::list<CopiedString> g_shaderFilenames;
 
 void ParseShaderFile( Tokeniser& tokeniser, const char* filename ){
@@ -2061,8 +1873,6 @@ void ParseShaderFile( Tokeniser& tokeniser, const char* filename ){
 
 				bool result = ( g_shaderLanguage == SHADERLANGUAGE_QUAKE3 )
 				              ? shaderTemplate->parseQuake3( tokeniser )
-				              : ( g_shaderLanguage == SHADERLANGUAGE_PBR )
-				              ? shaderTemplate->parsePBR( tokeniser )
 				              : shaderTemplate->parseDoom3( tokeniser );
 				if ( result ) {
 					// do we already have this shader?

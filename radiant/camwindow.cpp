@@ -27,7 +27,6 @@
 
 #include "camwindow.h"
 
-#include <QCheckBox>
 
 #include "debugging/debugging.h"
 
@@ -196,7 +195,7 @@ inline bool Camera_lightingModeAvailable(){
 }
 /// Games where lighting mode can exist at all; the preview preference can switch it on and off at run time.
 inline bool Camera_lightingModeOffered(){
-	return g_pGameDescription->mGameType == "doom3" || ShaderCache_pbrPreviewOffered() || ShaderCache_pbrLanguageGame();
+	return g_pGameDescription->mGameType == "doom3" || ShaderCache_pbrPreviewOffered();
 }
 
 
@@ -971,7 +970,7 @@ class CamWnd
 	camera_t m_Camera;
 	RadiantCameraView m_cameraview;
 
-	// HDR target for lighting mode in PBR games (half-float colour + depth), resolved with exposure and tonemap
+	// HDR target for lighting mode while the PBR lighting preview is active (half-float colour + depth), resolved with exposure and tonemap
 	QOpenGLFramebufferObject* m_hdr{};
 	bool m_hdrWarned{};
 	GLint m_hdrPreviousFBO{};
@@ -2634,8 +2633,8 @@ typedef FreeCaller<void(float), LightingAmbientImport> LightingAmbientImportCall
 /// The "PBR lighting preview" preference: leaves lighting mode before the preview turns off, then rebuilds the
 /// shader states so the PBR programs are created or destroyed. No restart is needed.
 void PBRPreviewImport( bool value ){
-	if ( ShaderCache_pbrLanguageGame() || value == ShaderCache_getPBRPreview() ) {
-		return; // forced on by the pbr material language, or unchanged
+	if ( value == ShaderCache_getPBRPreview() ) {
+		return;
 	}
 	if ( !value ) {
 		g_lightingModeDeferred = false;
@@ -2725,15 +2724,12 @@ void Camera_constructPreferences( PreferencesPage& page ){
 	                    0
 	                  );
 
-	if ( ShaderCache_pbrPreviewOffered() || ShaderCache_pbrLanguageGame() ) {
-		QCheckBox* preview = page.appendCheckBox(
+	if ( ShaderCache_pbrPreviewOffered() ) {
+		page.appendCheckBox(
 		    "", "PBR lighting preview",
 		    PBRPreviewImportCaller(),
 		    PBRPreviewExportCaller()
 		);
-		if ( ShaderCache_pbrLanguageGame() ) { // the pbr material language has no other way to draw its materials
-			preview->setEnabled( false );
-		}
 		page.appendSpinner( "Lighting exposure", 0.001, 1000.0,
 		                    FloatImportCallback( LightingExposureImportCaller() ),
 		                    FloatExportCallback( FloatExportCaller( g_camwindow_globals_private.m_lightingExposure ) ),
@@ -2849,7 +2845,7 @@ void CamWnd_Construct(){
 	GlobalPreferenceSystem().registerPreference( "ColorCameraBackground", Vector3ImportStringCaller( g_camwindow_globals.color_cameraback ), Vector3ExportStringCaller( g_camwindow_globals.color_cameraback ) );
 	GlobalPreferenceSystem().registerPreference( "ColorCameraSelection", Vector3ImportStringCaller( g_camwindow_globals.color_selbrushes3d ), Vector3ExportStringCaller( g_camwindow_globals.color_selbrushes3d ) );
 	// before CameraRenderMode, which can only restore lighting mode while the preview is on
-	if ( ShaderCache_pbrPreviewOffered() && !ShaderCache_pbrLanguageGame() ) {
+	if ( ShaderCache_pbrPreviewOffered() ) {
 		GlobalPreferenceSystem().registerPreference( "LightingPBRPreview", makeBoolStringImportCallback( PBRPreviewImportCaller() ), makeBoolStringExportCallback( PBRPreviewExportCaller() ) );
 	}
 	GlobalPreferenceSystem().registerPreference( "CameraRenderMode", makeIntStringImportCallback( RenderModeImportCaller() ), makeIntStringExportCallback( RenderModeExportCaller() ) );

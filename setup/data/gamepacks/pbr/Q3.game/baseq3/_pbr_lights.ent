@@ -2,7 +2,7 @@
 <!--
  Physical light entities for Quake III Arena (installed into gamepacks/Q3.game/baseq3/ by the pbr gamepack).
  This file sorts before entities.ent, and the first definition of a class name wins, so its "light" replaces the
- stock q3map2 light. The definitions are copied from pbr.game/base/entities.ent; keep the two in step.
+ stock q3map2 light. This is the only copy of these definitions; the units are documented in the pack's README.md.
  Light units: "intensity" is radiant flux for light and light_spot and irradiance for light_sun; distances are
  raw map units. The editor preview, sh-baker and renderer_sh read these keys; stock Quake 3 frees "light" and
  prints "doesn't have a spawn function" for light_spot and light_sun, which is harmless.

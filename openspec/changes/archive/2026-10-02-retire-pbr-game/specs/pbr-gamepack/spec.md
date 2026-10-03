@@ -1,9 +1,4 @@
-# pbr-gamepack Specification
-
-## Purpose
-The `pbr` gamepack source: the overlay that gives the downloaded Quake III Arena pack its PBR game file, light definitions, build menu and documentation, and the parity criterion against the engine.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: PBR gamepack layout
 The repository's `pbr` gamepack source (`setup/data/gamepacks/pbr/`) SHALL be an overlay of the downloaded Quake III Arena pack. It SHALL contain `games/Q3.game`, `Q3.game/baseq3/_pbr_lights.ent`, `Q3.game/default_build_menu.xml` and a `README.md` at its root. It SHALL NOT contain a game of its own: no `games/pbr.game` and no `pbr.game/` directory. No `.game` file in the repository SHALL set `shaders="pbr"`.
@@ -40,3 +35,9 @@ The pack's root `README.md` SHALL document the shadow scheme so it can be compar
 #### Scenario: Reader can reproduce the scheme
 - **WHEN** a reader follows the README's shadow section
 - **THEN** every constant used by the editor's shadow path is listed with its value and its source
+
+## REMOVED Requirements
+
+### Requirement: Benchmark map
+**Reason**: The benchmark is the `benchmark` mod in `content/benchmark/`. The `benchmark-map` capability specifies it, including its materials, lights, occlusion cases and compile. The `pbr.game` copy this requirement described is deleted with the pack.
+**Migration**: Use `content/benchmark/maps/bench.map` under `Q3.game` with the `benchmark` mod. The old copy is in git history before this change.

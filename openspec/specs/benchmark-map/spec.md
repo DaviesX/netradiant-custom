@@ -17,7 +17,7 @@ The benchmark SHALL be stored in the repository under `content/benchmark/`, laid
 - **THEN** the map loads and the player spawns
 
 ### Requirement: Benchmark materials are vanilla shaders with PBR keywords
-Every benchmark material SHALL be a `scripts/bench.shader` entry using only vanilla Quake 3 shader keywords plus top-level `qer_pbr_*`. Normal maps SHALL be declared with `qer_pbr_normal`. Emissive SHALL be an additive stage, with `qer_pbr_emissiveStrength` where the `.mtr` had `emissivestrength`. The shaders SHALL contain no `q3map_sun` and no `q3map_surfacelight`. No image SHALL be named `<base>_n`, `<base>_nh` or `<base>_s`.
+Every benchmark material SHALL be a `scripts/bench.shader` entry using only vanilla Quake 3 shader keywords plus top-level `qer_pbr_*`. Normal maps SHALL be declared with `qer_pbr_normal`. Emissive SHALL be an additive stage, with `qer_pbr_emissiveStrength` where the glow needs more than the stage colour. The shaders SHALL contain no `q3map_sun` and no `q3map_surfacelight`. No image SHALL be named `<base>_n`, `<base>_nh` or `<base>_s`.
 
 #### Scenario: Every feature present
 - **WHEN** the shader file is read

@@ -68,8 +68,8 @@ allowlists exactly those two.
 
 ## Conversion from the `pbr.game` bench
 
-The map (before the vegetation and the light retune, which came later), its entities and every key and value were copied unchanged from `setup/data/gamepacks/pbr/pbr.game/base/`,
-which stays frozen until A7 deletes it. The materials were converted:
+The map (before the vegetation and the light retune, which came later), its entities and every key and value were copied unchanged from `setup/data/gamepacks/pbr/pbr.game/base/`.
+A7 (change `retire-pbr-game`) deleted that pack; the source is in git history at `c572c087`. The materials were converted:
 
 - `materials/bench.mtr` became `scripts/bench.shader`. Lightmapped materials are a `$lightmap` stage followed by the
   base colour with `blendFunc GL_DST_COLOR GL_ZERO`.

@@ -17,12 +17,32 @@ Screenshots (baseline/), editor camera automation, map content/fixtures/maps/fix
   fixture_lmfirst.png        Q3.game fixtures textured  origin "-1024 -160 32"
   fixture_fence.png          Q3.game fixtures textured  origin "224 -160 32"
   pbrgame_bench_lighting.png pbr.game         lighting, shadows on, origin "-96 -36 50", map pbr.game/base/maps/bench.map
+                             (history: pbr.game was deleted by A7, so this capture can no longer be reproduced)
 
 Command form (prefs forced on the command line, not saved):
   NETRADIANT_CAMERA_SCREENSHOT=<png> NETRADIANT_CAMERA_ORIGIN="<x y z>" NETRADIANT_CAMERA_ANGLES="0 90 0" \
     install/radiant.x86_64 -global-gamefile Q3.game -Q3.game-GameName <baseq3|fixtures> -Q3.game-CameraRenderMode 2 <map>
   pbr.game: -global-gamefile pbr.game -pbr.game-CameraRenderMode 4 -pbr.game-LightingShadows true <bench.map>
+            (history: no longer runnable after A7 deleted pbr.game)
 
 Later additions (review fixes, task 4.7): fixtures skystage and alphatrans (912 definitions with fs_game
 fixtures), placed in a second row at y = 320. alphatrans shows through a gap in fixture_lmfirst.png
 (pixels x 681-697, y 291-358); every other baseline pixel is unchanged.
+
+retire-pbr-game baseline (task 1.1), 2026-10-02, build of commit c572c087, before any A7 change.
+Every capture forces the camera preferences the original baselines were taken with, because the saved local.pref
+now has fieldOfView 60 and CameraMSAA 4: add -Q3.game-fieldOfView 100 -Q3.game-CameraMSAA 8 to the command form
+above. With them this build reproduces the five textured-mode PNGs above (fixture_lmfirst differs only in the
+alphatrans gap noted above).
+
+Q3.game, fs_game baseq3:     Loaded 889 shader definitions, Error parsing shader lines: 0
+Q3.game, fs_game fixtures:   Loaded 912 shader definitions, Error parsing shader lines: 0
+Q3.game, fs_game benchmark:  Loaded 906 shader definitions, Error parsing shader lines: 0
+
+Lighting mode, shadows on, map /home/davis/q3game/q3data/benchmark/maps/bench.map (content/benchmark):
+  q3bench_sign_lighting.png    origin "-96 52 50"  angles "0 90 0"
+  q3bench_garden_lighting.png  origin "425 -69 50" angles "0 114 0"
+  NETRADIANT_CAMERA_SCREENSHOT=<png> NETRADIANT_CAMERA_ORIGIN="<x y z>" NETRADIANT_CAMERA_ANGLES="<p y r>" \
+    install/radiant.x86_64 -global-gamefile Q3.game -Q3.game-GameName benchmark -Q3.game-CameraRenderMode 4 \
+    -Q3.game-fieldOfView 100 -Q3.game-CameraMSAA 8 -Q3.game-LightingShadows true <bench.map>
+These two views are fixed here; later captures reuse them rather than re-reading stockcheck-out/*/views.txt.
