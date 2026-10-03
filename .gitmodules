@@ -1,0 +1,3 @@
+[submodule "tools/sh-baker"]
+	path = tools/sh-baker
+	url = https://github.com/DaviesX/sh-baker.git
