@@ -44,11 +44,11 @@ A1–A6b are specified as openspec changes: `q3-shader-pbr-materials` (A1–A3 a
 
 ### Track B: SH baking in q3map2
 
-- ~~**B1** sh-baker PR: library boundary.~~ Dropped: q3map2 compiles sh-baker's core sources and includes their headers directly, so no separate library or stable ABI is needed. (§4.2)
+- ~~**B1** sh-baker PR: library boundary.~~ Dropped: q3map2 includes sh-baker's `src/` headers directly and links its `libsh_baker.so`, so no separate public header is needed. (§4.2)
 - [ ] **B2** sh-baker PR: multi-page UV layouts. Per-geometry page index; xatlas allowed to emit several pages. (§4.2)
 - [ ] **B3** sh-baker PR: bake session that builds the BVH and light trees once, then bakes per page, with progress and cancel callbacks. (§4.2)
 - [ ] **B4** sh-baker PR: the SH side-file format (L0–L2 per page), with an optional `.hdr` L0 dump for inspection. No rend2 layout. (§4.2)
-- [ ] **B5** q3map2 `-shbake` stage (`light_sh.cpp`, opt-in `SH_BAKER=1` in the Makefile, which compiles sh-baker's core sources from the `tools/sh-baker` submodule and links Embree, TBB and glog). q3map2's shader parser learns `qer_pbr_*` and the editor's caster rule. Bakes from the editor's physical lights and writes the irradiance into the BSP lightmap pages, light grid and vertex colours (encoding chosen to look good on vanilla), plus the SH side file; never `lm_*.hdr`. Replaces `-light`'s lighting math; q3map2 stays the host. needs: B4, A8, A5. (§4.3)
+- [ ] **B5** q3map2 `-shbake` stage (`light_sh.cpp`, opt-in `SH_BAKER=1` in the Makefile, which adds `tools/sh-baker/src` to the include path and links the submodule's Release `libsh_baker.so`; `light_sh.cpp` alone is compiled with `-march=native` to match the library's Eigen alignment). q3map2's shader parser learns `qer_pbr_*` and the editor's caster rule. Bakes from the editor's physical lights and writes the irradiance into the BSP lightmap pages, light grid and vertex colours (encoding chosen to look good on vanilla), plus the SH side file; never `lm_*.hdr`. Replaces `-light`'s lighting math; q3map2 stays the host. needs: B4, A8, A5. (§4.3)
 
 ### Track C: `renderer_sh` (in `../ioq3-custom`)
 

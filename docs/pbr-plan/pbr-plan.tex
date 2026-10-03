@@ -767,7 +767,7 @@ colours for the lvlworld build. No BSP format change.
 
 \subsection{4.1 Decision: link \texttt{sh-baker} into q3map2}
 
-\textbf{Decided.} q3map2 compiles \texttt{sh-baker}'s sources into itself and bakes SH into the lightmap pages it
+\textbf{Decided.} q3map2 links \texttt{sh-baker}'s shared library and bakes SH into the lightmap pages it
 has already allocated, in a new \texttt{-shbake} stage. Rejected:
 \begin{itemize}
 \item \textbf{Exporter, glTF, xatlas atlas} (the prior pipeline). The bake lives in a separate
@@ -788,8 +788,8 @@ mapping file, and the same bake fills the stock lightmap (revision 6).
 
 Delivered as pull requests to \texttt{sh-baker}, reviewed and merged by its maintainer. Each keeps
 the CLI's current behaviour and its tests passing. There is no separate library boundary:
-q3map2 compiles the sources it calls and includes their headers directly (4.3), so one build sets
-the flags and Eigen's alignment, and no stable ABI is needed.
+q3map2 includes the headers in \texttt{src/} directly and links the \texttt{libsh\_baker.so} that
+\texttt{sh-baker}'s own CMake builds (4.3), so there is no separate public header.
 \begin{enumerate}
 \item \textbf{Multi-page UV layouts.} Each geometry carries a lightmap page index; a layout lists
   one size per page; the rasterizer works one page at a time. xatlas becomes one producer of a
@@ -829,12 +829,19 @@ directional, area lights and a Preetham sky; material-less geometry is already a
 \item \textbf{Gaps the stage reports.} q3map2-only light inputs --- \texttt{spawnflags},
   \texttt{fade}, \texttt{q3map\_sun}, \texttt{q3map\_skylight}, \texttt{q3map\_surfacelight} ---
   are not read; the stage warns on them.
-\item \textbf{Build.} Under an opt-in flag (\texttt{SH\_BAKER=1}) q3map2's \texttt{Makefile}
-  compiles \texttt{sh-baker}'s core sources from the \texttt{tools/sh-baker} submodule (not the glTF, CLI, visualizer or
-  test files) and links Embree, TBB and glog; a default q3map2 build needs none of them.
-  \texttt{sh-baker}'s files keep their own flags (q3map2's \texttt{-fno-exceptions -fno-rtti} does
-  not apply to them). The stage lives in a new \texttt{light\_sh.cpp}, which includes
-  \texttt{sh-baker}'s headers. \texttt{sh-baker} logs through glog to stderr, not through
+\item \textbf{Build.} \texttt{sh-baker} is the \texttt{tools/sh-baker} submodule, built by its own
+  CMake in Release (never Debug, which adds \texttt{-fsanitize=address}) into
+  \texttt{libsh\_baker.so}; its dependencies (glog, Embree, TBB, xatlas) load through the library.
+  Under an opt-in flag (\texttt{SH\_BAKER=1}) q3map2's \texttt{Makefile} adds
+  \texttt{tools/sh-baker/src} and Eigen to the include path, links \texttt{-lsh\_baker} (and
+  \texttt{-lembree4} if the stage calls Embree itself), and sets an rpath or installs the library
+  beside q3map2; a default q3map2 build needs none of this. The stage lives in a new
+  \texttt{light\_sh.cpp}, the only q3map2 file that includes \texttt{sh-baker}'s headers; they
+  compile cleanly under q3map2's \texttt{-fno-exceptions -fno-rtti}. That file alone is compiled
+  with \texttt{-march=native}, because \texttt{sh-baker}'s Release build always uses it and it
+  changes Eigen's alignment: \texttt{Geometry} (through its \texttt{Affine3f} transform) is
+  32-byte aligned with AVX and 16 without, and a mismatch lets the library run aligned AVX loads on
+  objects q3map2 allocated. \texttt{sh-baker} logs through glog to stderr, not through
   \texttt{Sys\_Printf}, so the editor's build monitor does not show those lines.
 \item \textbf{Licence.} \texttt{sh-baker} is MIT, compatible with q3map2's GPL-2.0-or-later. Embree
   and TBB are Apache-2.0, compatible with GPLv3 but not GPLv2, so a q3map2 binary built with
