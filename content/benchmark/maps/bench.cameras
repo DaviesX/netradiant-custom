@@ -6,3 +6,4 @@ sign -96 -64 24 90
 south-interior -300 -400 24 0
 arch -150 -150 24 135
 street -470 -100 24 30
+garden 475 -175 24 115

@@ -28,7 +28,7 @@ Three tracks can run in parallel. Within a track, do the tasks in order. `needs:
 
 ### Track A: editor and content (this repo)
 
-A1–A6 are specified as openspec changes: `q3-shader-pbr-materials` (A1–A3 and A6), then `q3-bench-and-stock-check` (A4–A5).
+A1–A6b are specified as openspec changes: `q3-shader-pbr-materials` (A1–A3 and A6), then `q3-bench-and-stock-check` (A4–A5), then `bench-foliage` (A6b).
 
 - [x] **A1** Parse the `qer_pbr_*` keywords and additive-stage emissive in the Quake 3 shader parser (`plugins/shaders/shaders.cpp`), and fill the `IShader` PBR accessors. `isPBR()` becomes "declares any `qer_pbr_` keyword". (§2.2 step 1)
 - [x] **A2** Add the `qer_pbr_*` keywords to the Shader Editor's completion table (`radiant/gtkdlgs.cpp`). (§2.2 step 2)
@@ -36,10 +36,11 @@ A1–A6 are specified as openspec changes: `q3-shader-pbr-materials` (A1–A3 an
 - [x] **A4** Copy the benchmark into the `benchmark` mod (`content/benchmark/`): `bench.mtr` → `scripts/bench.shader` using `qer_pbr_` keywords. The lights stay as they are. (§0.1)
 - [x] **A5** Build the stock check `tools/stockcheck/stockcheck.py`: the fork's ioquake3 build, `cl_renderer` opengl1 and opengl2 at default cvars, clean temp basepath. It fails on unallowlisted warnings and spawn-function messages, on missing images, on leaks and on q3map2's `Unknown q3map_* directive`. (§0.4, §Verification)
 - [x] **A6** Give `Q3.game` the physical light entities: the overlay in `setup/data/gamepacks/pbr/` (`games/Q3.game` with `entities="pbr"`, `Q3.game/baseq3/_pbr_lights.ent`). No light-code change. Part of `q3-shader-pbr-materials`. (§2.2 step 4)
+- [x] **A6b** Vegetation in the benchmark (openspec change `bench-foliage`): placeholder trees and grass as lightmapped `misc_model` meshes from `tools/benchmark/gen_foliage.py`. (§1, §World-building)
 - [ ] **A7** Fold the build menu, benchmark map and docs into the Quake 3 pack. Retire `SHADERLANGUAGE_PBR` and the `.mtr` parser, then delete `pbr.game`. Keep the `pbr` entity module and the overlay, since `Q3.game` uses them. (§2.2 step 5)
 - [ ] **A8** Author the first town block under `Q3.game`. Compile with `-meta -keeplights`, `-vis`, `-light -patchshadows` (placeholder lightmap until B5), leak-free, and pass the stock check. (§0.2)
 - [ ] **A9** Measure the stock fallback: the sh-baker lightmap on opengl1 and opengl2 at defaults against the editor preview and `renderer_sh`. Deliver a written verdict on its fidelity plus screenshots, and tune the lightmap encoding if needed. needs: B5. (§0.3)
-- [ ] **A10** The Silent Hill look: fog, darkness budget and carried flashlight. Needs the game-code decision. (§1)
+- [ ] **A10** The Silent Hill look: fog, darkness budget, carried flashlight, and grass and trees built as in the benchmark (lightmapped `misc_model` meshes, grass as static crossed quads). The flashlight needs the game-code decision. (§1)
 
 ### Track B: SH baking in q3map2
 
@@ -55,7 +56,7 @@ A1–A6 are specified as openspec changes: `q3-shader-pbr-materials` (A1–A3 an
 - [ ] **C2** Tier 1: boot and walk the town under `cl_renderer sh`, with materials taken from shader text. needs: A8. (§3.3)
 - [ ] **C3** Tier 2: sky, fog volumes, multi-stage shaders, marks, polys. (§3.3)
 - [ ] **C4** Direct-light parity with the editor preview's physical light model. needs: A6. (§3.4)
-- [ ] **C5** Shadow parity and hull reconstruction. (§3.5)
+- [ ] **C5** Shadow parity: hull reconstruction, plus alpha-tested draw surfaces (fence, leaf cards) casting through their alpha test under the editor's caster rule. (§3.5)
 - [ ] **C6** SH at runtime: all bands from the side file. needs: B5. (§4.4)
 
 ### Open decisions (ask the user)

@@ -557,6 +557,11 @@ pool of light, no discernible skyline.
   defining mechanic. It needs the game-code decision of §\ref{sec:open}. In \texttt{renderer\_sh}
   it is a shadowed spot using the editor's spot atlas scheme; the stock fallback gets the omni
   dynamic light that \texttt{trap\_R\_AddLightToScene} provides.
+\item \textbf{Grass and trees.} Overgrown verges and bare trees belong to the town's look. Build
+  them as the benchmark does: \texttt{misc\_model} meshes merged into the BSP by q3map2, every
+  vegetation shader lightmapped through \texttt{q3map\_forceMeta}, leaf cards alpha-tested and casting
+  through their alpha, grass as static crossed quads that cast nothing. Scattering at town scale
+  (by hand, or a compile-time scatter the editor cannot preview) is decided here.
 \item \textbf{Darkness budget.} With physical units and a tonemap, the ambient floor is what
   separates ``dark and readable'' from ``black''. Fix an exposure and ambient for the town and
   record them next to the map, as the benchmark already does.
@@ -736,7 +741,11 @@ stock fallback on the same map, and the stock check still passes on the same pk3
 \item Rebuild each collision brush's convex hull from the brush and brushside lumps at load, and
   use the hulls as front-face-culled casters; draw surfaces remain receivers. No BSP format change:
   the lumps already keep every plane of every solid brush, including void-facing ones.
-\item Known gap: brushes with non-solid shaders are dropped from the collision lumps. If such a
+\item Alpha-tested draw surfaces cast too: surfaces whose shader the editor's caster rule says casts
+  through its alpha (the fence, leaf cards; \texttt{trans} with \texttt{alphashadow}) are drawn into the
+  shadow maps with their alpha test, alongside the hulls. They are non-solid, so the hulls alone
+  would drop them, and the editor and sh-baker already cast them.
+\item Known gap: other brushes with non-solid shaders are dropped from the collision lumps. If such a
   brush must cast, mark its material to keep it, or emit casters separately.
 \item Reconcile against the editor's scheme, which deliberately uses \emph{first}-depth casters
   with normal-offset and slope-scaled bias rather than second depth, because second depth is
@@ -905,6 +914,9 @@ reference look is reachable.
   which is the worst case for normal maps and the best case for them to matter. Judge materials
   under the carried light, not under the sun.
 \item \textbf{Lightmapped surfaces only}, so every surface receives SH and baked light (4.3).
+\item \textbf{Vegetation is lightmapped \texttt{misc\_model} meshes.} Model triangles are vertex-lit
+  by default, so vegetation shaders carry \texttt{q3map\_forceMeta}. Grass is static crossed quads, not
+  \texttt{autosprite}, which only the engine would turn to the camera.
 \item \textbf{Use a spot where occlusion matters.} Point lights do not cast shadows in the editor
   preview; a \texttt{light\_spot} does.
 \item \textbf{Stock content only.} Every entity, key and shader keyword obeys

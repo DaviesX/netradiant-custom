@@ -171,6 +171,99 @@ textures/bench/tarp
 	}
 }
 
+// Vegetation (tools/benchmark/gen_foliage.py). Trees and grass are misc_model meshes; q3map2 merges them into the
+// BSP and vertex-lights model triangles unless the shader asks for lightmaps, so every vegetation shader carries
+// q3map_forceMeta and a $lightmap stage (lit in the editor preview, lightmapped in the BSP).
+
+// tree trunk and branches: solid (q3map_clipModel autoclips the model; it would clip even a nonsolid shader, so only
+// the bark has it), normal-mapped through the model's UV-derived tangents
+textures/bench/bark
+{
+	qer_editorimage textures/bench/bark_c
+	qer_pbr_normal textures/bench/bark_nrm
+	qer_pbr_metallicFactor 0
+	qer_pbr_roughnessFactor 0.9
+	q3map_forceMeta
+	q3map_clipModel
+	{
+		map $lightmap
+		rgbGen identity
+	}
+	{
+		map textures/bench/bark_c
+		blendFunc GL_DST_COLOR GL_ZERO
+		rgbGen identity
+	}
+}
+
+// leaf cards: alpha-tested, both sides, cast through their alpha like the fence (editor caster rule; alphashadow for q3map2)
+textures/bench/leaves
+{
+	qer_editorimage textures/bench/leaves
+	qer_pbr_metallicFactor 0
+	qer_pbr_roughnessFactor 0.7
+	q3map_forceMeta
+	q3map_lightmapSampleSize 32
+	surfaceparm alphashadow
+	surfaceparm trans
+	surfaceparm nonsolid
+	cull none
+	{
+		map textures/bench/leaves
+		alphaFunc GE128
+		depthWrite
+		rgbGen identity
+	}
+	{
+		map $lightmap
+		blendFunc filter
+		depthFunc equal
+		rgbGen identity
+	}
+}
+
+// grass billboards (static crossed quads): alpha-tested, both sides, cast nothing (trans without alphashadow)
+textures/bench/grass
+{
+	qer_editorimage textures/bench/grass
+	qer_pbr_metallicFactor 0
+	qer_pbr_roughnessFactor 0.8
+	q3map_forceMeta
+	q3map_lightmapSampleSize 32
+	surfaceparm trans
+	surfaceparm nonsolid
+	cull none
+	{
+		map textures/bench/grass
+		alphaFunc GE128
+		depthWrite
+		rgbGen identity
+	}
+	{
+		map $lightmap
+		blendFunc filter
+		depthFunc equal
+		rgbGen identity
+	}
+}
+
+// lawn ground east of the fence
+textures/bench/dirt
+{
+	qer_editorimage textures/bench/dirt_c
+	qer_pbr_metallicFactor 0
+	qer_pbr_roughnessFactor 1
+	{
+		map $lightmap
+		rgbGen identity
+	}
+	{
+		map textures/bench/dirt_c
+		blendFunc GL_DST_COLOR GL_ZERO
+		rgbGen identity
+	}
+}
+
 // the sun is the map's light_sun; stock draws pak0's dark night farbox
 textures/bench/sky
 {

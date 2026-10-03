@@ -1,20 +1,6 @@
-# benchmark-map Specification
+# Spec Delta
 
-## Purpose
-The Quake 3 benchmark map: stock content that exercises every material feature, light type and occlusion case the pipeline must preview, compile and render. It is the parity and regression asset for every later stage.
-
-## Requirements
-
-### Requirement: Benchmark lives in the benchmark mod directory
-The benchmark SHALL be stored in the repository under `content/benchmark/`, laid out as a Quake 3 mod directory (`maps/`, `scripts/`, `textures/`). It SHALL be usable by the editor under `Q3.game` with `fs_game benchmark` and by ioquake3 with `+set fs_game benchmark`. It SHALL need no game code beyond baseq3's, and SHALL contain no test-only content.
-
-#### Scenario: Editor opens it
-- **WHEN** the editor runs under `Q3.game` with the engine path set to the Quake 3 install and the `benchmark` mod selected
-- **THEN** `maps/bench.map` opens and every `textures/bench/*` shader appears in the texture browser
-
-#### Scenario: Engine loads it
-- **WHEN** ioquake3 runs with `+set fs_game benchmark +devmap bench` on the packed pk3
-- **THEN** the map loads and the player spawns
+## MODIFIED Requirements
 
 ### Requirement: Benchmark materials are vanilla shaders with PBR keywords
 Every benchmark material SHALL be a `scripts/bench.shader` entry using only vanilla Quake 3 shader keywords plus top-level `qer_pbr_*`. Normal maps SHALL be declared with `qer_pbr_normal`. Emissive SHALL be an additive stage, with `qer_pbr_emissiveStrength` where the `.mtr` had `emissivestrength`. The shaders SHALL contain no `q3map_sun` and no `q3map_surfacelight`. No image SHALL be named `<base>_n`, `<base>_nh` or `<base>_s`.
@@ -74,13 +60,6 @@ The benchmark SHALL keep these occlusion cases:
 - **WHEN** the map is viewed in lighting mode with shadows on under `Q3.game`
 - **THEN** the street under the patch arch shows the arch's sun shadow
 
-### Requirement: Benchmark compile flags
-The map SHALL compile with the bundled q3map2 using `-meta -keeplights`, then `-vis -saveprt`, then `-light -patchshadows`, with no leak and no `Unknown q3map_* directive` warning. The `-light` lightmap is a placeholder that is not required to resemble the preview.
-
-#### Scenario: Compile
-- **WHEN** the stock check compiles `bench.map`
-- **THEN** q3map2 reports no leak and no unknown directive, and the BSP's entity lump retains the light entities
-
 ### Requirement: Documented views
 `maps/bench.cameras` SHALL list named view requests, one per line: name, player origin x y z, yaw. It SHALL include `sign`, from the `info_player_start` origin facing the emissive sign, and the views together SHALL show the fence, the glass, both trees, grass on the lawn and a tree canopy's shadow on the ground. The authoritative position of a view is the eye position recorded by the stock check's `opengl1` run, and editor captures of a view SHALL use that recorded position and yaw from the same check run.
 
@@ -92,19 +71,14 @@ The map SHALL compile with the bundled q3map2 using `-meta -keeplights`, then `-
 - **WHEN** the editor capture of the view that frames the foliage is taken in lighting mode with shadows on, at the position the stock check recorded
 - **THEN** it shows both trees, grass and a canopy shadow on the ground, and the stock screenshots of that view show the same trees and grass
 
-### Requirement: Single pk3 packaging
-The benchmark SHALL package as one `benchmark.pk3`. It contains the BSP and its lightmaps, the levelshot `levelshots/bench.jpg`, `scripts/*.shader` and `shaderlist.txt`, and every image under `textures/`, the PBR maps included. The levelshot is the loading-screen image; without it the engine prints `Couldn't find image file for shader levelshots/bench.tga`. It contains no other files (no `.map`, `.prt`, editor metadata or `*.import` files).
-
-#### Scenario: Pack contents
-- **WHEN** `benchmark.pk3` is listed
-- **THEN** every entry is a BSP, a lightmap image, the levelshot, a shader script, the shader list or an image under `textures/`, and every image a stage references is present
-
 ### Requirement: Stock screenshots reviewed by the author
 The author SHALL review the stock check's screenshots of every view on both renderers for content errors: every shader renders with its own image (no missing-texture or default image), the fence, the leaves and the grass are masked, the trees and grass stand upright with their cards visible from both sides, the glass is blended and the sky draws. Lighting SHALL NOT be judged, because the lightmap is a placeholder. The acceptance date SHALL be recorded in `content/benchmark/README.md`.
 
 #### Scenario: Acceptance
 - **WHEN** the stock check's screenshots are shown to the author
 - **THEN** the author accepts them, or the content is fixed and the check is re-run
+
+## ADDED Requirements
 
 ### Requirement: Benchmark vegetation is model content
 The benchmark SHALL contain trees and grass as `misc_model` entities that reference meshes under `models/bench/`. They SHALL need no `-keepmodels` and no game code, so that q3map2 merges their triangles into the BSP and stock Quake 3 never spawns them. Each tree SHALL have an opaque trunk that blocks the player and a canopy of alpha-tested leaf cards. Grass SHALL be clumps of static crossed alpha-tested quads that do not block the player.
