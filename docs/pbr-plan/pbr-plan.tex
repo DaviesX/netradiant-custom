@@ -435,8 +435,8 @@ wired, which is why it does not carry over as-is:
   lightmap page, as \texttt{TEXCOORD\_1}.
 \item \texttt{sh-baker} ignores them: its loader reads only \texttt{TEXCOORD\_0}
   (\texttt{src/loader.cpp:170}, \texttt{:212}). It builds a fresh atlas with xatlas, splitting
-  vertices along chart seams, and fails unless everything fits one page
-  (\texttt{src/atlas.cpp:110--207}); \texttt{--skip\_parameterization} still repacks the charts.
+  vertices along chart seams, and always builds a single atlas, whose size xatlas picks near the
+  requested width (\texttt{src/atlas.cpp:110--207}); \texttt{--skip\_parameterization} still repacks the charts.
   It writes a new glTF with its own \texttt{TEXCOORD\_1} (\texttt{src/saver.cpp:769}).
 \item \texttt{sh-renderer} renders that glTF (\texttt{src/loader.cpp:142}, \texttt{:941}), never
   the BSP.
@@ -520,8 +520,8 @@ pipeline, passing the stock check, with the town's visibility conventions alread
   streets, area portals in doorways. Materials follow §\ref{sec:materials} from the first shader.
 \item Compile \texttt{q3map2 -meta -keeplights}, \texttt{-vis -saveprt}, \texttt{-light -patchshadows};
   leak-free is the gate. \texttt{-keeplights} is a BSP-stage option that keeps the light entities
-  in the entity lump for the real-time direct path. \texttt{-light} gives a placeholder lightmap and
-  allocates the lightmap pages; \texttt{-shbake} (4.3) replaces its contents. No \texttt{-deluxe}:
+  in the entity lump for the real-time direct path. \texttt{-light} gives a placeholder lightmap
+  until 4.3, when \texttt{-light -shbake} replaces its lighting with \texttt{sh-baker}'s. No \texttt{-deluxe}:
   deluxe maps are a rend2 feature.
 \item Exit criterion: walkable in ioquake3 at playable framerate, PVS behaving like an indoor
   level, and the stock check of 0.4 passes.
@@ -741,11 +741,14 @@ stock fallback on the same map, and the stock check still passes on the same pk3
   from the documented camera, within the tolerance already written down for the benchmark map.
 \end{itemize}
 
-\subsection{3.5 Shadow parity and hull reconstruction}
+\subsection{3.5 Shadow parity and solid hulls}
 \begin{itemize}
-\item Rebuild each collision brush's convex hull from the brush and brushside lumps at load, and
-  use the hulls as front-face-culled casters; draw surfaces remain receivers. No BSP format change:
-  the lumps already keep every plane of every solid brush, including void-facing ones.
+\item Load the solid hull mesh that \texttt{-shbake} writes into the side file (4.3): one closed
+  convex hull per casting brush, structural and detail, which q3map2 builds from the brush and
+  brushside lumps. Use the hulls as front-face-culled casters; draw surfaces remain receivers. The
+  bake's blockers and the renderer's casters are then one solid set, and nothing is rebuilt at
+  load. No BSP format change: the lumps already keep every plane of every solid brush, including
+  void-facing ones.
 \item Alpha-tested draw surfaces cast too: surfaces whose shader the editor's caster rule says casts
   through its alpha (the fence, leaf cards; \texttt{trans} with \texttt{alphashadow}) are drawn into the
   shadow maps with their alpha test, alongside the hulls. They are non-solid, so the hulls alone
@@ -767,8 +770,8 @@ colours for the lvlworld build. No BSP format change.
 
 \subsection{4.1 Decision: link \texttt{sh-baker} into q3map2}
 
-\textbf{Decided.} q3map2 links \texttt{sh-baker}'s shared library and bakes SH into the lightmap pages it
-has already allocated, in a new \texttt{-shbake} stage. Rejected:
+\textbf{Decided.} q3map2 links \texttt{sh-baker}'s shared library and bakes SH on its own luxels
+inside \texttt{-light} (\texttt{-light -shbake}), in place of \texttt{-light}'s lighting math. Rejected:
 \begin{itemize}
 \item \textbf{Exporter, glTF, xatlas atlas} (the prior pipeline). The bake lives in a separate
   atlas over a separate, vertex-split mesh; nothing maps it back to the BSP, so
@@ -791,41 +794,78 @@ the CLI's current behaviour and its tests passing. There is no separate library 
 q3map2 includes the headers in \texttt{src/} directly and links the \texttt{libsh\_baker.so} that
 \texttt{sh-baker}'s own CMake builds (4.3), so there is no separate public header.
 \begin{enumerate}
-\item \textbf{Multi-page UV layouts.} Each geometry carries a lightmap page index; a layout lists
-  one size per page; the rasterizer works one page at a time. xatlas becomes one producer of a
-  layout and may emit several pages rather than failing when \texttt{atlasCount > 1}
-  (\texttt{atlas.cpp:201}). This is what makes one API serve both xatlas and q3map2's pages.
-\item \textbf{Bake session.} \texttt{BakeSHLightMap} creates the Embree device and BVH on every
-  call (\texttt{baker.cpp:95--96}, released at \texttt{:202--203}). A session builds them and the
-  light trees once and bakes page by page, with progress and cancel callbacks.
-\item \textbf{Outputs.} The SH side-file format (L0, L1, L2 per page), irradiance per page and at
-  given points (for the BSP lightmap, the light grid and vertex colours), plus an optional Radiance
-  \texttt{.hdr} dump of L0 for inspection. No rend2 layout.
+\item \textbf{q3map2 input contract} (B2, openspec change \texttt{sh-baker-q3map2-input}, shipped as
+  a stack of seven PRs).
+  \begin{itemize}
+  \item An owned material-layer model: the Quake~3 stage stack becomes \texttt{sh-baker} types in
+    \texttt{material.h}, which the glTF loader and saver translate to and from
+    \texttt{SH\_material\_layers}. No tinygltf in the headers q3map2 includes.
+  \item A q3map2 loader translation unit (\texttt{loader\_q3map2.\{h,cpp\}}) that turns one draw
+    surface into checked tracing geometry: winding flipped to counter-clockwise, malformed input
+    stopped by a \texttt{CHECK}, zero normals repaired, degenerate triangles dropped, and tangents
+    from the MikkTSpace code it shares with the glTF loader. Material-less surfaces block light
+    without shading.
+  \item Baking caller-supplied points: \texttt{BakeSHLightMap} bakes any list of points, laid out
+    $N\times1$, in one call with one BVH. This is how q3map2's luxels are baked (4.3).
+  \end{itemize}
+  This replaces the multi-page UV layouts of earlier drafts. xatlas, as \texttt{sh-baker} calls it,
+  never emits several atlases (with \texttt{texelsPerUnit} 0 it grows one), \texttt{sh-baker}'s
+  rasterizer snaps to whole texels while q3map2 puts lightmap coordinates on luxel centres, and
+  q3map2 already owns the luxel mapping. So \texttt{sh-baker} rasterizes nothing for q3map2.
+\item \textbf{Alpha in shadow rays} (B2b). NEE's visibility test treats any hit as opaque
+  (\texttt{light.cpp:265}, \texttt{:339}), so fences and leaf cards block direct light completely.
+  The shadow rays honour alpha the way the tracer's indirect rays already do, so they cast through
+  their cut-outs. Kept out of item~1 because it changes bake output; needed by 4.3.
+\item \textbf{Progress and cancel.} One \texttt{BakeSHLightMap} call already builds the Embree
+  device, the BVH and the light trees once for all its points (\texttt{baker.cpp:95--96}); it
+  gains progress and cancel callbacks.
+\item \textbf{Outputs.} The SH side-file format (L0, L1, L2 per page) and the solid hull mesh
+  (3.5), plus an optional Radiance \texttt{.hdr} dump of L0 for inspection. \texttt{sh-baker}
+  returns SH and irradiance per luxel; q3map2 assembles the pages, the light grid and the vertex
+  colours. No rend2 layout.
 \end{enumerate}
 The existing light and environment types already cover what q3map2 passes in: point, spot,
 directional, area lights and a Preetham sky; material-less geometry is already a pure occluder.
 
-\subsection{4.3 The \texttt{-shbake} stage in q3map2}
+\subsection{4.3 \texttt{-shbake} in q3map2}
 
 \begin{itemize}
-\item \textbf{Placement.} \texttt{q3map2 -meta}, \texttt{-vis}, \texttt{-light}, then
-  \texttt{q3map2 -shbake} on the finished BSP. Lightmap coordinates and pages are final only after
-  \texttt{StoreSurfaceLightmaps}, so \texttt{-light} still runs to allocate them (its lighting is
-  overwritten; \texttt{-light -fast} suffices), and a separate stage keeps the bake out of
-  \texttt{light.cpp}'s internals.
-\item \textbf{Scene.} Draw surfaces --- planar, meta, triangle soups, and patches tessellated with
-  interpolated lightmap coordinates --- each tagged with its lightmap page. Materials from q3map2's
+\item \textbf{Placement.} \texttt{-shbake} runs inside \texttt{-light}
+  (\texttt{q3map2 -light -shbake}), after \texttt{MapRawLightmap} has mapped every raw lightmap's
+  luxels (origins, normals, clusters). It replaces \texttt{IlluminateRawLightmap}'s lighting math,
+  and the light-grid and vertex-light passes, with \texttt{sh-baker}. \texttt{StoreSurfaceLightmaps}
+  then packs the result as usual. It cannot run on the finished BSP: the final pages exist only
+  after \texttt{StoreSurfaceLightmaps}, whose packing depends on the lit values.
+\item \textbf{Scene.} Draw surfaces --- planar, meta, triangle soups and tessellated patches ---
+  go through \texttt{sh-baker}'s q3map2 loader as receivers. Materials from q3map2's
   shader info: the base-colour image, the \texttt{qer\_pbr\_*} maps and factors (q3map2's shader
   parser learns them), additive stages as emitters. Lights are the editor's \texttt{light},
   \texttt{light\_spot} and \texttt{light\_sun} entities read with the physical model of
   §\ref{sec:units}, not q3map2's light parsing. Occluders follow the editor's shadow-caster rule
-  (§\ref{sec:rev6}), with solid brush hulls matching 3.5.
-\item \textbf{Bake and write.} One session, one bake per page, dilation per page. All bands to
+  (§\ref{sec:rev6}).
+\item \textbf{Solid hulls.} q3map2's draw surfaces are thin, and rays can slip through the cracks
+  between them. The blockers are one closed hull per casting brush, structural and detail, built
+  from the BSP's brush lumps with q3map2's winding code (\texttt{BaseWindingForPlane},
+  \texttt{ChopWindingInPlace}). Each plane is pushed inward by $\varepsilon$, a little more than
+  the sensor's \texttt{tnear}, so the visible face is always hit first; bevel sides are skipped;
+  each hull is added as a material-less surface, which blocks light without shading. The draw
+  surfaces stay the receivers and own the luxels. Brushless surfaces (patches, \texttt{misc\_model}
+  props, foliage) stay thin. The un-shrunk hulls go into the side file for 3.5.
+\item \textbf{Bake and write.} One \texttt{sh-baker} call bakes every mapped luxel as a
+  caller-supplied point, with one BVH for the map. The SH side data must follow
+  \texttt{StoreSurfaceLightmaps}' approximation to vertex light, solid stamps and deduplication,
+  or those must be disabled when baking SH. All bands to
   the side file in \texttt{maps/<name>/}, inside the level's single pk3. Never
   \texttt{lm\_*.hdr}, which stock rend2 would load. Always also write direct plus indirect
   irradiance into the BSP's 8-bit lightmap lump, the light grid (ambient, directed, direction from
   SH at the grid points) and vertex colours, so the lvlworld build carries the same light
   \texttt{renderer\_sh} shows. The irradiance-to-byte encoding is chosen here (§\ref{sec:units}).
+\item \textbf{Anti-aliasing.} From \texttt{-super N}: raw lightmaps are mapped at $N\times$
+  resolution, each super-luxel is baked as a point, and \texttt{StoreSurfaceLightmaps} averages
+  them; SH coefficients are linear, so the side data averages the same way. \texttt{-samples}'
+  adaptive subsampling is part of the replaced lighting and is not available.
+\item \textbf{Units.} The sensor's ray offset (\texttt{tnear}, 0.005) is in metres, while q3map2
+  works in Quake units, so the stage converts units or scales the scene.
 \item \textbf{Gaps the stage reports.} q3map2-only light inputs --- \texttt{spawnflags},
   \texttt{fade}, \texttt{q3map\_sun}, \texttt{q3map\_skylight}, \texttt{q3map\_surfacelight} ---
   are not read; the stage warns on them.
@@ -835,7 +875,9 @@ directional, area lights and a Preetham sky; material-less geometry is already a
   Under an opt-in flag (\texttt{SH\_BAKER=1}) q3map2's \texttt{Makefile} adds
   \texttt{tools/sh-baker/src} and Eigen to the include path, links \texttt{-lsh\_baker} (and
   \texttt{-lembree4} if the stage calls Embree itself), and sets an rpath or installs the library
-  beside q3map2; a default q3map2 build needs none of this. The stage lives in a new
+  beside q3map2; a default q3map2 build needs none of this. The headers the stage includes
+  (\texttt{loader\_q3map2.h}, \texttt{baker.h}) need only \texttt{src} and Eigen, because
+  \texttt{sh-baker} declares the Embree handles itself (4.2 item~1). The stage lives in a new
   \texttt{light\_sh.cpp}, the only q3map2 file that includes \texttt{sh-baker}'s headers; they
   compile cleanly under q3map2's \texttt{-fno-exceptions -fno-rtti}. That file alone is compiled
   with \texttt{-march=native}, because \texttt{sh-baker}'s Release build always uses it and it
@@ -1005,10 +1047,13 @@ Item & Depends on & Note \\
 3.3 Tier 1 features & 3.1, 0.2 & Walkable town under \texttt{cl\_renderer sh}. \\
 3.3 Tier 2 features & Tier 1 & Sky and fog first; they define the town. \\
 3.4 Direct light parity & 2.2, Tier 1 & Editor and engine read lights identically. \\
-3.5 Shadow parity & 3.4 & Hull reconstruction validated against the town block. \\
-4.2 \texttt{sh-baker} PRs & --- & Can start now; reviewed and merged one at a time. \\
-4.3 \texttt{-shbake} & 4.2, 0.2, 0.4 & Bakes SH and the stock lightmap, grid and vertex colours
-  into q3map2's pages; stock check on the single pk3. \\
+3.5 Shadow parity & 3.4, 4.3 & Hulls loaded from the side file, validated against the town
+  block. \\
+4.2 \texttt{sh-baker} PRs & --- & Can start now; reviewed and merged one at a time. Item~1 ships
+  as a stack of seven PRs. \\
+4.3 \texttt{-shbake} & 4.2, 0.2, 0.4 & Runs inside \texttt{-light} on q3map2's own luxels; bakes SH
+  and the stock lightmap, grid and vertex colours, and writes the hull mesh to the side file; stock
+  check on the single pk3. \\
 4.4 SH at runtime & 4.3, Tier 1 & All bands from the side file. \\
 4.x Editor SH preview & 4.4 & Optional. \\
 \bottomrule
