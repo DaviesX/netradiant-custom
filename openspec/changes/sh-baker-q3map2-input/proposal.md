@@ -13,11 +13,11 @@ sh-baker still needs two things from q3map2 for tracing:
 - geometry it can trust: normals, tangents, valid indices, and no degenerate triangles;
 - the surfaces' materials, including Quake 3 stage stacks such as alpha-tested fences and additive flames.
 
-Today the only producer is the glTF loader, and `Material` drags tinygltf into every header through a verbatim `tinygltf::Value`. This change, task B2 rescoped, is the sh-baker PR that gives q3map2 a clean input contract.
+Today the only producer is the glTF loader, and `Material` drags tinygltf into every header through a verbatim `tinygltf::Value`. This change, task B2 rescoped, is the sh-baker work that gives q3map2 a clean input contract.
 
 ## What Changes
 
-All sh-baker code changes are in the `tools/sh-baker` submodule. They go to `github.com/DaviesX/sh-baker` as one PR, which the user reviews and merges.
+All sh-baker code changes are in the `tools/sh-baker` submodule. They go to `github.com/DaviesX/sh-baker` as seven small stacked PRs, each based on the previous one, in this order: fixtures; the tangent move; the Embree declarations; the type moves; the owned layer model; the q3map2 loader; the point bake and docs. Each is opened as soon as it passes its checks, so the user reviews one while the next is implemented. The user merges them. Every PR keeps the CLI output byte-identical on its own.
 
 - **Owned material-layer model.** The Quake 3 stage stack becomes sh-baker types in `material.h`: the blend, rgbGen, wave, tcMod, surface-blend and cull enums, plus a per-layer struct with texture source paths, animation, blend factors, rgbGen and tcMods with all their parameters. These replace the verbatim `tinygltf::Value` in `material_layers.h`. `Material` moves into `material.h` with them, and `Texture` moves to a new `texture.h` to break the include cycle. The glTF loader deserializes `SH_material_layers` into these types, and the saver serializes them back with the exporter's exact key set and value types. After this, `scene.h`'s include closure no longer reaches tinygltf.
 - **q3map2 loader.** A new translation unit `loader_q3map2.{h,cpp}`, separate from the glTF loader. It takes one q3map2 draw surface (world-space positions, normals, texture UVs, indices, material) and appends a geometry for tracing, flipping q3map2's clockwise winding to sh-baker's counter-clockwise. Input only a caller bug or corrupt data can produce (count, index, material or non-finite faults) fails a `CHECK` naming the field. What real content produces is repaired: zero normals from degenerate patches get their face normals. Like the glTF loader, it drops degenerate triangles and generates tangents. Its header builds under q3map2's `-fno-exceptions -fno-rtti` and does not reach tinygltf. B5 extends this TU with materials from shaders and with lights.
@@ -33,7 +33,7 @@ All sh-baker code changes are in the `tools/sh-baker` submodule. They go to `git
   - B3's per-page session shrinks to progress and cancel callbacks;
   - the multi-page layout is gone;
   - B5 adds solid brush hulls as occluders and writes them into the side file, and C5 loads them from there instead of rebuilding hulls;
-  - a new task, B2b, adds a separate sh-baker PR making NEE shadow rays honour alpha. It is kept out of this PR because it changes bake output.
+  - a new task, B2b, adds a separate sh-baker PR making NEE shadow rays honour alpha. It is kept out of this change because it changes bake output.
 - **BREAKING (library API only):** `MaterialLayers::extension` and `::texture_paths` are replaced by the owned fields, and `Material`/`Texture` move headers. `scene.h` still includes both, so code that includes `scene.h` keeps compiling unless it used the removed fields. The only such code is `saver_test.cpp`. The glTF files sh-baker reads and writes do not change.
 
 ## Capabilities
@@ -49,7 +49,7 @@ None. The existing capabilities cover the editor, gamepack, content and stock ch
 
 ## Impact
 
-- Code (submodule `tools/sh-baker`, on a branch for the PR):
+- Code (submodule `tools/sh-baker`, on the stack's branches):
   - `src/texture.h` (new): `Texture`, `Texture32F` and `Texture32I`, moved from `src/scene.h`;
   - `src/material.h`: `Material` (moved from `src/scene.h`) and the layer types, moved from `src/layer_composite.h` (enums) and `src/material_layers.h` (deleted);
   - `src/loader.cpp`, `src/saver.cpp`: deserialize and serialize `SH_material_layers` through the owned types;
@@ -62,10 +62,11 @@ None. The existing capabilities cover the editor, gamepack, content and stock ch
   - `src/scene.h`: the Embree handle declarations, plus `#include <embree4/rtcore.h>` in the `.cpp` files that call Embree;
   - tests: `src/loader_q3map2_test.cpp` (new). The two pass-through tests in `src/saver_test.cpp` are rewritten. New cases go in `src/loader_test.cpp`, `src/saver_test.cpp` and `src/baker_test.cpp`;
   - `README.md`: a short library note.
-- This repo:
+- This repo, in two more PRs on `master`, which already holds the proposal (PR #1): the plan PR and the landing PR:
   - `docs/pbr-plan/pbr-plan.tex` and its PDF;
   - `CLAUDE.md` (B2–B5 and C5 wording and the new B2b now, and the B2 tick after merge);
-  - the submodule pointer after merge.
+  - the submodule pointer after merge;
+  - at landing, this change archived and both capabilities added to `openspec/specs/`.
 - Unaffected:
   - `main.cpp` and the CLI's output, which stays byte-identical;
   - the rasterizer, xatlas atlasing, the baker's code, the tracer, the light tree, the visualizer and `sh_cvt`;

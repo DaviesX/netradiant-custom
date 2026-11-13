@@ -45,10 +45,11 @@ A1–A6b are specified as openspec changes: `q3-shader-pbr-materials` (A1–A3 a
 ### Track B: SH baking in q3map2
 
 - ~~**B1** sh-baker PR: library boundary.~~ Dropped: q3map2 includes sh-baker's `src/` headers directly and links its `libsh_baker.so`, so no separate public header is needed. (§4.2)
-- [ ] **B2** sh-baker PR: multi-page UV layouts. Per-geometry page index; xatlas allowed to emit several pages. (§4.2)
-- [ ] **B3** sh-baker PR: bake session that builds the BVH and light trees once, then bakes per page, with progress and cancel callbacks. (§4.2)
-- [ ] **B4** sh-baker PR: the SH side-file format (L0–L2 per page), with an optional `.hdr` L0 dump for inspection. No rend2 layout. (§4.2)
-- [ ] **B5** q3map2 `-shbake` stage (`light_sh.cpp`, opt-in `SH_BAKER=1` in the Makefile, which adds `tools/sh-baker/src` to the include path and links the submodule's Release `libsh_baker.so`; `light_sh.cpp` alone is compiled with `-march=native` to match the library's Eigen alignment). q3map2's shader parser learns `qer_pbr_*` and the editor's caster rule. Bakes from the editor's physical lights and writes the irradiance into the BSP lightmap pages, light grid and vertex colours (encoding chosen to look good on vanilla), plus the SH side file; never `lm_*.hdr`. Replaces `-light`'s lighting math; q3map2 stays the host. needs: B4, A8, A5. (§4.3)
+- [ ] **B2** sh-baker PRs: the q3map2 input contract, as a stack of seven PRs (openspec change `sh-baker-q3map2-input`). An owned material-layer model in `material.h` (no tinygltf in the headers q3map2 includes), a q3map2 loader TU (`loader_q3map2.{h,cpp}`: checked tracing geometry, shared MikkTSpace tangents), and the point bake: one `BakeSHLightMap` call over caller-supplied points. No page model in sh-baker: q3map2 owns the luxel mapping. (§4.2)
+- [ ] **B2b** sh-baker PR: NEE shadow rays honour alpha the way the tracer's indirect rays do, so fences and leaf cards cast through their cut-outs. Kept out of B2 because it changes bake output. (§4.2)
+- [ ] **B3** sh-baker PR: progress and cancel callbacks on the single bake call, which already builds the BVH and light trees once. (§4.2)
+- [ ] **B4** sh-baker PR: the SH side-file format (L0–L2 per page) and the solid hull mesh (§3.5), with an optional `.hdr` L0 dump for inspection. sh-baker returns results per luxel, and q3map2 assembles the per-page layout. No rend2 layout. (§4.2)
+- [ ] **B5** q3map2 `-shbake`, an option of `-light` (`light_sh.cpp`, opt-in `SH_BAKER=1` in the Makefile, which adds `tools/sh-baker/src` to the include path and links the submodule's Release `libsh_baker.so`; `light_sh.cpp` alone is compiled with `-march=native` to match the library's Eigen alignment). It runs after `MapRawLightmap` and replaces `IlluminateRawLightmap`'s lighting math: q3map2 supplies its own luxel points (`-super N` for anti-aliasing), adds its draw surfaces through sh-baker's q3map2 loader and solid brush hulls as occluders, and bakes everything in one call. q3map2's shader parser learns `qer_pbr_*` and the editor's caster rule. Bakes from the editor's physical lights and writes the irradiance into the BSP lightmap pages, light grid and vertex colours (encoding chosen to look good on vanilla), plus the SH side file with the hull mesh; never `lm_*.hdr`. q3map2 stays the host. needs: B2b, B4, A8, A5. (§4.3)
 
 ### Track C: `renderer_sh` (in `../ioq3-custom`)
 
@@ -56,7 +57,7 @@ A1–A6b are specified as openspec changes: `q3-shader-pbr-materials` (A1–A3 a
 - [ ] **C2** Tier 1: boot and walk the town under `cl_renderer sh`, with materials taken from shader text. needs: A8. (§3.3)
 - [ ] **C3** Tier 2: sky, fog volumes, multi-stage shaders, marks, polys. (§3.3)
 - [ ] **C4** Direct-light parity with the editor preview's physical light model. needs: A6. (§3.4)
-- [ ] **C5** Shadow parity: hull reconstruction, plus alpha-tested draw surfaces (fence, leaf cards) casting through their alpha test under the editor's caster rule. (§3.5)
+- [ ] **C5** Shadow parity: the solid hulls loaded from the side file's hull mesh, plus alpha-tested draw surfaces (fence, leaf cards) casting through their alpha test under the editor's caster rule. needs: B5. (§3.5)
 - [ ] **C6** SH at runtime: all bands from the side file. needs: B5. (§4.4)
 
 ### Open decisions (ask the user)
