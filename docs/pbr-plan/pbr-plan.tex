@@ -816,13 +816,18 @@ q3map2 includes the headers in \texttt{src/} directly and links the \texttt{libs
   (\texttt{light.cpp:265}, \texttt{:339}), so fences and leaf cards block direct light completely.
   The shadow rays honour alpha the way the tracer's indirect rays already do, so they cast through
   their cut-outs. Kept out of item~1 because it changes bake output; needed by 4.3.
+  \emph{Done (\texttt{sh-baker} PR \#62).}
 \item \textbf{Progress and cancel.} One \texttt{BakeSHLightMap} call already builds the Embree
   device, the BVH and the light trees once for all its points (\texttt{baker.cpp:95--96}); it
-  gains progress and cancel callbacks.
-\item \textbf{Outputs.} The SH side-file format (L0, L1, L2 per page) and the solid hull mesh
-  (3.5), plus an optional Radiance \texttt{.hdr} dump of L0 for inspection. \texttt{sh-baker}
-  returns SH and irradiance per luxel; q3map2 assembles the pages, the light grid and the vertex
-  colours. No rend2 layout.
+  gains progress and cancel callbacks, plus a done callback on the calling thread.
+  \emph{Done (\texttt{sh-baker} PR \#63, then \texttt{ce5419a}).}
+\item \textbf{Outputs.} \texttt{sh-baker} returns SH, irradiance and environment visibility per
+  luxel; q3map2 assembles the pages, the light grid and the vertex colours. No rend2 layout. The
+  SH side-file format (L0, L1, L2 and visibility per page, plus the solid hull mesh of 3.5) is not
+  an \texttt{sh-baker} change after all: q3map2 produces everything the file holds, so the format
+  lives in q3map2 as the \emph{q3map2 extension} (\texttt{q3map2\_extension.\{h,cpp\}}), with an
+  optional Radiance \texttt{.hdr} dump of L0 for inspection. \texttt{sh-baker} stays unchanged.
+  \emph{Done (q3map2; \texttt{sh-baker} PR \#64 closed unmerged).}
 \end{enumerate}
 The existing light and environment types already cover what q3map2 passes in: point, spot,
 directional, area lights and a Preetham sky; material-less geometry is already a pure occluder.
@@ -855,7 +860,9 @@ directional, area lights and a Preetham sky; material-less geometry is already a
   caller-supplied point, with one BVH for the map. The SH side data must follow
   \texttt{StoreSurfaceLightmaps}' approximation to vertex light, solid stamps and deduplication,
   or those must be disabled when baking SH. All bands to
-  the side file in \texttt{maps/<name>/}, inside the level's single pk3. Never
+  the side file in \texttt{maps/<name>/}, inside the level's single pk3, through the q3map2
+  extension's writer (4.2 item~4): side-file page $i$ is BSP lightmap page $i$, skipped luxels are
+  filled before writing, and hull positions are in BSP units. Never
   \texttt{lm\_*.hdr}, which stock rend2 would load. Always also write direct plus indirect
   irradiance into the BSP's 8-bit lightmap lump, the light grid (ambient, directed, direction from
   SH at the grid points) and vertex colours, so the lvlworld build carries the same light

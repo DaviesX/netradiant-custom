@@ -595,6 +595,7 @@ $(INSTALLDIR)/q3map2.$(EXE): \
 	tools/quake3/q3map2/path_init.o \
 	tools/quake3/q3map2/portals.o \
 	tools/quake3/q3map2/prtfile.o \
+	tools/quake3/q3map2/q3map2_extension.o \
 	tools/quake3/q3map2/shaders.o \
 	tools/quake3/q3map2/surface_extra.o \
 	tools/quake3/q3map2/surface_foliage.o \
@@ -614,6 +615,17 @@ $(INSTALLDIR)/q3map2.$(EXE): \
 	libwebplib.$(A) \
 	$(if $(findstring Win32,$(OS)),icons/q3map2.o,) \
 	| $(if $(findstring yes,$(ASSIMP_INTERNAL)),$(INSTALLDIR)/libassimp_.$(DLL),) \
+
+# The q3map2 SH extension's tests: the module and its test file alone, run by
+# `make test-q3map2-extension`. Kept out of $(INSTALLDIR), which ships.
+tools/quake3/q3map2/q3map2_extension_test.$(EXE): CPPFLAGS_EXTRA := -Ilibs
+tools/quake3/q3map2/q3map2_extension_test.$(EXE): \
+	tools/quake3/q3map2/q3map2_extension.o \
+	tools/quake3/q3map2/q3map2_extension_test.o \
+
+.PHONY: test-q3map2-extension
+test-q3map2-extension: tools/quake3/q3map2/q3map2_extension_test.$(EXE)
+	./tools/quake3/q3map2/q3map2_extension_test.$(EXE)
 
 libmathlib.$(A): CPPFLAGS_EXTRA := -Ilibs
 libmathlib.$(A): \
