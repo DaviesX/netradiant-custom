@@ -816,9 +816,11 @@ q3map2 includes the headers in \texttt{src/} directly and links the \texttt{libs
   (\texttt{light.cpp:265}, \texttt{:339}), so fences and leaf cards block direct light completely.
   The shadow rays honour alpha the way the tracer's indirect rays already do, so they cast through
   their cut-outs. Kept out of item~1 because it changes bake output; needed by 4.3.
+  \emph{Done (\texttt{sh-baker} PR \#62).}
 \item \textbf{Progress and cancel.} One \texttt{BakeSHLightMap} call already builds the Embree
   device, the BVH and the light trees once for all its points (\texttt{baker.cpp:95--96}); it
-  gains progress and cancel callbacks.
+  gains progress and cancel callbacks, plus a done callback on the calling thread.
+  \emph{Done (\texttt{sh-baker} PR \#63, then \texttt{ce5419a}).}
 \item \textbf{Outputs.} The SH side-file format (L0, L1, L2 per page) and the solid hull mesh
   (3.5), plus an optional Radiance \texttt{.hdr} dump of L0 for inspection. \texttt{sh-baker}
   returns SH and irradiance per luxel; q3map2 assembles the pages, the light grid and the vertex
