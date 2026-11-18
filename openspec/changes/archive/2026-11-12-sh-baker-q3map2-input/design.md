@@ -98,10 +98,16 @@ The glTF loader TU is built around tinygltf, and it defines the tinygltf and stb
 struct Q3Map2Surface {
   std::vector<Eigen::Vector3f> positions;     // world space
   std::vector<Eigen::Vector3f> normals;
-  std::vector<Eigen::Vector2f> texture_uvs;   // may be empty for occluders
+  std::vector<Eigen::Vector2f> texture_uvs;   // optional for occluders
   std::vector<uint32_t> indices;              // q3map2 winding: front is clockwise
   int material_id = -1;                       // < 0: pure occluder
 };
+
+namespace loader_q3map2_internal {  // exposed for tests
+void CheckSurface(const Q3Map2Surface& surface, const Scene& scene);
+std::vector<Eigen::Vector3f> NormalizeAndRepairNormals(const Geometry& geo);
+std::vector<uint32_t> DropDegenerateTriangles(const Geometry& geo);
+}
 
 // Appends one Geometry for tracing. Malformed input (see the spec) fails a
 // CHECK; degenerate normals and triangles are repaired.
@@ -111,9 +117,9 @@ void AddQ3Map2Surface(const Q3Map2Surface& surface, Scene* scene);
 `AddQ3Map2Surface` first `CHECK`s the spec's malformed-input cases, and each message names the field and value. It then:
 1. swaps each triangle's second and third index. q3map2's front faces are clockwise (`PlaneFromPoints`, `tools/quake3/common/qmath.h:197`), and sh-baker scenes are counter-clockwise like glTF, so B5 passes q3map2's indices untouched and the scene keeps one convention;
 2. normalizes the normals, replacing each shorter than 1e-6 with the normalized sum of its triangles' unnormalized face normals, or (0, 0, 1) if that sum is also degenerate;
-3. fills zero texture UVs for an occluder that has none;
-4. drops triangles that repeat an index, as `ProcessPrimitive` does;
-5. generates tangents through the shared code;
+3. drops triangles that repeat an index, as `ProcessPrimitive` does;
+4. computes tangents with `ComputeTangents` (`scene.h`), the function the glTF loader uses: MikkTSpace when the surface gave texture UVs, the fallback basis otherwise;
+5. for an occluder without texture UVs, sets each vertex's UV to its world-space (x, y), so every geometry has one finite UV per vertex. This comes after step 4 because those UVs have no area on a wall facing ±X, where MikkTSpace would return a tangent parallel to the normal;
 6. appends the geometry.
 
 The repair in step 2 uses the counter-clockwise triangles from step 1, so a repaired normal faces the same way as q3map2's front face.
@@ -159,17 +165,19 @@ C++ allows a typedef to be repeated with the same type, so any TU that also incl
 
 `Light::geometry` and the BVH's user data are raw pointers into `scene.geometries`, and an append can reallocate it. `AddQ3Map2Surface` therefore `CHECK`s that no light in the scene has a non-null `geometry`. That catches the realistic mistake of creating area lights before the last surface. A BVH built too early cannot be detected from the scene, so the header documents the order: all surfaces, then lights, then the BVH.
 
-### Tangent code moves to `tangents.{h,cpp}` unchanged
+### Tangent code moves to `scene.{h,cpp}` as `ComputeTangents`
 
-The MikkTSpace callbacks, `GenerateTangents` and the fallback-basis loop move out of `loader.cpp` into `tangents.cpp` behind one function:
+The MikkTSpace callbacks and the fallback-basis loop move out of `loader.cpp` into `scene.cpp`, behind one function declared in `scene.h`:
 
 ```cpp
-// Fills geo->tangents (one per vertex) if empty: MikkTSpace when
-// use_texture_uvs, else the fallback basis.
-void GenerateTangents(Geometry* geo, bool use_texture_uvs);
+// Compute tangent vectors for the geometry: MikkTSpace when it has texture
+// UVs, else (or if MikkTSpace fails) the geometric fallback basis.
+std::vector<Eigen::Vector4f> ComputeTangents(const Geometry& geometry);
 ```
 
-`ProcessPrimitive` calls it with today's condition, `!geo.texture_uvs.empty() && uv0_data != nullptr`. `AddQ3Map2Surface` calls it with `!surface.texture_uvs.empty()`. The move is verbatim, so the glTF path stays byte-identical, and the CLI comparison checks that.
+`ProcessPrimitive` calls it only when the primitive has no `TANGENT`. It no longer fills (0, 0) texture UVs for a primitive without `TEXCOORD_0`, so such an occluder keeps empty texture UVs, gets the fallback basis as before, and is saved without `TEXCOORD_0`. `AddQ3Map2Surface` calls it before generating an occluder's UVs (see its step list). MikkTSpace writes only the vertices a triangle uses, so the result starts zero-filled. Tangent values on the glTF path are unchanged: the `notangent` bake's lightmaps and `TANGENT` data are byte-identical, and only the occluder's made-up `TEXCOORD_0` disappears from the saved glTF, which the user accepted as intended.
+
+*As merged.* The stack was opened with a `tangents.{h,cpp}` TU and `void GenerateTangents(Geometry*, bool)`. The user reworked PRs 2/7 and 6/7 before merging into the form above, and a follow-up PR (8/7, sh-baker#61) restored the zero fill and moved the occluder's tangents ahead of its generated UVs.
 
 ### Development and delivery
 
@@ -178,16 +186,17 @@ The work goes to `DaviesX/sh-baker` as seven small PRs, stacked: each PR's branc
 | PR | Content | Spec coverage |
 |----|---------|---------------|
 | 1/7 | Fixtures `data/layers` and `data/notangent`, each generated by a `make_fixture.py` beside it | used by the CLI comparisons from here on |
-| 2/7 | Tangent code moved to `tangents.{h,cpp}` | "glTF tangents unchanged by the move" |
+| 2/7 | Tangent code moved to `ComputeTangents` in `scene.{h,cpp}` (as merged; opened as `tangents.{h,cpp}`) | "glTF tangents unchanged by the move" |
 | 3/7 | Embree handles declared in `scene.h` | part of "Headers usable from q3map2" |
 | 4/7 | `Texture` to `texture.h`; `Material` and the layer enums to `material.h`, unchanged | none; a pure move |
 | 5/7 | The owned layer model, the loader's and saver's translation, and their tests | `sh-baker-material-layers` |
 | 6/7 | `loader_q3map2.{h,cpp}` and its tests, and the strict header check | `sh-baker-q3map2-loader`, apart from the two bake scenarios |
 | 7/7 | The point-bake doc comment and tests, and the README section | "Baking caller-supplied points", "Occluders block without shading" |
+| 8/7 | Follow-up after merge (sh-baker#61): zero-filled tangents, fallback tangents for UV-less occluders, README | "Fallback tangents for an occluder wall", "Unused vertex" |
 
 The order puts data and mechanical moves first: they are quick to review and start the review flowing, and each later PR then diffs only its own concern. PR 2 comes before the layer work because it is independent of it, and PR 3 before PR 6 because the strict header check needs it.
 
-Every PR is committed and then passes the same gate before it is pushed: all targets build, the pre-existing tests keep their baseline results, new tests pass, no pre-existing test line changes (apart from the two rewritten pass-through tests in PR 5), and the CLI outputs for `box`, `MultiLights`, `layers` and `notangent` are byte-identical to the baseline. Any difference is therefore pinned to one PR. The baseline is built from `86d7239` into `build/baseline/`, and the stack into `build/`. Both are covered by the submodule's `build` ignore rule. FetchContent sources come from the network, or from `../ioq3-custom/sh-baker/deps` through `FETCHCONTENT_SOURCE_DIR_XATLAS` / `_MIKKTSPACE`. Every sample scene carries `TANGENT`, which would leave the moved tangent code untested, so `data/notangent` is the box without `TANGENT`, plus an offset material-less copy without `TANGENT` and `TEXCOORD_0`. It exercises both MikkTSpace and the fallback, and the saver writes both into the output glTF. `data/layers` carries `SH_material_layers` with every field kind.
+Every PR is committed and then passes the same gate before it is pushed: all targets build, the pre-existing tests keep their baseline results, new tests pass, no pre-existing test line changes (apart from the two rewritten pass-through tests in PR 5), and the CLI outputs for `box`, `MultiLights`, `layers` and `notangent` are byte-identical to the baseline. Any difference is therefore pinned to one PR. The baseline is built from `86d7239` into `build/baseline/`, and the stack into `build/`. Both are covered by the submodule's `build` ignore rule. FetchContent sources come from the network, or from `../ioq3-custom/sh-baker/deps` through `FETCHCONTENT_SOURCE_DIR_XATLAS` / `_MIKKTSPACE`. Every sample scene carries `TANGENT`, which would leave the moved tangent code untested, so `data/notangent` is the box without `TANGENT`, plus an offset material-less copy without `TANGENT` and `TEXCOORD_0`. It exercises both MikkTSpace and the fallback, and the saver writes both into the output glTF. As merged, PR 2/7 also stopped the glTF loader filling (0, 0) UVs for a primitive without `TEXCOORD_0`. From then on the `notangent` output's `scene.gltf`/`scene.bin` lose the occluder's `TEXCOORD_0`, while its lightmaps and every other attribute, `TANGENT` included, stay byte-identical; the user accepted this. `data/layers` carries `SH_material_layers` with every field kind.
 
 The user authorized opening these PRs as they are done. Moving the stack never overwrites anything blind:
 - each branch is first fast-forwarded to its remote, so commits the user added on GitHub are kept;
@@ -222,4 +231,4 @@ The landing PR follows once the stack is on `main`. It bumps the submodule and t
 
 ## Migration Plan
 
-Nothing to migrate for users of the CLI or of the glTF files. The library API break is limited to `MaterialLayers`' fields (see the proposal). Rollback means reverting the merged PRs in sh-baker, newest first, and leaving this repo's submodule pointer at `86d7239`. Each PR keeps outputs byte-identical, so the stack can also stop partway: the merged PRs stay, and the submodule moves only after the whole stack has landed.
+Nothing to migrate for users of the CLI or of the glTF files. The library API break is limited to `MaterialLayers`' fields (see the proposal). Rollback means reverting the merged PRs in sh-baker, newest first, and leaving this repo's submodule pointer at `86d7239`. Each PR keeps the lightmaps byte-identical, so the stack can also stop partway: the merged PRs stay, and the submodule moves only after the whole stack has landed.

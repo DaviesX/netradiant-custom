@@ -29,9 +29,10 @@ On 2026-10-03 the user authorized pushing each branch and opening its PR as soon
 - `git status` shows nothing uncommitted apart from the ignored `build/`.
 
 **Opening a PR.**
-1. Commit on the group's branch with a message that cites B2 and the PR's place in the stack (for example "q3map2 input (2/7)"), ending with the attribution line.
-2. Run the gate on the committed branch. Fix any failure with another commit, or amend, since the branch is not pushed yet.
-3. `git push -u origin <branch>`, then `gh pr create --repo DaviesX/sh-baker --base <previous branch, or main for PR 1> --head <branch>`. Title the PR "q3map2 input (n/7): <summary>". The description says:
+1. Run `clang-format -i` on every C++ file the PR adds or changes. It formats whole files, so pre-existing lines get formatted too. The user asked for this on 2026-10-03.
+2. Commit on the group's branch with a message that cites B2 and the PR's place in the stack (for example "q3map2 input (2/7)"), ending with the attribution line.
+3. Run the gate on the committed branch. Fix any failure with another commit, or amend, since the branch is not pushed yet.
+4. `git push -u origin <branch>`, then `gh pr create --repo DaviesX/sh-baker --base <previous branch, or main for PR 1> --head <branch>`. Title the PR "q3map2 input (n/7): <summary>". The description says:
    - what the PR changes and why;
    - which spec requirements and scenarios it covers;
    - the gate's evidence (test counts, the four empty diffs);
@@ -39,8 +40,8 @@ On 2026-10-03 the user authorized pushing each branch and opening its PR as soon
    - that the stack implements this repo's openspec change `sh-baker-q3map2-input`.
 
    It ends with the generated-by line.
-4. Add the branch and its pushed tip to `build/stack-tips.txt` (one `<branch> <sha>` line per branch, replacing any older line for it). Record the PR's number and tip under the task as a *Done* line.
-5. Go on with the next group without waiting for review.
+5. Add the branch and its pushed tip to `build/stack-tips.txt` (one `<branch> <sha>` line per branch, replacing any older line for it). Record the PR's number and tip under the task as a *Done* line.
+6. Go on with the next group without waiting for review.
 
 **Moving the stack.** Every rebase follows these steps, so commits the user added on GitHub are kept and nothing is overwritten blind:
 1. `git fetch origin`. Fast-forward each open PR's local branch to `origin/<branch>` with `git merge --ff-only`. If one cannot fast-forward, stop and ask the user.
@@ -89,14 +90,14 @@ On 2026-10-03 the user authorized pushing each branch and opening its PR as soon
 
 ## 2. Plan correction (this repo, PR on `DaviesX/netradiant-custom`)
 
-- [ ] 2.1 In this repo, start the branch and commit this revision of the change:
+- [x] 2.1 In this repo, start the branch and commit this revision of the change:
   1. `git fetch fork`. Fast-forward local `master` with `git fetch fork master:master`, so it holds the squash-merged proposal `3ba13443`.
   2. `git switch -c b2-plan master`. The uncommitted revision of `proposal.md`, `design.md` and `tasks.md` carries over, because `master`'s copies of the change match the local `sh-baker-q3map2-input` branch.
   3. Commit those three files as "Plan B2's delivery as seven stacked PRs", with the attribution line.
   4. Once `git diff --quiet sh-baker-q3map2-input master` confirms the squash holds all of it, delete the local `sh-baker-q3map2-input` branch.
 
   Verify: `git log --oneline master..b2-plan` shows one commit, touching only those three files.
-- [ ] 2.2 On `b2-plan`, bring the plan in line with the decision that q3map2 supplies the luxel points (design, first decision):
+- [x] 2.2 On `b2-plan`, bring the plan in line with the decision that q3map2 supplies the luxel points (design, first decision):
   - In `docs/pbr-plan/pbr-plan.tex` §4.2:
     - item 1 becomes "q3map2 input contract": the owned material-layer model (no tinygltf in the headers q3map2 includes), the q3map2 loader TU (checked tracing geometry, shared MikkTSpace tangents), and baking caller-supplied points in one call. Drop the multi-page UV layout and the `atlasCount > 1` claim, and say why: xatlas never emits several atlases here, and q3map2 owns the luxel mapping;
     - item 2 becomes progress and cancel callbacks on that single call, since one call already builds the BVH once;
@@ -127,11 +128,13 @@ On 2026-10-03 the user authorized pushing each branch and opening its PR as soon
   - the B2 line in `CLAUDE.md` names the owned material layers, the q3map2 loader and the point bake.
 
   This PR changes only documents, so the stock check cannot change. It runs in group 10.
-- [ ] 2.3 Commit `docs/pbr-plan/pbr-plan.tex`, `docs/pbr-plan/pbr-plan.pdf` and `CLAUDE.md` on `b2-plan`, with the attribution line. Push with `git push -u fork b2-plan`, and open the PR with `gh pr create --repo DaviesX/netradiant-custom --base master --head b2-plan`. The description has two parts: the delivery revision of the change (stacked PRs, the gate, the stack rules), and the plan sections and tasks corrected. Record its number and pushed tip as a *Done* line. Verify: the PR's file list is exactly the six files of 2.1 and this task.
+- [x] 2.3 Commit `docs/pbr-plan/pbr-plan.tex`, `docs/pbr-plan/pbr-plan.pdf` and `CLAUDE.md` on `b2-plan`, with the attribution line. Push with `git push -u fork b2-plan`, and open the PR with `gh pr create --repo DaviesX/netradiant-custom --base master --head b2-plan`. The description has two parts: the delivery revision of the change (stacked PRs, the gate, the stack rules), and the plan sections and tasks corrected. Record its number and pushed tip as a *Done* line. Verify: the PR's file list is exactly the six files of 2.1 and this task.
+
+  *Done (2026-10-03):* PR DaviesX/netradiant-custom#2, base `master`, pushed tip `3f7f7bc6`. Its file list is the six files. The PDF built without errors or warnings.
 
 ## 3. PR 1/7: fixtures
 
-- [ ] 3.1 Create the branch `q3map2-input/1-fixtures` from `$BASE`, and add two fixtures. The first is `data/layers/`. It is a copy of `data/box/scene.gltf` with three small PNGs, carrying an exporter-shaped `SH_material_layers`, written by a short script kept beside it as `data/layers/make_fixture.py`. It must hold:
+- [x] 3.1 Create the branch `q3map2-input/1-fixtures` from `$BASE`, and add two fixtures. The first is `data/layers/`. It is a copy of `data/box/scene.gltf` with three small PNGs, carrying an exporter-shaped `SH_material_layers`, written by a short script kept beside it as `data/layers/make_fixture.py`. It must hold:
   - one opaque two-layer material (`baseLayer` 1, `cullMode` `NONE`, `surfaceBlend` `BLEND`);
   - one layer with every tcMod kind and a `WAVE` rgbGen;
   - one animated layer whose frame 0 is its texture;
@@ -144,34 +147,58 @@ On 2026-10-03 the user authorized pushing each branch and opening its PR as soon
   - `./build/baseline/sh_baker_main --input data/<fixture>/scene.gltf --output build/baseline/out-<fixture>-0 --width 256 --samples 8 --dilation 4` exits 0 for both fixtures;
   - the `layers` output `scene.gltf` carries `SH_material_layers` on both materials, and its lightmap differs from a bake of the same fixture with the additive material's emissive strength set to 0, which shows the emissive composite reaches the output;
   - the `notangent` output `scene.gltf` has `TANGENT` on both primitives, which shows the loader generated them through MikkTSpace and the fallback.
-- [ ] 3.2 Record the baseline CLI outputs. For each scene `box`, `MultiLights`, `layers` and `notangent`, run twice: `./build/baseline/sh_baker_main --input data/<scene>/scene.gltf --output build/baseline/out-<scene>-<run> --width 256 --samples 32 --dilation 4`. Verify that `diff -r` of run 1 against run 2 is empty for every scene. If any differ, stop and ask the user how outputs should be compared (design, Risks); do not go on with a weaker check.
-- [ ] 3.3 Run the gate and open PR 1/7 against `main`: "Add fixtures for material layers and missing tangents". The description says which later PRs use each fixture (2/7 and 5/7) and gives the 3.1 evidence. Verify: `git diff --stat $BASE` lists only files under `data/layers/` and `data/notangent/`.
+
+  *Done (2026-10-03):* Both fixtures bake with exit 0.
+  - `layers` has two materials. `Layered` is two layers on the box: every tcMod kind with `WAVE`/`SIN` on layer 0, and `WAVE` without `func` on layer 1. `Flame` is a one-layer `ONE`/`ONE` animMap with frames `[2, 1]`, `animFreq` 5.0 and emissive strength 20.0, on a half-size box beside it. The output keeps `SH_material_layers` on both materials.
+  - With emissive strength 0, the `lightmap.exr` differs (first difference at byte 898).
+  - `notangent`'s output has `TANGENT` on the box (MikkTSpace) and on the material-less occluder (fallback).
+  - The box's unused `TANGENT` accessor is left in place, so `scene.bin` stays a byte copy of the box's.
+- [x] 3.2 Record the baseline CLI outputs. For each scene `box`, `MultiLights`, `layers` and `notangent`, run twice: `./build/baseline/sh_baker_main --input data/<scene>/scene.gltf --output build/baseline/out-<scene>-<run> --width 256 --samples 32 --dilation 4`. Verify that `diff -r` of run 1 against run 2 is empty for every scene. If any differ, stop and ask the user how outputs should be compared (design, Risks); do not go on with a weaker check.
+
+  *Done (2026-10-03):* Runs 1 and 2 give empty `diff -r` for all four scenes. Wall time per bake is 0.07–0.27 s.
+- [x] 3.3 Run the gate and open PR 1/7 against `main`: "Add fixtures for material layers and missing tangents". The description says which later PRs use each fixture (2/7 and 5/7) and gives the 3.1 evidence. Verify: `git diff --stat $BASE` lists only files under `data/layers/` and `data/notangent/`.
+
+  *Done (2026-10-03):* PR DaviesX/sh-baker#54, tip `e305335`. Gate passed: 101/101 tests, all four CLI scenes identical. The diff is 9 files, all under `data/layers/` and `data/notangent/`.
 
 ## 4. PR 2/7: shared tangents
 
-- [ ] 4.1 Create `q3map2-input/2-tangents` from `q3map2-input/1-fixtures`. Move the MikkTSpace callbacks, `GenerateTangents` and the fallback-basis loop verbatim from `src/loader.cpp` into new `src/tangents.h` / `src/tangents.cpp`, behind `void GenerateTangents(Geometry* geo, bool use_texture_uvs)` (design, "Tangent code moves"). `ProcessPrimitive` calls it with `!geo.texture_uvs.empty() && uv0_data != nullptr`. Add both files to `LIB_SOURCES` / `LIB_HEADERS` in `CMakeLists.txt`. Verify:
+- [x] 4.1 Create `q3map2-input/2-tangents` from `q3map2-input/1-fixtures`. Move the MikkTSpace callbacks, `GenerateTangents` and the fallback-basis loop verbatim from `src/loader.cpp` into new `src/tangents.h` / `src/tangents.cpp`, behind `void GenerateTangents(Geometry* geo, bool use_texture_uvs)` (design, "Tangent code moves"). `ProcessPrimitive` calls it with `!geo.texture_uvs.empty() && uv0_data != nullptr`. Add both files to `LIB_SOURCES` / `LIB_HEADERS` in `CMakeLists.txt`. Verify:
   - `grep -n 'genTangSpaceDefault\|SMikkTSpace' src/loader.cpp` is empty;
   - every pre-existing loader test passes.
-- [ ] 4.2 Run the gate, in which `notangent` exercises the moved code, and open PR 2/7: "Move tangent generation into tangents.{h,cpp}".
+
+  *Done (2026-10-03):* The MikkTSpace helper keeps its body and is renamed `GenerateMikkTSpaceTangents` inside `tangents.cpp`. The `grep` is empty, and the loader tests pass.
+- [x] 4.2 Run the gate, in which `notangent` exercises the moved code, and open PR 2/7: "Move tangent generation into tangents.{h,cpp}".
+
+  *Done (2026-10-03):* PR DaviesX/sh-baker#55, stacked on #54, tip `fe47d29`. Gate passed: 101/101 tests, all four CLI scenes identical, no compiler warnings.
+
+  *Note (2026-11-12, as merged as `76243cf`):* the user reworked this PR before merging, and the squash commit kept the old title. The tangent code lives in `src/scene.cpp` behind `std::vector<Eigen::Vector4f> ComputeTangents(const Geometry&)` in `scene.h`, and `tangents.{h,cpp}` is not on `main`. `ProcessPrimitive` calls it only when `geo.tangents` is empty, and no longer fills (0, 0) UVs when `TEXCOORD_0` is missing. So the saved glTF for `notangent` drops the occluder's `TEXCOORD_0`, while its EXRs and every other attribute, `TANGENT` included, match the baseline. The user accepted the difference on 2026-11-12.
 
 ## 5. PR 3/7: Embree handles
 
-- [ ] 5.1 Create `q3map2-input/3-embree-handles` from `q3map2-input/2-tangents`. In `src/scene.h`, replace `#include <embree4/rtcore.h>` with the two handle typedefs at global scope (design, "Embree handles are declared in `scene.h`"). Add `#include <embree4/rtcore.h>` to every `.cpp` that calls `rtc*` and no longer compiles. Verify: under `set -o pipefail`, `g++ -std=c++20 -x c++ -M -Isrc -I/usr/include/eigen3 src/scene.h src/baker.h | grep -c 'embree4/'` prints 0, and `g++` exits 0.
-- [ ] 5.2 Run the gate and open PR 3/7: "Declare Embree's handles in scene.h instead of including rtcore.h".
+- [x] 5.1 Create `q3map2-input/3-embree-handles` from `q3map2-input/2-tangents`. In `src/scene.h`, replace `#include <embree4/rtcore.h>` with the two handle typedefs at global scope (design, "Embree handles are declared in `scene.h`"). Add `#include <embree4/rtcore.h>` to every `.cpp` that calls `rtc*` and no longer compiles. Verify: under `set -o pipefail`, `g++ -std=c++20 -x c++ -M -Isrc -I/usr/include/eigen3 src/scene.h src/baker.h | grep -c 'embree4/'` prints 0, and `g++` exits 0.
+
+  *Done (2026-10-03):* Only `scene.cpp` stopped compiling, and it now includes `<embree4/rtcore.h>`. `g++` exits 0 and `grep -c` prints 0. Under `pipefail` the pipeline's own status is `grep -c`'s 1, so the check reads `g++`'s exit from `PIPESTATUS`.
+- [x] 5.2 Run the gate and open PR 3/7: "Declare Embree's handles in scene.h instead of including rtcore.h".
+
+  *Done (2026-10-03):* PR DaviesX/sh-baker#56, stacked on #55, tip `78aabeb`. Gate passed.
 
 ## 6. PR 4/7: moved types
 
-- [ ] 6.1 Create `q3map2-input/4-move-types` from `q3map2-input/3-embree-handles`. Move types without changing them (design, "The layer stack is an sh-baker-owned model"):
+- [x] 6.1 Create `q3map2-input/4-move-types` from `q3map2-input/3-embree-handles`. Move types without changing them (design, "The layer stack is an sh-baker-owned model"):
   - create `src/texture.h` with `Texture`, `Texture32F` and `Texture32I` moved from `src/scene.h`;
   - move `Material` from `src/scene.h` into `src/material.h`, which includes `texture.h` and `material_layers.h` and no longer includes `scene.h`;
   - move the layer enums and `RgbGen`/`TcMod` unchanged from `src/layer_composite.h` into `src/material.h`, and make `layer_composite.h` include `material.h`;
   - make `src/scene.h` include `material.h`;
   - update `CMakeLists.txt`'s header list.
-- [ ] 6.2 Run the gate and open PR 4/7: "Move Material and the layer enums into material.h, and Texture into texture.h".
+
+  *Done (2026-10-03):* The blocks moved byte for byte. No `.cpp` needed a new include.
+- [x] 6.2 Run the gate and open PR 4/7: "Move Material and the layer enums into material.h, and Texture into texture.h".
+
+  *Done (2026-10-03):* PR DaviesX/sh-baker#57, stacked on #56, tip `09563f9`. Gate passed. After the user asked for clang-format before every PR, a second commit (`b654efe`) formatted `material.h` and `layer_composite.h`, rewrapping two comments that ran past 80 columns. The gate passed again, and the branch was pushed as a fast-forward. PRs 2/7 and 3/7 were already clang-format clean.
 
 ## 7. PR 5/7: owned material-layer model
 
-- [ ] 7.1 Create `q3map2-input/5-owned-layers` from `q3map2-input/4-move-types`. Replace the verbatim carrier with the owned model in one commit, so every target keeps building:
+- [x] 7.1 Create `q3map2-input/5-owned-layers` from `q3map2-input/4-move-types`. Replace the verbatim carrier with the owned model in one commit, so every target keeps building:
   - in `src/material.h`, extend `RgbGen` with an absent wave function, add `WaveType::kNone`, and give `TcMod` values for every type plus a `wave`, in field order `{type, values, wave}`. Add `SurfaceBlend`, `CullMode`, `MaterialLayer` and the owned `MaterialLayers`. Delete `src/material_layers.h`;
   - in `src/loader.cpp`, deserialize `SH_material_layers` once into `MaterialLayers` with full fidelity:
     - every tcMod type with its parameters, `ROTATE`'s scalar and `TURB`/`STRETCH`'s wave string;
@@ -186,7 +213,12 @@ On 2026-10-03 the user authorized pushing each branch and opening its PR as soon
   Verify:
   - under `set -o pipefail`, `g++ -std=c++20 -x c++ -M -Isrc -I/usr/include/eigen3 src/scene.h | grep -c 'tiny_gltf\|json.hpp'` prints 0, and `g++` exits 0;
   - `git diff $BASE -- src/saver_test.cpp` removes only the `tinygltf::Value` extension construction, the texture-index maps and the asserts on `extension`/`texture_paths`.
-- [ ] 7.2 Add tests for every scenario in `specs/sh-baker-material-layers/spec.md` that pre-existing tests and the gate's CLI comparisons do not already cover:
+
+  *Done (2026-10-03):*
+  - `RgbGen::wave` is `std::optional<WaveType>`, and `WaveType::kNone` is the tcMod `"NONE"`. The compositor evaluates an absent wave or `kNone` as SIN, exactly as the old loader mapped every non-named function, so compositing is unchanged for every input.
+  - The `-M` check prints 0 and `g++` exits 0.
+  - The `saver_test.cpp` diff removes the listed lines plus one whitespace-only rewrap. clang-format rewrapped a pre-existing `ASSERT_TRUE` in `OccluderShellRoundTripsMaterialLess`, because the user asked for whole files to be formatted. Every other pre-existing saver test compares identical once whitespace is removed.
+- [x] 7.2 Add tests for every scenario in `specs/sh-baker-material-layers/spec.md` that pre-existing tests and the gate's CLI comparisons do not already cover:
   - "Built in code": a test that includes only `material.h`, builds an animated layer with a `TURB` tcMod and a `WAVE` rgbGen, and checks the fields;
   - "Every tcMod kind", "Animated layer" and "WAVE without func", loading `data/layers/scene.gltf` in `src/loader_test.cpp`;
   - "Unknown blend factor", on a scratch copy with `blendSrc` edited;
@@ -194,11 +226,15 @@ On 2026-10-03 the user authorized pushing each branch and opening its PR as soon
   - "Frame 0 shares the layer texture" and "Unknown source", in `src/saver_test.cpp`.
 
   Verify: all of them pass.
-- [ ] 7.3 Run the gate, in which `layers` proves the serialization exact, and open PR 5/7: "Own the material-layer model instead of carrying tinygltf::Value". The description names the library API break: `MaterialLayers::extension` and `::texture_paths` are replaced, and the glTF files do not change.
+
+  *Done (2026-10-03):* 9 new tests, all passing. "Built in code" lives in a new `src/material_layers_test.cpp` (*note, 2026-11-12:* the user folded it into `src/material_test.cpp` at merge, which also includes `scene.h`, whose closure is still free of tinygltf), whose `-M` closure has no tinygltf, and also checks that the wave function can be absent. "Unknown blend factor" checks the warning through a glog `LogSink`. The round trip and the two saver scenarios are in `saver_test.cpp`.
+- [x] 7.3 Run the gate, in which `layers` proves the serialization exact, and open PR 5/7: "Own the material-layer model instead of carrying tinygltf::Value". The description names the library API break: `MaterialLayers::extension` and `::texture_paths` are replaced, and the glTF files do not change.
+
+  *Done (2026-10-03):* PR DaviesX/sh-baker#58, stacked on #57, tip `5fb3ba2`. Gate passed: 110/110 tests (101 baseline unchanged, 9 new), all four CLI scenes identical.
 
 ## 8. PR 6/7: q3map2 loader
 
-- [ ] 8.1 Create `q3map2-input/6-q3map2-loader` from `q3map2-input/5-owned-layers`. Add `src/loader_q3map2.h` / `src/loader_q3map2.cpp` with `Q3Map2Surface` and `AddQ3Map2Surface` (design, "A new TU for q3map2"), and add them to `CMakeLists.txt`. It `CHECK`s each case of the spec's "Malformed input aborts", and that no light in the scene has a geometry pointer (design, "Scene assembly order is checked"), with messages that name the field and value. Then, in order:
+- [x] 8.1 Create `q3map2-input/6-q3map2-loader` from `q3map2-input/5-owned-layers`. Add `src/loader_q3map2.h` / `src/loader_q3map2.cpp` with `Q3Map2Surface` and `AddQ3Map2Surface` (design, "A new TU for q3map2"), and add them to `CMakeLists.txt`. It `CHECK`s each case of the spec's "Malformed input aborts", and that no light in the scene has a geometry pointer (design, "Scene assembly order is checked"), with messages that name the field and value. Then, in order:
   1. swap each triangle's second and third index (q3map2's clockwise to counter-clockwise);
   2. normalize the normals, repairing short ones from the flipped triangles' face normals (design, "A new TU for q3map2");
   3. fill zero texture UVs for an occluder without them;
@@ -223,17 +259,29 @@ On 2026-10-03 the user authorized pushing each branch and opening its PR as soon
   - fallback tangents for an occluder.
 
   Verify: all of them pass.
-- [ ] 8.2 Check the headers against q3map2's flags:
+
+  *Note (2026-11-12, as merged in #59 / `64181b8`):* the user's review reordered the steps and called `ComputeTangents(geo)` from `scene.h` in place of `GenerateTangents`. A UV-less occluder now gets world-space (x, y) UVs instead of (0, 0). `CheckSurface`, `NormalizeAndRepairNormals` and `DropDegenerateTriangles` are exposed in `loader_q3map2_internal`. `OccluderWithoutUvs` became `OccluderWithoutUvsGeneratesUvs` and `FallbackTangentsForOccluder` became `TangentsForGeneratedOccluderUvs`, and `OccluderWithUvsCopiesUvs` plus three `LoaderQ3Map2InternalTest` tests were added. Group 11 restores the fallback tangents for occluders.
+
+  *Done (2026-10-03):* 14 tests, all passing. The death tests match on `indices\[4\]: index 4`, `material_id: 3`, `texture_uvs`, `texture_uvs\[2\]` and `assembly order`. Repairs and dropped triangles are logged at `VLOG(1)` rather than as warnings, so a town compile is not flooded.
+- [x] 8.2 Check the headers against q3map2's flags:
   - `printf '#include "loader_q3map2.h"\n#include "baker.h"\n' | g++ -std=c++20 -fno-exceptions -fno-rtti -fsyntax-only -Isrc -I/usr/include/eigen3 -x c++ -`;
   - `g++ -std=c++20 -x c++ -M -Isrc -I/usr/include/eigen3` on `src/loader_q3map2.h` and on `src/baker.h`.
 
   Verify: both commands exit 0, and the second's output contains none of `tiny_gltf.h`, `json.hpp`, `embree4/` or `loader.h`. `-M` is used rather than `-MM`, which hides system headers such as `/usr/include/tiny_gltf.h`.
-- [ ] 8.3 Run the gate and open PR 6/7: "Add a q3map2 surface loader". The description covers the contract (what aborts, what is repaired, the winding flip, the assembly order) and the 8.2 evidence.
+
+  *Done (2026-10-03):* Both commands exit 0. The closure of each header is `scene.h`, `material.h`, `texture.h`, `sh_coeffs.h`, `rasterizer.h`, `saver.h` and Eigen.
+- [x] 8.3 Run the gate and open PR 6/7: "Add a q3map2 surface loader". The description covers the contract (what aborts, what is repaired, the winding flip, the assembly order) and the 8.2 evidence.
+
+  *Done (2026-10-03):* PR DaviesX/sh-baker#59, stacked on #58, tip `b4a0747`. Gate passed: 124/124 tests (101 baseline unchanged, 23 new), all four CLI scenes identical.
 
 ## 9. PR 7/7: point bake and docs
 
-- [ ] 9.1 Create `q3map2-input/7-point-bake` from `q3map2-input/6-q3map2-loader`. Add a comment to `BakeSHLightMap` in `src/baker.h` saying that it bakes any list of points laid out as N×1 with supplied `position`, `normal`, a unit `tangent` perpendicular to the normal with `w` of +1 or -1 (it only orients the hemisphere, and `w = 0` flattens it) and `material_id ≥ 0`. Results come back at the points' indices, and invalid points keep the not-baked marker. Add the spec scenarios "Points from different surfaces in one call" and "Hull behind a crack" to `src/baker_test.cpp`. Build the points through `AddQ3Map2Surface` geometry plus hand-made `SurfacePoint`s, with `bounces = 0`. Verify: both tests pass with no change to `src/baker.cpp`. If they need one, stop and report why.
-- [ ] 9.2 Add a short "Library: q3map2 input" section to `README.md`. It covers:
+- [x] 9.1 Create `q3map2-input/7-point-bake` from `q3map2-input/6-q3map2-loader`. Add a comment to `BakeSHLightMap` in `src/baker.h` saying that it bakes any list of points laid out as N×1 with supplied `position`, `normal`, a unit `tangent` perpendicular to the normal with `w` of +1 or -1 (it only orients the hemisphere, and `w = 0` flattens it) and `material_id ≥ 0`. Results come back at the points' indices, and invalid points keep the not-baked marker. Add the spec scenarios "Points from different surfaces in one call" and "Hull behind a crack" to `src/baker_test.cpp`. Build the points through `AddQ3Map2Surface` geometry plus hand-made `SurfacePoint`s, with `bounces = 0`. Verify: both tests pass with no change to `src/baker.cpp`. If they need one, stop and report why.
+
+  *Done (2026-10-03):* Both pass with `baker.cpp` unchanged.
+  - **Points:** the point facing the sun has L0 0.282 and the one facing away has 0. The invalid point keeps `SHCoeffs(-1)` and visibility -1.
+  - **Crack:** L0 is 0.282 with the crack open and 0 with the hull. The ceiling quads face down into the room, as q3map2's interior surfaces do. With `bounces = 0` the first hit is still shaded, so a ceiling facing up would look lit from below.
+- [x] 9.2 Add a short "Library: q3map2 input" section to `README.md`. It covers:
   - `MaterialLayers` as the owned form of `SH_material_layers`;
   - `AddQ3Map2Surface`: what it repairs, what aborts, and the assembly order;
   - that the headers q3map2 includes need only `src` and Eigen;
@@ -241,17 +289,26 @@ On 2026-10-03 the user authorized pushing each branch and opening its PR as soon
   - that the CLI and glTF output are unchanged.
 
   Verify: every function, type and field the section names exists (`grep` in `src/*.h`), and the CLI section of the README is unchanged.
-- [ ] 9.3 Run the gate and open PR 7/7: "Document and test baking caller-supplied points". The description also summarizes the whole stack: why q3map2 supplies the luxel points (so no page model or rasterizer change), and the gate's evidence on the stack's top.
+
+  *Done (2026-10-03):* The section is appended at the end. All named symbols exist, and the README diff removes nothing.
+- [x] 9.3 Run the gate and open PR 7/7: "Document and test baking caller-supplied points". The description also summarizes the whole stack: why q3map2 supplies the luxel points (so no page model or rasterizer change), and the gate's evidence on the stack's top.
+
+  *Done (2026-10-03):* PR DaviesX/sh-baker#60, stacked on #59, tip `cf05f2e`. Gate passed on the top of the stack: default-option build including the visualizer and `sh_cvt` with no warnings, 126/126 tests (101 baseline unchanged, 25 new), all four CLI scenes identical.
+
+  *Note (2026-11-12):* the user adjusted the stack and merged it as #54–#60; `main` is `0176f1e`. See 10.1 and `git diff cf05f2e 0176f1e`.
 
 ## 10. Landing (this repo, PR on `DaviesX/netradiant-custom`)
 
-- [ ] 10.1 After the user has merged the whole stack, check `main`. In `tools/sh-baker`, `git fetch origin`. If `main` holds a commit that is not one of the stack's PRs, ask the user first ("If `main` moves"). Check out `origin/main` detached. Verify:
+- [x] 10.1 After the user has merged the whole stack, check `main`. In `tools/sh-baker`, `git fetch origin`. If `main` holds a commit that is not one of the stack's PRs, ask the user first ("If `main` moves"). Check out `origin/main` detached. Verify:
   - every file the stack added exists (`data/layers/`, `data/notangent/`, `src/texture.h`, `src/tangents.*`, `src/loader_q3map2*`), and `src/material_layers.h` is gone;
   - the gate passes on `main`, including its `saver_test.cpp` check, and every test the stack added is listed in `build/tests.txt` and passes;
   - the header checks of 5.1, 7.1 and 8.2 pass. PR 3/7 adds no file or test, so the 5.1 check is what shows it reached `main`.
 
   If something is missing, a PR was merged into a branch that never reached `main`. Report which one, and open a PR that carries it to `main` only after the user agrees.
-- [ ] 10.2 `git fetch fork`. Create the branch `b2-land` from `fork/master` if the plan PR is merged, or from `b2-plan` if it is still open. Then:
+
+  *Done (2026-11-12):* #54–#60 are merged; `main` is `0176f1e`, with no commit outside the stack (`86d7239` was rewritten as the tree-identical `0901d80`). The user said "PRs are adjusted and merged", and `git diff cf05f2e 0176f1e` shows the adjustments: `tangents.*` is gone in favour of `ComputeTangents` in `scene.{h,cpp}` (so the file check expects `tangents.*` absent and `ComputeTangents` in `scene.h`), and the test changes noted under 4.2 and 8.1. On `main`: 131/131 tests pass (101 baseline unchanged, 30 new), and no pre-existing test line is changed. `box`, `MultiLights` and `layers` are byte-identical. `notangent` differs only in that `scene.gltf`/`scene.bin` lack the occluder's all-zero `TEXCOORD_0`; both EXRs and every other attribute, `TANGENT` included, are identical. Per the byte-identity rule I reported this, and the user accepted it. The 8.2 header checks pass. A two-verifier audit of `main` found two latent issues, tangents left uninitialized for unused vertices and MikkTSpace tangents on occluder walls, plus stale README lines. These go to group 11.
+
+- [x] 10.2 `git fetch fork`. Create the branch `b2-land` from `fork/master` if the plan PR is merged, or from `b2-plan` if it is still open. Then:
   - point `tools/sh-baker` at `main`'s commit;
   - tick B2 in `CLAUDE.md`, and mark plan §4.2 item 1 done, rebuilding the PDF;
   - run the stock check, which every task's exit criterion includes, on a clean copy of the content, so the user's uncommitted work in `content/` is never touched or measured:
@@ -269,4 +326,17 @@ On 2026-10-03 the user authorized pushing each branch and opening its PR as soon
   - the stock check exits 0;
   - `openspec/specs/sh-baker-material-layers/spec.md` and `openspec/specs/sh-baker-q3map2-loader/spec.md` exist;
   - `openspec validate --specs --strict` passes.
-- [ ] 10.3 Commit the submodule pointer, `CLAUDE.md`, the plan and its PDF, the archived change and the new specs, with the attribution line. Push with `git push -u fork b2-land`, and open the PR with `gh pr create --repo DaviesX/netradiant-custom --base <master or b2-plan> --head b2-land`. The description lists the merged sh-baker PRs and the stock check result. If the plan PR is squash-merged while this one is open, follow "After a merge" with this repo's names.
+
+  *Done (2026-11-12):* `b2-land` created from `fork/master` (`c03636dd`, plan PR merged). `tools/sh-baker` points at `f4e4388`, `main` after #61 (11.2). B2 is ticked in `CLAUDE.md`, plan §4.2 item 1 is marked done, and the PDF rebuilds. The stock check on a `git archive` copy of `content/benchmark` exits 0: compile, opengl1 and opengl2 PASS (`stockcheck-out/20261112-201339`). The change is archived, and `openspec validate --specs --strict` passes.
+- [x] 10.3 Commit the submodule pointer, `CLAUDE.md`, the plan and its PDF, the archived change and the new specs, with the attribution line. Push with `git push -u fork b2-land`, and open the PR with `gh pr create --repo DaviesX/netradiant-custom --base <master or b2-plan> --head b2-land`. The description lists the merged sh-baker PRs and the stock check result. If the plan PR is squash-merged while this one is open, follow "After a merge" with this repo's names.
+
+  *Done (2026-11-12):* Committed on `b2-land`, pushed to `fork`, and the PR opened against `master`. Its number is in the PR thread.
+
+## 11. Follow-up after merge (PR 8/7)
+
+- [x] 11.1 Create `q3map2-input/8-followups` from `origin/main`. In `src/scene.cpp`, zero-fill `GenerateMikkTSpaceTangents`' result. In `AddQ3Map2Surface`, compute tangents before generating a UV-less occluder's XY UVs. Update the header comment and the README's q3map2 section. Add `SceneTest.ComputeTangentsZeroesUnusedVertex` and `LoaderQ3Map2Test.OccluderWallTangentsUseFallbackBasis`. Verify: both tests fail on `main` and pass with the change, and the gate passes against `main`'s outputs. For `notangent` the baseline's EXRs must match, and its glTF must equal `main`'s.
+
+  *Done (2026-11-12):* PR DaviesX/sh-baker#61, base `main`, tip `b6837e0`. Both tests fail without the fix. 133/133 pass (101 baseline unchanged, 32 new). All four scenes are byte-identical to `main`'s outputs, and `notangent`'s EXRs to the baseline. The header checks pass.
+- [x] 11.2 After the user merges #61: point `tools/sh-baker` at its squash commit on `main`, re-run 11.1's gate there, tick this task, then archive with `openspec archive sh-baker-q3map2-input --yes` and run `openspec validate --specs --strict`. Commit and push to the landing PR. The landing PR is not mergeable before this, because its spec describes #61's behaviour.
+
+  *Done (2026-11-12):* #61 was squash-merged as `f4e4388`, with a tree identical to the gated tip `b6837e0`. The gate re-ran there with the same results as 11.1: 133/133, all four scenes equal to `0176f1e`'s outputs, `notangent`'s EXRs equal to the baseline, header checks clean.

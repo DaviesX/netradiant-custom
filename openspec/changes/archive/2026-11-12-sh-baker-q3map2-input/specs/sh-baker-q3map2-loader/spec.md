@@ -14,7 +14,7 @@ The q3map2 loader SHALL take one draw surface with these fields:
 - triangle indices, in q3map2's winding (front faces clockwise);
 - a material index, negative for a pure occluder.
 
-Given a scene that already holds the materials, it SHALL append one geometry carrying those fields, with no lightmap UVs and an identity transform. Nothing else in the scene SHALL change.
+Given a scene that already holds the materials, it SHALL append one geometry carrying those fields, with no lightmap UVs and an identity transform. Nothing else in the scene SHALL change. Every added geometry SHALL have one finite texture UV per vertex: given UVs are copied unchanged, and a material-less surface without UVs SHALL get each vertex's world-space (x, y) as its UV.
 
 #### Scenario: Valid lit surface
 - **WHEN** a quad with four vertices, two triangles and material 0 is added to a scene with one material
@@ -22,7 +22,11 @@ Given a scene that already holds the materials, it SHALL append one geometry car
 
 #### Scenario: Occluder without UVs
 - **WHEN** a material-less surface has positions, normals and indices but no texture UVs
-- **THEN** it is added, and its texture UVs are (0, 0) for each vertex, as the glTF loader gives them
+- **THEN** it is added, and each vertex's texture UV is its world-space (x, y)
+
+#### Scenario: Occluder with UVs
+- **WHEN** a material-less surface gives one texture UV per vertex
+- **THEN** it is added with those UVs unchanged
 
 ### Requirement: Winding converted
 Surfaces arrive in q3map2's winding, where front faces are clockwise. The added geometry SHALL store its triangles counter-clockwise, as every sh-baker scene does, by swapping each triangle's second and third index.
@@ -95,7 +99,7 @@ Triangles that repeat a vertex index SHALL be dropped from the added geometry, a
 - **THEN** the added geometry's indices are `0 2 1  2 3 1`: the degenerate triangle is dropped and the others are flipped to counter-clockwise
 
 ### Requirement: Tangents
-Each added geometry SHALL get one tangent per vertex, generated the way the glTF loader generates them for a primitive without tangents. That means MikkTSpace from positions, normals and texture UVs when texture UVs were given, and the loader's fallback basis otherwise.
+Each added geometry SHALL get one tangent per vertex from `ComputeTangents` (`scene.h`), the function the glTF loader uses for a primitive without tangents. That means MikkTSpace from positions, normals and texture UVs when the surface gave texture UVs, and the geometric fallback basis otherwise or if MikkTSpace produces none. A UV-less occluder's tangents are computed before its world-space UVs are generated, so it always gets the fallback basis. A vertex that no remaining triangle uses SHALL get a zero tangent, never uninitialized memory.
 
 #### Scenario: Tangents follow the texture U axis
 - **WHEN** a quad in the XY plane with normals +Z and texture U increasing along +X is added
@@ -105,9 +109,17 @@ Each added geometry SHALL get one tangent per vertex, generated the way the glTF
 - **WHEN** a material-less quad without texture UVs is added
 - **THEN** every tangent is unit length, is perpendicular to its normal within 1e-4, and has w = 1
 
+#### Scenario: Fallback tangents for an occluder wall
+- **WHEN** a material-less quad without texture UVs facing +X, or facing (1, 1, 0) normalized, is added, so its generated (x, y) UVs have little or no area
+- **THEN** every tangent is unit length, is perpendicular to its normal within 1e-4, and has w = 1
+
+#### Scenario: Unused vertex
+- **WHEN** tangents are computed for a geometry with texture UVs and a vertex that no triangle uses
+- **THEN** that vertex's tangent is (0, 0, 0, 0)
+
 #### Scenario: glTF tangents unchanged by the move
 - **WHEN** the CLI bakes `data/notangent/scene.gltf`, whose lit primitive has no `TANGENT` and whose material-less primitive has neither `TANGENT` nor `TEXCOORD_0`, with fixed arguments before and after the change
-- **THEN** every output file, including the saved glTF's `TANGENT` data, is byte-identical
+- **THEN** both lightmap EXRs, and the saved glTF's `POSITION`, `NORMAL`, `TANGENT` and index data, are byte-identical, and the material-less primitive is saved without `TEXCOORD_0`, because the glTF loader no longer invents (0, 0) UVs for it
 
 ### Requirement: Baking caller-supplied points
 The library SHALL bake a list of N sample points, given as an N×1 buffer with supersample scale 1, in one call that needs no lightmap UVs and no rasterization. Each point's SH result SHALL be at the point's own index. A point marked invalid SHALL be skipped and keep the not-baked marker. Each point SHALL supply a position, a unit normal, and a unit tangent perpendicular to it with handedness w of +1 or -1. The tangent only orients the sampling hemisphere, and w = 0 would flatten it.
