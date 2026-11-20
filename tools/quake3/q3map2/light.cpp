@@ -1928,6 +1928,48 @@ static void LightWorld( bool fastAllocate, bool bounceStore ){
 	int b, bt;
 	bool minVertex, minGrid;
 
+	/* B5: -shbake replaces the lighting below (design decision 3) */
+	if ( shBake ) {
+		/* no minimum light: the bake's irradiance is written as baked (design decision 3);
+		   every ambientColor is zeroed in SetupSurfaceLightmaps */
+		minLight.set( 0 );
+		minVertexLight.set( 0 );
+		minGridLight.set( 0 );
+
+		if ( shade ) {
+			Sys_Printf( "--- SmoothNormals ---\n" );
+			SmoothNormals();
+		}
+
+		Sys_Printf( "--- SetupGrid ---\n" );
+		SetupGrid( g_vector3_identity );
+
+		/* no q3map2 lights and no TraceGrid: the bake writes the grid bytes */
+
+		/* MapTriangle_r compares squared edge lengths with it */
+		subdivideThreshold *= subdivideThreshold;
+
+		Sys_Printf( "--- MapRawLightmap ---\n" );
+		RunThreadsOnIndividual( numRawLightmaps, true, MapRawLightmap );
+		Sys_Printf( "%9d luxels\n", numLuxels );
+		Sys_Printf( "%9d luxels mapped\n", numLuxelsMapped );
+		Sys_Printf( "%9d luxels occluded\n", numLuxelsOccluded );
+
+		/* no dirt or floodlight; the bake fills the luxels, vertex luxels and grid, then floods */
+		ShBakeWorld();
+
+		/* no IlluminateVertexes and no radiosity */
+		StoreSurfaceLightmaps( fastAllocate, true );
+
+		/* the side file, from the indirect bake, at the BSP's page layout (design decision 12) */
+		if ( ShBakeKeepsSH() ) {
+			ShWriteSideFile();
+		}
+
+		UnparseEntities();
+		WriteBSPFileAfterLight( source );
+		return;
+	}
 
 	/* ydnar: smooth normals */
 	if ( shade ) {
@@ -1942,8 +1984,8 @@ static void LightWorld( bool fastAllocate, bool bounceStore ){
 	else
 		ColorFromSRGB( color );
 
-	/* ambient */
-	const Vector3 ambientColor = color * entities[ 0 ].floatForKey( "_ambient", "ambient" );
+	/* ambient (B5: -shbake zeroes every ambientColor, the grid's included; design decision 3) */
+	const Vector3 ambientColor = shBake? g_vector3_identity : color * entities[ 0 ].floatForKey( "_ambient", "ambient" );
 
 	/* minvertexlight */
 	if ( ( minVertex = entities[ 0 ].read_keyvalue( f, "_minvertexlight" ) ) ) {
@@ -2129,6 +2171,310 @@ static void LightWorld( bool fastAllocate, bool bounceStore ){
 	/* write out the bsp */
 	UnparseEntities();
 	WriteBSPFileAfterLight( source );
+}
+
+
+
+/*
+   B5 -shbake option classification (design decision 14): every option LightMain takes,
+   aliases included. Refusals are decided from the state the options set, so aliases and
+   game defaults are covered; this table names the given options in the ignored-options
+   warning and the -deluxemode refusal, and lists the refused ones for completeness.
+ */
+
+enum class EShBakeOption
+{
+	Refused,    /* stores lightmaps other than as BSP pages of the game's size, or writes debug colours */
+	Honoured,   /* shapes luxel mapping or page packing, smooths normals, selects points, or is unrelated to lighting */
+	Ignored,    /* tunes only the replaced lighting or its byte conversion */
+};
+
+struct ShBakeOption
+{
+	const char *name;
+	EShBakeOption kind;
+};
+
+static const ShBakeOption g_shBakeOptions[] = {
+	{ "-point", EShBakeOption::Ignored },
+	{ "-pointscale", EShBakeOption::Ignored },
+	{ "-spherical", EShBakeOption::Ignored },
+	{ "-sphericalscale", EShBakeOption::Ignored },
+	{ "-spot", EShBakeOption::Ignored },
+	{ "-spotscale", EShBakeOption::Ignored },
+	{ "-area", EShBakeOption::Ignored },
+	{ "-areascale", EShBakeOption::Ignored },
+	{ "-sky", EShBakeOption::Ignored },
+	{ "-skyscale", EShBakeOption::Ignored },
+	{ "-vertexscale", EShBakeOption::Ignored },
+	{ "-backsplash", EShBakeOption::Ignored },
+	{ "-nolm", EShBakeOption::Refused },
+	{ "-bouncecolorratio", EShBakeOption::Ignored },
+	{ "-bouncescale", EShBakeOption::Ignored },
+	{ "-scale", EShBakeOption::Ignored },
+	{ "-gridscale", EShBakeOption::Ignored },
+	{ "-gridambientscale", EShBakeOption::Ignored },
+	{ "-griddirectionality", EShBakeOption::Ignored },
+	{ "-gridambientdirectionality", EShBakeOption::Ignored },
+	{ "-gamma", EShBakeOption::Ignored },
+	{ "-sRGBlight", EShBakeOption::Ignored },
+	{ "-nosRGBlight", EShBakeOption::Ignored },
+	{ "-sRGBtex", EShBakeOption::Ignored },
+	{ "-nosRGBtex", EShBakeOption::Ignored },
+	{ "-sRGBcolor", EShBakeOption::Ignored },
+	{ "-nosRGBcolor", EShBakeOption::Ignored },
+	{ "-sRGB", EShBakeOption::Ignored },
+	{ "-nosRGB", EShBakeOption::Ignored },
+	{ "-exposure", EShBakeOption::Ignored },
+	{ "-compensate", EShBakeOption::Ignored },
+	{ "-brightness", EShBakeOption::Ignored },
+	{ "-contrast", EShBakeOption::Ignored },
+	{ "-saturation", EShBakeOption::Ignored },
+	{ "-bounce", EShBakeOption::Refused },              /* above 0 */
+	{ "-supersample", EShBakeOption::Honoured },
+	{ "-super", EShBakeOption::Honoured },
+	{ "-randomsamples", EShBakeOption::Ignored },
+	{ "-samples", EShBakeOption::Ignored },
+	{ "-samplessearchboxsize", EShBakeOption::Ignored },
+	{ "-filter", EShBakeOption::Ignored },
+	{ "-dark", EShBakeOption::Ignored },
+	{ "-shadeangle", EShBakeOption::Honoured },
+	{ "-thresh", EShBakeOption::Ignored },
+	{ "-approx", EShBakeOption::Refused },              /* above 0 */
+	{ "-onesky", EShBakeOption::Ignored },
+	{ "-deluxe", EShBakeOption::Refused },
+	{ "-deluxemap", EShBakeOption::Refused },
+	{ "-deluxemode", EShBakeOption::Refused },
+	{ "-nodeluxe", EShBakeOption::Honoured },           /* keeps the storage at no deluxe pages */
+	{ "-nodeluxemap", EShBakeOption::Honoured },
+	{ "-external", EShBakeOption::Refused },
+	{ "-lightmapsize", EShBakeOption::Refused },        /* other than the game's size */
+	{ "-extlmhacksize", EShBakeOption::Refused },       /* other than the game's size */
+	{ "-rawlightmapsizelimit", EShBakeOption::Honoured },
+	{ "-lightmapdir", EShBakeOption::Refused },
+	{ "-custinfoparms", EShBakeOption::Honoured },
+	{ "-wolf", EShBakeOption::Ignored },              /* only the light falloff the bake replaces (CreateEntityLights) */
+	{ "-q3", EShBakeOption::Ignored },
+	{ "-extradist", EShBakeOption::Ignored },
+	{ "-sunonly", EShBakeOption::Ignored },
+	{ "-bounceonly", EShBakeOption::Ignored },
+	{ "-nobouncestore", EShBakeOption::Ignored },
+	{ "-nocollapse", EShBakeOption::Honoured },
+	{ "-nolightmapsearch", EShBakeOption::Honoured },
+	{ "-lightmapsearchpower", EShBakeOption::Honoured },
+	{ "-lightmapsearchblocksize", EShBakeOption::Honoured },
+	{ "-shade", EShBakeOption::Honoured },
+	{ "-bouncegrid", EShBakeOption::Ignored },
+	{ "-nofastpoint", EShBakeOption::Ignored },
+	{ "-fast", EShBakeOption::Ignored },
+	{ "-faster", EShBakeOption::Ignored },
+	{ "-slowallocate", EShBakeOption::Honoured },
+	{ "-fastgrid", EShBakeOption::Ignored },
+	{ "-fastbounce", EShBakeOption::Ignored },
+	{ "-cheap", EShBakeOption::Ignored },
+	{ "-cheapgrid", EShBakeOption::Ignored },
+	{ "-normalmap", EShBakeOption::Ignored },
+	{ "-trisoup", EShBakeOption::Refused },
+	{ "-debug", EShBakeOption::Refused },
+	{ "-debugsurfaces", EShBakeOption::Refused },
+	{ "-debugsurface", EShBakeOption::Refused },
+	{ "-debugaxis", EShBakeOption::Refused },
+	{ "-debugcluster", EShBakeOption::Refused },
+	{ "-debugorigin", EShBakeOption::Refused },
+	{ "-debugdeluxe", EShBakeOption::Refused },
+	{ "-export", EShBakeOption::Honoured },
+	{ "-notrace", EShBakeOption::Ignored },
+	{ "-patchshadows", EShBakeOption::Ignored },
+	{ "-samplesize", EShBakeOption::Honoured },
+	{ "-minsamplesize", EShBakeOption::Honoured },
+	{ "-samplescale", EShBakeOption::Honoured },        /* scales the luxel mapping, as -samplesize does */
+	{ "-debugsamplesize", EShBakeOption::Honoured },    /* only prints the samplesize warnings */
+	{ "-novertex", EShBakeOption::Honoured },
+	{ "-nogrid", EShBakeOption::Honoured },
+	{ "-border", EShBakeOption::Refused },
+	{ "-nosurf", EShBakeOption::Ignored },
+	{ "-dump", EShBakeOption::Ignored },
+	{ "-lomem", EShBakeOption::Honoured },
+	{ "-lightanglehl", EShBakeOption::Ignored },
+	{ "-nostyle", EShBakeOption::Ignored },
+	{ "-nostyles", EShBakeOption::Ignored },
+	{ "-style", EShBakeOption::Ignored },
+	{ "-styles", EShBakeOption::Ignored },
+	{ "-cpma", EShBakeOption::Ignored },
+	{ "-floodlight", EShBakeOption::Ignored },
+	{ "-debugnormals", EShBakeOption::Refused },
+	{ "-lowquality", EShBakeOption::Ignored },
+	{ "-dirty", EShBakeOption::Ignored },
+	{ "-dirtdebug", EShBakeOption::Refused },
+	{ "-debugdirt", EShBakeOption::Refused },
+	{ "-dirtmode", EShBakeOption::Ignored },
+	{ "-dirtdepth", EShBakeOption::Ignored },
+	{ "-dirtscale", EShBakeOption::Ignored },
+	{ "-dirtgain", EShBakeOption::Ignored },
+	{ "-trianglecheck", EShBakeOption::Honoured },      /* moves luxel origins in MapRawLightmap */
+	{ "-extravisnudge", EShBakeOption::Honoured },
+	{ "-fill", EShBakeOption::Refused },
+	{ "-fillpink", EShBakeOption::Refused },
+	{ "-shbake", EShBakeOption::Honoured },
+	{ "-shnofull", EShBakeOption::Honoured },
+	{ "-shnoindirect", EShBakeOption::Honoured },
+	{ "-shsamples", EShBakeOption::Honoured },
+	{ "-shbounces", EShBakeOption::Honoured },
+	{ "-shdumpl0", EShBakeOption::Honoured },
+};
+
+/* whether the command line held this option; LightMain's takeArg finds options anywhere in it */
+static bool ShBakeOptionGiven( const std::vector<const char*>& args, const char *name ){
+	return std::ranges::any_of( args, [name]( const char *arg ){ return striEqual( arg, name ); } );
+}
+
+/* the given options of a list, as "-a, -b" */
+static std::string ShBakeOptionsGiven( const std::vector<const char*>& args, std::initializer_list<const char*> names ){
+	std::string list;
+	for ( const char *name : names )
+	{
+		if ( ShBakeOptionGiven( args, name ) ) {
+			list += list.empty()? "" : ", ";
+			list += name;
+		}
+	}
+	return list;
+}
+
+/*
+   ShBakeCheckOptions()
+   right after LightMain parses: the build, then the refused storage changes and bake
+   quality values, then one warning naming the ignored options given (decision 14)
+ */
+
+static void ShBakeCheckOptions( const std::vector<const char*>& args ){
+	if ( !shBake ) {
+		const std::string given = ShBakeOptionsGiven( args, { "-shnofull", "-shnoindirect", "-shsamples", "-shbounces", "-shdumpl0" } );
+		if ( !given.empty() ) {
+			Sys_Warning( "%s only take effect with -shbake; ignored\n", given.c_str() );
+		}
+		return;
+	}
+
+	if ( !shBakeAvailable ) {
+		Error( "-shbake: this q3map2 was built without SH_BAKER=1; rebuild it with `make binaries-q3map2 SH_BAKER=1`, after building tools/sh-baker in Release" );
+	}
+
+	/* storage changes */
+	if ( debugDeluxemap ) {
+		Error( "-shbake: -debugdeluxe writes deluxemaps, which -shbake doesn't store" );
+	}
+	if ( deluxemap ) {
+		const std::string given = ShBakeOptionsGiven( args, { "-deluxe", "-deluxemap" } );
+		Error( "-shbake: %s writes deluxemaps, which -shbake doesn't store%s",
+		       given.empty()? "the game's default deluxemapping" : given.c_str(),
+		       given.empty()? " (add -nodeluxe)" : "" );
+	}
+	if ( ShBakeOptionGiven( args, "-deluxemode" ) ) {
+		Error( "-shbake: -deluxemode sets a deluxemap format, and -shbake doesn't store deluxemaps" );
+	}
+	if ( lmCustomSizeW != g_game->lightmapSize || lmCustomSizeH != g_game->lightmapSize ) {
+		Error( "-shbake: %s sets the lightmap page size to %d x %d, not the game's %d x %d",
+		       ShBakeOptionsGiven( args, { "-lightmapsize", "-extlmhacksize" } ).c_str(),
+		       lmCustomSizeW, lmCustomSizeH, g_game->lightmapSize, g_game->lightmapSize );
+	}
+	if ( externalLightmaps ) {
+		Error( "-shbake: %s stores lightmaps externally; -shbake stores them in the BSP only",
+		       ShBakeOptionsGiven( args, { "-external", "-lightmapdir" } ).c_str() );
+	}
+	if ( trisoup ) {
+		Error( "-shbake: -trisoup makes planar surfaces vertex-lit triangle soups, which no lightmap page matches" );
+	}
+	if ( bounce > 0 ) {
+		Error( "-shbake: -bounce %d runs q3map2's radiosity; set the bake's path depth with -shbounces instead", bounce );
+	}
+	if ( approximateTolerance > 0 ) {
+		Error( "-shbake: -approx %d replaces lightmaps with vertex colours, and -shbake keeps every lightmap", approximateTolerance );
+	}
+	if ( lightmapFill ) {
+		Error( "-shbake: -fill rewrites unused lightmap luxels, which the side file's pages must match" );
+	}
+	if ( lightmapPink ) {
+		Error( "-shbake: -fillpink rewrites unused lightmap luxels, which the side file's pages must match" );
+	}
+	if ( noLightmaps ) {
+		Error( "-shbake: -nolm makes every surface vertex-lit, so there are no lightmap pages to bake" );
+	}
+
+	/* debug modes that write debug colours into luxels */
+	const std::pair<bool, const char*> debugModes[] = {
+		{ debug, "-debug" },
+		{ debugSurfaces, ShBakeOptionGiven( args, "-debugsurface" )? "-debugsurface" : "-debugsurfaces" },
+		{ debugAxis, "-debugaxis" },
+		{ debugCluster, "-debugcluster" },
+		{ debugOrigin, "-debugorigin" },
+		{ debugnormals, "-debugnormals" },
+		{ lightmapBorder, "-border" },
+		{ dirtDebug, ShBakeOptionGiven( args, "-debugdirt" )? "-debugdirt" : "-dirtdebug" },
+	};
+	for ( const auto& [ on, name ] : debugModes )
+	{
+		if ( on ) {
+			Error( "-shbake: %s writes debug colours into the lightmap, which -shbake doesn't support", name );
+		}
+	}
+
+	/* bake quality */
+	if ( shSamples < 1 ) {
+		Error( "-shbake: -shsamples must be at least 1 (got %d)", shSamples );
+	}
+	if ( shBounces < 1 ) {
+		Error( "-shbake: -shbounces must be at least 1 (got %d)", shBounces );
+	}
+
+	/* -shdumpl0 dumps the indirect bake's L0 (decision 14) */
+	if ( shDumpL0 && shNoIndirect ) {
+		Sys_Warning( "-shdumpl0 has no indirect bake to dump under -shnoindirect; no .hdr is written\n" );
+		shDumpL0 = false;
+	}
+
+	/* one warning for the ignored options given, in command-line order */
+	std::vector<const char*> ignoredGiven;
+	for ( const char *arg : args )
+	{
+		for ( const ShBakeOption& option : g_shBakeOptions )
+		{
+			if ( option.kind == EShBakeOption::Ignored && striEqual( arg, option.name )
+			  && std::ranges::find( ignoredGiven, option.name ) == ignoredGiven.cend() ) {
+				ignoredGiven.push_back( option.name );
+			}
+		}
+	}
+	std::string ignored;
+	for ( const char *name : ignoredGiven )
+	{
+		ignored += ignored.empty()? "" : ", ";
+		ignored += name;
+	}
+	if ( !ignored.empty() ) {
+		Sys_Warning( "-shbake ignores these options, which tune only the lighting it replaces: %s\n", ignored.c_str() );
+	}
+
+	Sys_Printf( "SH bake: exactly %d samples per point, %d bounces; full bake %s, indirect bake %s%s\n", shSamples, shBounces,
+	            shNoFull? "skipped" : "on", shNoIndirect? "skipped" : "on", shDumpL0? ", L0 dumps" : "" );
+}
+
+/*
+   ShBakeCheckShaderLightmapSizes()
+   -shbake refuses a lightmapped surface whose shader's q3map_lightmapSize isn't the game's
+   page size: q3map2 would store its lightmap externally (decision 14)
+ */
+
+static void ShBakeCheckShaderLightmapSizes(){
+	for ( const surfaceInfo_t& info : Span( surfaceInfos, bspDrawSurfaces.size() ) )
+	{
+		if ( info.hasLightmap
+		  && ( info.si->lmCustomWidth != g_game->lightmapSize || info.si->lmCustomHeight != g_game->lightmapSize ) ) {
+			Error( "-shbake: shader %s sets q3map_lightmapSize %d %d, not the game's %d x %d",
+			       info.si->shader.c_str(), info.si->lmCustomWidth, info.si->lmCustomHeight,
+			       g_game->lightmapSize, g_game->lightmapSize );
+		}
+	}
 }
 
 
@@ -2870,12 +3216,40 @@ int LightMain( Args& args ){
 		while ( args.takeArg( "-fillpink" ) ) {
 			lightmapPink = true;
 		}
+		/* B5: SH bake with sh-baker */
+		while ( args.takeArg( "-shbake" ) ) {
+			shBake = true;
+			Sys_Printf( "SH bake with sh-baker enabled\n" );
+		}
+		while ( args.takeArg( "-shnofull" ) ) {
+			shNoFull = true;
+			Sys_Printf( "SH full bake skipped: lightmap, vertex colours and grid get neutral bytes\n" );
+		}
+		while ( args.takeArg( "-shnoindirect" ) ) {
+			shNoIndirect = true;
+			Sys_Printf( "SH indirect bake skipped: no SH side file\n" );
+		}
+		while ( args.takeArg( "-shsamples" ) ) {
+			shSamples = atoi( args.takeNext() );
+			Sys_Printf( "SH bake samples per point set to %d\n", shSamples );
+		}
+		while ( args.takeArg( "-shbounces" ) ) {
+			shBounces = atoi( args.takeNext() );
+			Sys_Printf( "SH bake path depth set to %d\n", shBounces );
+		}
+		while ( args.takeArg( "-shdumpl0" ) ) {
+			shDumpL0 = true;
+			Sys_Printf( "Dumping SH L0 pages as .hdr\n" );
+		}
 		/* unhandled args */
 		while( !args.empty() )
 		{
 			Sys_Warning( "Unknown argument \"%s\"\n", args.takeFront() );
 		}
 	}
+
+	/* B5: -shbake's build, refusals and ignored options, before anything is loaded */
+	ShBakeCheckOptions( argsToInject );
 
 	/* fix up falloff tolerance for sRGB */
 	if ( lightmapsRGB ) {
@@ -2962,6 +3336,11 @@ int LightMain( Args& args ){
 	SetupDirt();
 	SetupFloodLight();
 	SetupSurfaceLightmaps();
+
+	/* B5: -shbake refuses a used shader's q3map_lightmapSize, now that the surfaces' shaders are known */
+	if ( shBake ) {
+		ShBakeCheckShaderLightmapSizes();
+	}
 
 	/* initialize the surface facet tracing */
 	SetupTraceNodes();

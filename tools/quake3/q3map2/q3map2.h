@@ -77,6 +77,7 @@
 
 #include "maxworld.h"
 #include "games.h"
+#include "light_sh_model.h"
 
 
 /* -------------------------------------------------------------------------------
@@ -531,6 +532,27 @@ enum class EImplicitMap
 };
 
 
+/* B5 -shbake: the shader as the editor reads it (radiant/renderstate.cpp Shadow_materialCasts,
+   plugins/shaders/shaders.cpp parseQuake3), fed to light_sh_model's rules. Taken from the
+   shader's own text only: q3map_baseShader doesn't pass it on, as the editor knows no such keyword */
+struct shaderSH_t
+{
+	bool scripted = false;                              /* defined in a shader script (false: a bare texture) */
+	ShSurfaceParms parms;                               /* the literal surfaceparms (and skyparms) the caster rule tests */
+	std::vector<ShStage> stages;                        /* map/clampMap/animMap, blendFunc, alphaFunc, rgbGen const, tcGen environment */
+
+	bool pbr = false;                                   /* declares any qer_pbr_ keyword */
+	std::string pbrNormal;                              /* qer_pbr_normal, extensionless; empty when absent */
+	std::string pbrMetallicRoughness;                   /* qer_pbr_metallicRoughness */
+	std::string pbrOcclusion;                           /* qer_pbr_occlusion */
+	float pbrRoughnessFactor = 1;                       /* qer_pbr_roughnessFactor */
+	float pbrMetallicFactor = 1;                        /* qer_pbr_metallicFactor */
+	bool pbrMetallicFactorSet = false;                  /* the editor zeroes metallic without a texture or this */
+	Vector3 pbrBaseColorFactor{ 1, 1, 1 };              /* qer_pbr_baseColorFactor */
+	float pbrEmissiveStrength = 1;                      /* qer_pbr_emissiveStrength */
+};
+
+
 struct shaderInfo_t_data
 {
 	String64 shader;
@@ -642,6 +664,8 @@ struct shaderInfo_t_data
 	char                *shaderText;                    /* ydnar */
 	bool custom;
 	bool finished;
+
+	shaderSH_t sh;                                      /* B5 -shbake: stages, literal surfaceparms, qer_pbr_* */
 };
 
 struct shaderInfo_t : public shaderInfo_t_data
@@ -1248,6 +1272,40 @@ struct trace_t
 };
 
 
+/* B5 -shbake: one luxel's SH and environment visibility, style 0 only (design decision 4).
+   sh[ k ][ c ] is coefficient k (sh-baker's and the side file's order), channel c;
+   every value -1 is the bake's "no value" marker. 112 bytes */
+struct ShLuxel{
+	ShCoeffs9 sh;
+	float visibility;
+
+	void set( float value ){
+		for ( Vector3& coeff : sh )
+			coeff.set( value );
+		visibility = value;
+	}
+	ShLuxel& operator+=( const ShLuxel& other ){
+		for ( size_t k = 0; k < sh.size(); ++k )
+			sh[ k ] += other.sh[ k ];
+		visibility += other.visibility;
+		return *this;
+	}
+	ShLuxel& operator*=( float scale ){
+		for ( Vector3& coeff : sh )
+			coeff *= scale;
+		visibility *= scale;
+		return *this;
+	}
+};
+
+inline ShLuxel ShLuxelMid( const ShLuxel& a, const ShLuxel& b ){
+	ShLuxel mid;
+	for ( size_t k = 0; k < mid.sh.size(); ++k )
+		mid.sh[ k ] = vector3_mid( a.sh[ k ], b.sh[ k ] );
+	mid.visibility = ( a.visibility + b.visibility ) * 0.5f;
+	return mid;
+}
+
 /* ydnar: new lightmap handling code */
 struct outLightmap_t
 {
@@ -1260,6 +1318,7 @@ struct outLightmap_t
 	byte                *lightBits;
 	Vector3b            *bspLightBytes;
 	Vector3b            *bspDirBytes;
+	ShLuxel             *bspShLuxels;               /* B5 -shbake: the page's SH, at the bspLightBytes positions; nullptr without the indirect bake */
 };
 
 struct SuperLuxel{
@@ -1322,6 +1381,9 @@ struct rawLightmap_t
 	Vector3                 *superDeluxels; /* average light direction */
 	Vector3                 *bspDeluxels;
 	SuperFloodLight         *superFloodLight;
+
+	ShLuxel                 *superShLuxels; /* B5 -shbake: style 0 SH, allocated only when the indirect bake runs (ShBakeKeepsSH) */
+	ShLuxel                 *bspShLuxels;
 	Vector3& getBspLuxel( int lightmapNum, int x, int y ){
 		return bspLuxels[ lightmapNum ][y * w + x];
 	}
@@ -1387,6 +1449,18 @@ struct rawLightmap_t
 	}
 	const SuperFloodLight& getSuperFloodLight( int x, int y ) const {
 		return superFloodLight[y * sw + x];
+	}
+	ShLuxel& getSuperShLuxel( int x, int y ){
+		return superShLuxels[y * sw + x];
+	}
+	const ShLuxel& getSuperShLuxel( int x, int y ) const {
+		return superShLuxels[y * sw + x];
+	}
+	ShLuxel& getBspShLuxel( int x, int y ){
+		return bspShLuxels[y * w + x];
+	}
+	const ShLuxel& getBspShLuxel( int x, int y ) const {
+		return bspShLuxels[y * w + x];
 	}
 };
 
@@ -1799,6 +1873,12 @@ void                        LightingAtSample( trace_t * trace, Array4<byte>& sty
 int                         LightMain( Args& args );
 
 
+/* light_sh.c (SH_BAKER=1) or light_sh_stub.c */
+extern const bool           shBakeAvailable;            /* false: built without SH_BAKER=1, so -shbake stops at once */
+void                        ShBakeWorld();
+void                        ShWriteSideFile();       /* after StoreSurfaceLightmaps, when the indirect bake ran */
+
+
 /* light_trace.c */
 void                        SetupTraceNodes();
 void                        TraceLine( trace_t *trace );
@@ -2093,6 +2173,18 @@ inline bool noStyles;
 //inline int sampleSize = DEFAULT_LIGHTMAP_SAMPLE_SIZE;
 //inline int minSampleSize = DEFAULT_LIGHTMAP_MIN_SAMPLE_SIZE;
 inline float noVertexLighting;
+/* B5 -shbake: bake the editor's physical lights with sh-baker (light_sh.cpp) */
+inline bool shBake;
+inline bool shNoFull;                           /* -shnofull: skip the full bake (lightmap, vertex colours, grid get neutral bytes) */
+inline bool shNoIndirect;                       /* -shnoindirect: skip the indirect bake (no side file) */
+inline int shSamples = 128;                     /* -shsamples: rays per point */
+inline int shBounces = 5;                       /* -shbounces: maximum path depth */
+inline bool shDumpL0;                           /* also write each side-file page's L0 as .hdr */
+/* the SH luxel buffers exist only when the indirect bake runs (design decision 4) */
+inline bool ShBakeKeepsSH(){
+	return shBake && !shNoIndirect;
+}
+
 inline bool noLightmaps;
 inline bool noGridLighting;
 

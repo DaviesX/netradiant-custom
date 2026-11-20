@@ -802,6 +802,125 @@ static void Parse1DMatrixAppend( ShaderTextCollector& text, int x, float *m ){
 
 
 /*
+   ShaderSH_*()
+   B5 -shbake: reads what the editor reads from a shader (plugins/shaders/shaders.cpp
+   parseQuake3) into shaderSH_t; prints nothing, so q3map2's output is unchanged
+ */
+
+/* a texture path as the editor's parseTextureName() keeps it: extensionless, unix separators */
+static std::string ShaderSH_textureName( const char *path ){
+	return StringStream<64>( PathCleaned( PathExtensionless( path ) ) ).c_str();
+}
+
+static void ShaderSH_parseLine( ShStage& stage, const std::vector<std::string>& line ){
+	if ( !line.empty() ) {
+		ShStageParseLine( stage, line[ 0 ].c_str(), std::vector<std::string>( line.begin() + 1, line.end() ) );
+	}
+}
+
+/* the editor's Quake3Stage_mapName(): $ names as written, others as texture paths */
+static void ShaderSH_finishStage( ShStage& stage ){
+	if ( !stage.map.empty() && stage.map[ 0 ] != '$' ) {
+		stage.map = ShaderSH_textureName( stage.map.c_str() );
+	}
+}
+
+static void ShaderSH_surfaceParm( ShSurfaceParms& parms, const char *parm ){
+	if ( striEqual( parm, "sky" ) ) {
+		parms.sky = true;
+	}
+	else if ( striEqual( parm, "fog" ) ) {
+		parms.fog = true;
+	}
+	else if ( striEqual( parm, "water" ) ) {
+		parms.water = true;
+	}
+	else if ( striEqual( parm, "slime" ) ) {
+		parms.slime = true;
+	}
+	else if ( striEqual( parm, "lava" ) ) {
+		parms.lava = true;
+	}
+	else if ( striEqual( parm, "playerclip" ) ) {
+		parms.playerClip = true;
+	}
+	else if ( striEqual( parm, "botclip" ) ) {
+		parms.botClip = true;
+	}
+	else if ( striEqual( parm, "areaportal" ) ) {
+		parms.areaPortal = true;
+	}
+	else if ( striEqual( parm, "noshadows" ) ) {
+		parms.noShadows = true;
+	}
+	else if ( striEqual( parm, "trigger" ) ) {
+		parms.trigger = true;
+	}
+	else if ( striEqual( parm, "hint" ) ) {
+		parms.hint = true;
+	}
+	else if ( striEqual( parm, "trans" ) ) {
+		parms.trans = true;
+	}
+	else if ( striEqual( parm, "alphashadow" ) ) {
+		parms.alphaShadow = true;
+	}
+	else if ( striEqual( parm, "nodraw" ) ) {
+		parms.nodraw = true;
+	}
+	else if ( striEqual( parm, "nonsolid" ) ) {
+		parms.nonsolid = true;
+	}
+}
+
+/* the editor's ShaderTemplate_parsePBRKeyword(): a malformed argument keeps the default
+   (the editor warns about it; q3map2 stays quiet) */
+static void ShaderSH_pbrKeyword( shaderSH_t& sh, const char *keyword, const std::vector<std::string>& args ){
+	sh.pbr = true; /* any qer_pbr_ keyword */
+
+	const auto texture = [&]( std::string& name ){
+		if ( !args.empty() ) {
+			name = ShaderSH_textureName( args[ 0 ].c_str() );
+		}
+	};
+	const auto number = [&]( float& value ){
+		float f;
+		if ( args.empty() || !ShParseFloat( args[ 0 ].c_str(), f ) ) {
+			return false;
+		}
+		value = f;
+		return true;
+	};
+
+	if ( striEqual( keyword, "qer_pbr_normal" ) ) {
+		texture( sh.pbrNormal );
+	}
+	else if ( striEqual( keyword, "qer_pbr_metallicRoughness" ) ) {
+		texture( sh.pbrMetallicRoughness );
+	}
+	else if ( striEqual( keyword, "qer_pbr_occlusion" ) ) {
+		texture( sh.pbrOcclusion );
+	}
+	else if ( striEqual( keyword, "qer_pbr_roughnessFactor" ) ) {
+		number( sh.pbrRoughnessFactor );
+	}
+	else if ( striEqual( keyword, "qer_pbr_metallicFactor" ) ) {
+		sh.pbrMetallicFactorSet |= number( sh.pbrMetallicFactor );
+	}
+	else if ( striEqual( keyword, "qer_pbr_emissiveStrength" ) ) {
+		number( sh.pbrEmissiveStrength );
+	}
+	else if ( striEqual( keyword, "qer_pbr_baseColorFactor" ) ) {
+		float c[ 3 ];
+		if ( args.size() >= 3 && ShParseFloat( args[ 0 ].c_str(), c[ 0 ] ) && ShParseFloat( args[ 1 ].c_str(), c[ 1 ] ) && ShParseFloat( args[ 2 ].c_str(), c[ 2 ] ) ) {
+			sh.pbrBaseColorFactor = Vector3( c[ 0 ], c[ 1 ], c[ 2 ] );
+		}
+	}
+}
+
+
+
+/*
    ParseShaderFile()
    parses a shader file into discrete shaderInfo_t
  */
@@ -822,6 +941,7 @@ static void ParseShaderFile( const char *filename ){
 			strClear( token + strlen( token ) - strlen( ":q3map" ) );
 
 		shaderInfo_t& si = AllocShaderInfo( token );
+		si.sh.scripted = true;
 
 		/* handle { } section */
 		if ( !( text.GetToken( true ) && strEqual( token, "{" ) ) ) {
@@ -838,8 +958,30 @@ static void ParseShaderFile( const char *filename ){
 			/* parse stage directives */
 			if ( strEqual( token, "{" ) ) {
 				si.hasPasses = true;
+
+				/* B5 -shbake: the stage's lines as the editor reads them, from the tokens below, unchanged */
+				ShStage& shStage = si.sh.stages.emplace_back();
+				std::vector<std::string> shLine;
+				int shLineNum = -1;
+				const auto shToken = [&](){
+					if ( strEqual( token, "{" ) ) { /* the editor ends a line at a brace */
+						ShaderSH_parseLine( shStage, shLine );
+						shLine.clear();
+						shLineNum = -1;
+						return;
+					}
+					if ( scriptline != shLineNum ) {
+						ShaderSH_parseLine( shStage, shLine );
+						shLine.clear();
+						shLineNum = scriptline;
+					}
+					shLine.emplace_back( token );
+				};
+
 				while ( text.GetToken( true ) && !strEqual( token, "}" ) )
 				{
+					shToken();
+
 					/* only care about images if we don't have a editor/light image */
 					if ( si.editorImagePath.empty() && si.lightImagePath.empty() && si.implicitImagePath.empty() ) {
 						/* digest any images */
@@ -852,10 +994,12 @@ static void ParseShaderFile( const char *filename ){
 							/* skip one token for animated stages */
 							if ( striEqual( token, "animMap" ) || striEqual( token, "clampAnimMap" ) ) {
 								text.GetToken( false );
+								shToken();
 							}
 
 							/* get an image */
 							text.GetToken( false );
+							shToken();
 							if ( token[ 0 ] != '*' && token[ 0 ] != '$' ) {
 								si.lightImagePath( PathExtensionless( token ) );
 
@@ -865,6 +1009,9 @@ static void ParseShaderFile( const char *filename ){
 						}
 					}
 				}
+
+				ShaderSH_parseLine( shStage, shLine );
+				ShaderSH_finishStage( shStage );
 			}
 
 
@@ -875,6 +1022,7 @@ static void ParseShaderFile( const char *filename ){
 			/* match surfaceparm */
 			else if ( striEqual( token, "surfaceparm" ) ) {
 				text.GetToken( false );
+				ShaderSH_surfaceParm( si.sh.parms, token );
 				if ( !ApplySurfaceParm( token, &si.contentFlags, &si.surfaceFlags, &si.compileFlags ) ) {
 					Sys_Warning( "Unknown surfaceparm: \"%s\"\n", token );
 				}
@@ -1016,6 +1164,25 @@ static void ParseShaderFile( const char *filename ){
 				si.normalImagePath( PathExtensionless( token ) );
 			}
 
+			/* B5 -shbake: qer_pbr_* <arguments> (the editor's PBR keywords); consumes the line as the skip below does */
+			else if ( striEqualPrefix( token, "qer_pbr_" ) ) {
+				const std::string keyword( token );
+				std::vector<std::string> args;
+				bool brace = false;
+				while ( TokenAvailable() )
+				{
+					text.GetToken( false );
+					brace |= strEqual( token, "{" ) || strEqual( token, "}" ); /* the editor's arguments end at a brace */
+					if ( !brace ) {
+						args.emplace_back( token );
+					}
+				}
+				ShaderSH_pbrKeyword( si.sh, keyword.c_str(), args );
+
+				/* the line is consumed: a second TokenAvailable() in the skip below could cross the line */
+				continue;
+			}
+
 			/* q3map_lightimage <image> */
 			else if ( striEqual( token, "q3map_lightImage" ) ) {
 				text.GetToken( false );
@@ -1024,6 +1191,8 @@ static void ParseShaderFile( const char *filename ){
 
 			/* ydnar: skyparms <outer image> <cloud height> <inner image> */
 			else if ( striEqual( token, "skyParms" ) ) {
+				si.sh.parms.skyParms = true; /* the editor's QER_SKY, whatever the arguments */
+
 				/* get image base */
 				text.GetToken( false );
 
@@ -1117,7 +1286,9 @@ static void ParseShaderFile( const char *filename ){
 
 					/* subclass it */
 					/* copy shader data */
+					shaderSH_t sh = std::move( si.sh ); /* B5: the editor reads only this shader's own text */
 					si.copyData( si2 );
+					si.sh = std::move( sh );
 
 					/* set to unfinished */
 					si.shaderWidth = 0;

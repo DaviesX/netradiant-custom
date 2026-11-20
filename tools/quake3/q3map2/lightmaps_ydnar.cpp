@@ -435,6 +435,23 @@ static void FinishRawLightmap( rawLightmap_t& lm ){
 		memset( lm.bspDeluxels, 0, size );
 	}
 
+	/* B5 -shbake: style 0 SH storage (design decision 4) */
+	if ( ShBakeKeepsSH() ) {
+		/* allocate sampling SH storage */
+		if ( lm.superShLuxels == nullptr ) {
+			lm.superShLuxels = safe_malloc( lm.sw * lm.sh * sizeof( *lm.superShLuxels ) );
+		}
+		for ( ShLuxel& luxel : Span( lm.superShLuxels, lm.sw * lm.sh ) )
+			luxel.set( 0 );
+
+		/* allocate bsp SH storage */
+		if ( lm.bspShLuxels == nullptr ) {
+			lm.bspShLuxels = safe_malloc( lm.w * lm.h * sizeof( *lm.bspShLuxels ) );
+		}
+		for ( ShLuxel& luxel : Span( lm.bspShLuxels, lm.w * lm.h ) )
+			luxel.set( 0 );
+	}
+
 	/* add to count */
 	numLuxels += ( lm.sw * lm.sh );
 }
@@ -974,7 +991,8 @@ void SetupSurfaceLightmaps(){
 				info.castShadows      = se.castShadows;
 				info.recvShadows      = se.recvShadows;
 				info.sampleSize       = se.sampleSize;
-				info.ambientColor     = se.ambientColor;
+				/* B5: -shbake zeroes every ambientColor, before raw lightmaps are grouped by it */
+				info.ambientColor     = shBake? g_vector3_identity : se.ambientColor;
 				info.longestCurve     = se.longestCurve;
 				info.patchIterations = IterationsForCurve( info.longestCurve, patchSubdivisions );
 				info.axis             = se.lightmapAxis;
@@ -1770,6 +1788,11 @@ static void SetupOutLightmap( rawLightmap_t *lm, outLightmap_t *olm ){
 	if ( deluxemap ) {
 		olm->bspDirBytes = safe_calloc( olm->customWidth * olm->customHeight * sizeof( *olm->bspDirBytes ) );
 	}
+	/* B5 -shbake: the page's SH (design decision 4); 0 where no luxel is placed */
+	olm->bspShLuxels = nullptr;
+	if ( ShBakeKeepsSH() ) {
+		olm->bspShLuxels = safe_calloc( olm->customWidth * olm->customHeight * sizeof( *olm->bspShLuxels ) );
+	}
 }
 
 
@@ -2078,6 +2101,11 @@ static void FindOutLightmaps( rawLightmap_t *lm, bool fastAllocate ){
 					const Vector3 direction = VectorNormalized( lm->getBspDeluxel( x, y ) * 1000.0f ) * 127.5f;
 					olm->bspDirBytes[ oy * olm->customWidth + ox ] = direction + Vector3( 127.5f );
 				}
+
+				/* B5 -shbake: store SH at the colour's position (never solid under -shbake) */
+				if ( ShBakeKeepsSH() && lightmapNum == 0 ) {
+					olm->bspShLuxels[ oy * olm->customWidth + ox ] = lm->getBspShLuxel( x, y );
+				}
 			}
 		}
 	}
@@ -2246,6 +2274,48 @@ static void FillOutLightmap( outLightmap_t *olm ){
 }
 
 /*
+   ShWrapBspLuxels()
+   B5 -shbake: wraps a pair of bsp luxels without blending the -1 marker into a lit value.
+   The default wrap averages a marker with its partner, so whether the result is < 0
+   (left unplaced) would depend on the partner's colour; here placement depends only on
+   which side holds a value, so side-file page i is bsp page i in every mode (design decision 4)
+ */
+
+static void ShWrapBspLuxels( rawLightmap_t *lm, int lightmapNum, int x1, int y1, int x2, int y2 ){
+	Vector3& luxel1 = lm->getBspLuxel( lightmapNum, x1, y1 );
+	Vector3& luxel2 = lm->getBspLuxel( lightmapNum, x2, y2 );
+
+	/* the same test as TestOutLightmapStamp's */
+	const bool valid1 = !( luxel1[ 0 ] < 0 );
+	const bool valid2 = !( luxel2[ 0 ] < 0 );
+	const bool storeSH = ShBakeKeepsSH() && lightmapNum == 0;
+
+	if ( valid1 && valid2 ) {
+		luxel1 = luxel2 = vector3_mid( luxel1, luxel2 );
+		if ( storeSH ) {
+			ShLuxel& shLuxel1 = lm->getBspShLuxel( x1, y1 );
+			ShLuxel& shLuxel2 = lm->getBspShLuxel( x2, y2 );
+			shLuxel1 = shLuxel2 = ShLuxelMid( shLuxel1, shLuxel2 );
+		}
+	}
+	else if ( valid1 ) {
+		luxel2 = luxel1;
+		if ( storeSH ) {
+			lm->getBspShLuxel( x2, y2 ) = lm->getBspShLuxel( x1, y1 );
+		}
+	}
+	else if ( valid2 ) {
+		luxel1 = luxel2;
+		if ( storeSH ) {
+			lm->getBspShLuxel( x1, y1 ) = lm->getBspShLuxel( x2, y2 );
+		}
+	}
+	/* neither: both keep the marker */
+}
+
+
+
+/*
    StoreSurfaceLightmaps()
    stores the surface lightmaps into the bsp as byte rgb triplets
  */
@@ -2255,6 +2325,9 @@ void StoreSurfaceLightmaps( bool fastAllocate, bool storeForReal ){
 	int lightmapNum, lightmapNum2;
 	float               samples, occludedSamples;
 	Vector3 sample, occludedSample, dirSample;
+	ShLuxel shSample, occludedShSample;     /* B5 -shbake: SH follows the colour's weights */
+	shSample.set( 0 );
+	occludedShSample.set( 0 );
 	byte                *lb;
 	int numUsed, numTwins, numTwinLuxels, numStored;
 	float lmx, lmy, efficiency;
@@ -2334,6 +2407,11 @@ void StoreSurfaceLightmaps( bool fastAllocate, bool storeForReal ){
 					sample.set( 0 );
 					occludedSample.set( 0 );
 					dirSample.set( 0 );
+					const bool storeSH = ShBakeKeepsSH() && lightmapNum == 0;
+					if ( storeSH ) {
+						shSample.set( 0 );
+						occludedShSample.set( 0 );
+					}
 					for ( ly = 0; ly < superSample; ++ly )
 					{
 						for ( lx = 0; lx < superSample; ++lx )
@@ -2381,6 +2459,9 @@ void StoreSurfaceLightmaps( bool fastAllocate, bool storeForReal ){
 								if ( cluster > CLUSTER_NORMAL || cluster == CLUSTER_FLOODED ) {
 									sample += luxel.value;
 									samples += luxel.count;
+									if ( storeSH ) {
+										shSample += lm->getSuperShLuxel( sx, sy );
+									}
 								}
 
 								/* handle occluded or unmapped luxels */
@@ -2388,6 +2469,9 @@ void StoreSurfaceLightmaps( bool fastAllocate, bool storeForReal ){
 								{
 									occludedSample += luxel.value;
 									occludedSamples += luxel.count;
+									if ( storeSH ) {
+										occludedShSample += lm->getSuperShLuxel( sx, sy );
+									}
 								}
 
 								/* handle style debugging */
@@ -2403,6 +2487,9 @@ void StoreSurfaceLightmaps( bool fastAllocate, bool storeForReal ){
 					if ( samples <= 0 ) {
 						sample = occludedSample;
 						samples = occludedSamples;
+						if ( storeSH ) {
+							shSample = occludedShSample;
+						}
 					}
 
 					/* get luxels */
@@ -2417,6 +2504,9 @@ void StoreSurfaceLightmaps( bool fastAllocate, bool storeForReal ){
 					if ( samples > 0.01f ) {
 						luxel.value = sample * ( 1.0f / samples );
 						luxel.count = 1;
+						if ( storeSH ) {
+							lm->getSuperShLuxel( x, y ) = ( shSample *= ( 1.0f / samples ) );
+						}
 					}
 
 					/* if any samples were mapped in any way, store ambient color */
@@ -2428,6 +2518,9 @@ void StoreSurfaceLightmaps( bool fastAllocate, bool storeForReal ){
 							luxel.value.set( 0 );
 						}
 						luxel.count = 1;
+						if ( storeSH ) {
+							lm->getSuperShLuxel( x, y ).set( 0 );    /* -shbake zeroes ambientColor */
+						}
 					}
 
 					/* store a bogus value to be fixed later */
@@ -2435,6 +2528,9 @@ void StoreSurfaceLightmaps( bool fastAllocate, bool storeForReal ){
 					{
 						luxel.value.set( 0 );
 						luxel.count = -1;
+						if ( storeSH ) {
+							lm->getSuperShLuxel( x, y ).set( 0 );
+						}
 					}
 				}
 			}
@@ -2456,10 +2552,16 @@ void StoreSurfaceLightmaps( bool fastAllocate, bool storeForReal ){
 						dirSample = lm->getSuperDeluxel( x, y );
 					}
 
+					/* B5 -shbake: SH follows the colour here, including the neighbour average (design decision 4) */
+					const bool storeSH = ShBakeKeepsSH() && lightmapNum == 0;
+
 					/* is this a valid sample? */
 					if ( luxel.count > 0 ) {
 						sample = luxel.value;
 						samples = luxel.count;
+						if ( storeSH ) {
+							shSample = lm->getSuperShLuxel( x, y );
+						}
 						numUsed++;
 						lm->used++;
 
@@ -2475,6 +2577,9 @@ void StoreSurfaceLightmaps( bool fastAllocate, bool storeForReal ){
 						sample.set( 0 );
 						dirSample.set( 0 );
 						samples = 0;
+						if ( storeSH ) {
+							shSample.set( 0 );
+						}
 
 						/* fixme: why is this disabled?? */
 						for ( sy = ( y - 1 ); sy <= ( y + 1 ); ++sy )
@@ -2496,6 +2601,9 @@ void StoreSurfaceLightmaps( bool fastAllocate, bool storeForReal ){
 								}
 								sample += luxel.value;
 								samples += luxel.count;
+								if ( storeSH ) {
+									shSample += lm->getSuperShLuxel( sx, sy );
+								}
 							}
 						}
 
@@ -2503,6 +2611,9 @@ void StoreSurfaceLightmaps( bool fastAllocate, bool storeForReal ){
 						if ( samples == 0 ) {
 							sample.set( -1 );
 							samples = 1;
+							if ( storeSH ) {
+								shSample.set( -1 );    /* the bake's "no value" marker */
+							}
 						}
 						else
 						{
@@ -2519,6 +2630,9 @@ void StoreSurfaceLightmaps( bool fastAllocate, bool storeForReal ){
 
 					/* scale the sample */
 					sample *= ( 1.0f / samples );
+					if ( storeSH ) {
+						shSample *= ( 1.0f / samples );
+					}
 
 					/* store the sample in the radiosity luxels */
 					if ( bounce > 0 ) {
@@ -2537,6 +2651,9 @@ void StoreSurfaceLightmaps( bool fastAllocate, bool storeForReal ){
 					if ( deluxemap && lightmapNum == 0 ) {
 						lm->getBspDeluxel( x, y ) += dirSample;
 					}
+					if ( storeSH ) {
+						lm->getBspShLuxel( x, y ) += shSample;
+					}
 
 					/* add color to bounds for solid checking */
 					if ( samples > 0 ) {
@@ -2549,8 +2666,8 @@ void StoreSurfaceLightmaps( bool fastAllocate, bool storeForReal ){
 			lm->solid[ lightmapNum ] = false;
 			lm->solidColor[ lightmapNum ] = colorMinmax.origin();
 
-			/* nocollapse prevents solid lightmaps */
-			if ( !noCollapse ) {
+			/* nocollapse prevents solid lightmaps, and so does -shbake (design decision 4) */
+			if ( !noCollapse && !shBake ) {
 				/* check solid color */
 				sample = colorMinmax.maxs - colorMinmax.mins;
 				if ( ( sample[ 0 ] <= SOLID_EPSILON && sample[ 1 ] <= SOLID_EPSILON && sample[ 2 ] <= SOLID_EPSILON ) ||
@@ -2573,8 +2690,20 @@ void StoreSurfaceLightmaps( bool fastAllocate, bool storeForReal ){
 				}
 			}
 
+			/* B5 -shbake: wrap without blending the -1 marker into colour (design decision 4, task 5.5) */
+			if ( shBake ) {
+				if ( lm->wrap[ 0 ] ) {
+					for ( y = 0; y < lm->h; ++y )
+						ShWrapBspLuxels( lm, lightmapNum, 0, y, lm->w - 1, y );
+				}
+				if ( lm->wrap[ 1 ] ) {
+					for ( x = 0; x < lm->w; ++x )
+						ShWrapBspLuxels( lm, lightmapNum, x, 0, x, lm->h - 1 );
+				}
+			}
+
 			/* wrap bsp luxels if necessary */
-			if ( lm->wrap[ 0 ] ) {
+			if ( !shBake && lm->wrap[ 0 ] ) {
 				for ( y = 0; y < lm->h; ++y )
 				{
 					Vector3& bspLuxel = lm->getBspLuxel( lightmapNum, 0, y );
@@ -2587,7 +2716,7 @@ void StoreSurfaceLightmaps( bool fastAllocate, bool storeForReal ){
 					}
 				}
 			}
-			if ( lm->wrap[ 1 ] ) {
+			if ( !shBake && lm->wrap[ 1 ] ) {
 				for ( x = 0; x < lm->w; ++x )
 				{
 					Vector3& bspLuxel = lm->getBspLuxel( lightmapNum, x, 0 );
@@ -2727,7 +2856,7 @@ void StoreSurfaceLightmaps( bool fastAllocate, bool storeForReal ){
 	   collapse non-unique lightmaps
 	   ----------------------------------------------------------------- */
 
-	if ( storeForReal && !noCollapse && !deluxemap ) {
+	if ( storeForReal && !noCollapse && !deluxemap && !shBake ) {  /* B5: -shbake never collapses (design decision 4) */
 		/* note it */
 		Sys_Printf( "collapsing..." );
 
@@ -2833,6 +2962,7 @@ void StoreSurfaceLightmaps( bool fastAllocate, bool storeForReal ){
 			{
 				free( outLightmaps[ i ].lightBits );
 				free( outLightmaps[ i ].bspLightBytes );
+				free( outLightmaps[ i ].bspShLuxels );
 			}
 			free( outLightmaps );
 			outLightmaps = nullptr;

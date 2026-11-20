@@ -105,6 +105,12 @@ LIBS_ZLIB          ?= -lz
 CPPFLAGS_JPEG      ?=
 LIBS_JPEG          ?= -ljpeg
 DEPEND_ON_MAKEFILE ?= yes
+# 1 = link q3map2 against sh-baker for -light -shbake (tools/sh-baker, built in Release)
+SH_BAKER           ?= 0
+SH_BAKER_DIR       ?= tools/sh-baker
+SH_BAKER_BUILDDIR  ?= $(SH_BAKER_DIR)/build
+CPPFLAGS_EIGEN     ?= $(shell PKG_CONFIG_PATH=$(PKG_CONFIG_PATH) $(PKGCONFIG) eigen3 --cflags $(STDERR_TO_DEVNULL))
+CPPFLAGS_EIGEN     := $(CPPFLAGS_EIGEN)
 # yes = download; all = even download undistributable gamepacks; no = disable; allinone = dl all-in-one compact fixed archive
 DOWNLOAD_GAMEPACKS ?= allinone
 INSTALL_DLLS       ?= yes
@@ -549,6 +555,12 @@ endif
 endif
 $(INSTALLDIR)/q3map2.$(EXE): LIBS_EXTRA := $(LIBS_XML) $(LIBS_GLIB) $(LIBS_PNG) $(LIBS_JPEG) $(LIBS_ZLIB) $(LIBS_ASSIMP)
 $(INSTALLDIR)/q3map2.$(EXE): CPPFLAGS_EXTRA := $(CPPFLAGS_XML) $(CPPFLAGS_GLIB) $(CPPFLAGS_PNG) $(CPPFLAGS_JPEG) -Itools/quake3/common -Ilibs -Iinclude $(CPPFLAGS_ASSIMP)
+ifeq ($(SH_BAKER),1)
+# light_sh.o alone sees sh-baker's headers, and matches libsh_baker.so's -march=native (Eigen alignment)
+tools/quake3/q3map2/light_sh.o: CPPFLAGS_EXTRA += -I$(SH_BAKER_DIR)/src $(patsubst -I%,-isystem %,$(CPPFLAGS_EIGEN)) -march=native
+$(INSTALLDIR)/q3map2.$(EXE): LDFLAGS_EXTRA += -Wl,-rpath,'$$ORIGIN'
+$(INSTALLDIR)/q3map2.$(EXE): LIBS_EXTRA += -L$(SH_BAKER_BUILDDIR) -lsh_baker
+endif
 $(INSTALLDIR)/q3map2.$(EXE): \
 	tools/quake3/common/cmdlib.o \
 	tools/quake3/common/qimagelib.o \
@@ -584,6 +596,8 @@ $(INSTALLDIR)/q3map2.$(EXE): \
 	tools/quake3/q3map2/light_bounce.o \
 	tools/quake3/q3map2/lightmaps_ydnar.o \
 	tools/quake3/q3map2/light.o \
+	tools/quake3/q3map2/$(if $(filter 1,$(SH_BAKER)),light_sh.o,light_sh_stub.o) \
+	tools/quake3/q3map2/light_sh_model.o \
 	tools/quake3/q3map2/light_trace.o \
 	tools/quake3/q3map2/light_ydnar.o \
 	tools/quake3/q3map2/main.o \
@@ -615,6 +629,26 @@ $(INSTALLDIR)/q3map2.$(EXE): \
 	libwebplib.$(A) \
 	$(if $(findstring Win32,$(OS)),icons/q3map2.o,) \
 	| $(if $(findstring yes,$(ASSIMP_INTERNAL)),$(INSTALLDIR)/libassimp_.$(DLL),) \
+	$(if $(filter 1,$(SH_BAKER)),$(INSTALLDIR)/libsh_baker.$(DLL),) \
+
+# B5 -shbake (design decision 13). sh-baker is built in Release by its own CMake
+# (tools/sh-baker/README.md); q3map2 links its shared library and ships a copy
+# beside itself. The stamp holds the last SH_BAKER value, so switching it rebuilds
+# the selected object and relinks q3map2.
+$(INSTALLDIR)/libsh_baker.$(DLL): $(SH_BAKER_BUILDDIR)/libsh_baker.$(DLL)
+	file=$@; $(MKDIR) $${file%/*}
+	$(CP) $< $@
+
+$(SH_BAKER_BUILDDIR)/libsh_baker.$(DLL):
+	@$(ECHO) "$@ is missing: build sh-baker in Release first (cmake -S $(SH_BAKER_DIR) -B $(SH_BAKER_BUILDDIR) -DCMAKE_BUILD_TYPE=Release && cmake --build $(SH_BAKER_BUILDDIR) --target sh_baker)"; exit 1
+
+tools/quake3/q3map2/light_sh.o tools/quake3/q3map2/light_sh_stub.o: tools/quake3/q3map2/light_sh.stamp
+
+tools/quake3/q3map2/light_sh.stamp: FORCE
+	@$(ECHO) '$(SH_BAKER)' | cmp -s - $@ || $(ECHO) '$(SH_BAKER)' > $@
+
+.PHONY: FORCE
+FORCE:
 
 # The q3map2 SH extension's tests: the module and its test file alone, run by
 # `make test-q3map2-extension`. Kept out of $(INSTALLDIR), which ships.
@@ -626,6 +660,17 @@ tools/quake3/q3map2/q3map2_extension_test.$(EXE): \
 .PHONY: test-q3map2-extension
 test-q3map2-extension: tools/quake3/q3map2/q3map2_extension_test.$(EXE)
 	./tools/quake3/q3map2/q3map2_extension_test.$(EXE)
+
+# The -shbake stage's pure rules (light_sh_model): the module and its test file
+# alone, run by `make test-q3map2-shbake-model`. Kept out of $(INSTALLDIR).
+tools/quake3/q3map2/light_sh_model_test.$(EXE): CPPFLAGS_EXTRA := -Ilibs
+tools/quake3/q3map2/light_sh_model_test.$(EXE): \
+	tools/quake3/q3map2/light_sh_model.o \
+	tools/quake3/q3map2/light_sh_model_test.o \
+
+.PHONY: test-q3map2-shbake-model
+test-q3map2-shbake-model: tools/quake3/q3map2/light_sh_model_test.$(EXE)
+	./tools/quake3/q3map2/light_sh_model_test.$(EXE)
 
 libmathlib.$(A): CPPFLAGS_EXTRA := -Ilibs
 libmathlib.$(A): \

@@ -1,8 +1,8 @@
 /* -------------------------------------------------------------------------------
 
    The q3map2 SH extension, stored as the SH side file: a level's baked SH
-   lightmap pages and its solid hull mesh, written by q3map2 (-shbake) and read
-   by renderer_sh.
+   lightmap pages, its solid hull mesh and its SH grid, written by q3map2
+   (-shbake) and read by renderer_sh.
 
    This file is part of NetRadiant-custom, under the GNU General Public License
    version 2 or later.
@@ -19,12 +19,12 @@
 #include "math/vector.h"
 
 /*
-   Byte layout, version 1. Little-endian, no padding beyond what is listed, and
-   the file ends exactly after the hull indices:
+   Byte layout, version 2. Little-endian, no padding beyond what is listed, and
+   the file ends exactly after the last valid flag:
 
      header, 24 bytes:
        char[4]  magic 'S','H','S','F'
-       uint32   version (1)
+       uint32   version (2)
        uint32   page count
        uint32   hull count
        uint32   hull vertex count
@@ -40,35 +40,54 @@
      hull ranges: per hull, uint32 first index, uint32 index count
      hull vertices: per vertex, float32 x, y, z
      hull indices: one uint32 per index
+     SH grid (36 + 109 * N bytes, N = nx * ny * nz probes):
+       float32[3]  origin (x, y, z): the position of probe 0
+       float32[3]  spacing (x, y, z)
+       uint32[3]   dimensions nx, ny, nz (all 0 or all >= 1)
+       coefficients: per probe in order, the nine coefficients in the page
+         order above, each three float32 values (R, G, B)
+       valid flags: one uint8 per probe in order, 0 or 1
 
-   Every section starts on a 4-byte boundary. The bytes are the same on any
-   host byte order.
+   Every section up to the valid flags starts on a 4-byte boundary; the flags
+   come last so the probe coefficients stay aligned, and the file length need
+   not be a multiple of 4. The bytes are the same on any host byte order.
 
-   Version rule: the writer always writes version 1, and the reader accepts
-   only version 1. Any change to the layout or the meaning of the values takes
-   a new version number.
+   Version rule: the writer always writes version 2, and the reader accepts
+   only version 2; it rejects version 1 (B4's layout, which has no SH grid)
+   and every other version. Any change to the layout or the meaning of the
+   values takes a new version number.
+
+   Contents: the file always holds the indirect bake, sh-baker's
+   BakeSHLightMap with indirect_only set: no direct light at the baked point,
+   neither punctual (point, spot, directional) nor emissive. Bounced light
+   from every light, emissive surfaces included, is kept. The renderer adds
+   all direct light itself.
 
    SH basis: real SH with no Condon-Shortley phase, for a unit direction
-   (x, y, z) in the caller's world frame, pointing from the luxel towards the
-   incoming light:
+   (x, y, z) in the caller's world frame, pointing from the luxel or probe
+   towards the incoming light:
      L0   0.282095                 L2m2 1.092548 x y
      L1m1 0.488603 y               L2m1 1.092548 y z
      L10  0.488603 z               L20  0.315392 (3 z^2 - 1)
      L11  0.488603 x               L21  1.092548 x z
                                    L22  0.546274 (x^2 - y^2)
    Each coefficient is the projection of the incident radiance onto its basis
-   function, the integral of L_i(w) Y(w) dw over the hemisphere above the
-   surface; it is not convolved with the cosine lobe. This is what sh-baker's
-   BakeSHLightMap returns.
+   function, the integral of L_i(w) Y(w) dw; it is not convolved with the
+   cosine lobe. For a page luxel the integral is over the hemisphere above the
+   surface; for a grid probe it is over the whole sphere. This is what
+   sh-baker's BakeSHLightMap returns, for surface points and for full_sphere
+   points. The caller may average and fill page luxels with its storage
+   weights, but does not rescale or convolve the coefficients.
 
    Visibility is the fraction of the luxel's samples whose first ray reached
    the sky, in [0, 1].
 
-   Values: coefficients and visibility are IEEE 754 binary16, rounded to
+   Values: page coefficients and visibility are IEEE 754 binary16, rounded to
    nearest, ties to even (subnormals included), with the sign of zero kept. A
    finite value whose magnitude exceeds 65504 is clamped to +-65504, so very
-   bright luxels clip. Positions are float32, stored as given. The reader
-   decodes binary16 exactly.
+   bright luxels clip. Hull positions and the grid's origin, spacing and probe
+   coefficients are float32, stored as given, unclamped. The reader decodes
+   binary16 exactly.
 
    No "not baked" value: visibility is in [0, 1] and L0 is never negative, so
    the bake's marker (every coefficient -1, visibility -1) is refused. Fill
@@ -79,6 +98,19 @@
    wound clockwise seen from outside (q3map2's winding). Each hull is one
    contiguous index range, and the ranges cover the index list in order. The
    file neither checks nor changes closure, convexity or winding.
+
+   SH grid: a regular lattice of probes for lighting models, in the caller's
+   world space and units. Probe (x, y, z) sits at origin + (x * spacing_x,
+   y * spacing_y, z * spacing_z), and probes run x fastest, then y, then z, so
+   probe i is the caller's light-grid point i. q3map2 writes its BSP light
+   grid: origin is gridMins, spacing is the BSP's gridSize, the dimensions are
+   gridBounds, and a probe is invalid when its grid point is still in solid
+   after q3map2's nudge. A probe whose valid flag is 0 has no data: its
+   coefficients are 0, and a renderer leaves it out when it blends
+   neighbouring probes. A grid with no probes (-nogrid) has dimensions 0, 0, 0
+   and is 36 bytes; its origin and spacing are stored as given (q3map2 passes
+   0). The file stores the grid as given and does not check it against any
+   BSP.
 
    Errors: nothing here logs, exits or throws. Each function returns its
    outcome and, on failure, a message in `*error`; the caller decides what to
@@ -109,25 +141,46 @@ struct SHQ3Map2ExtensionPage
 	std::vector<float> visibility;  // width * height, each in [0, 1]
 };
 
+// A lattice of nx * ny * nz probes, x fastest, then y, then z.
+struct SHGrid
+{
+	Vector3 origin = Vector3( 0, 0, 0 );   // position of probe 0
+	Vector3 spacing = Vector3( 0, 0, 0 );  // each > 0 when there are probes
+	uint32_t dimensions[3] = { 0, 0, 0 };  // all 0 (no probes) or all >= 1
+	// probes * 27 values, probe-major as in sh-baker's SHCoeffs:
+	// coefficient k, channel c of probe i is coeffs[( i * 9 + k ) * 3 + c].
+	std::vector<float> coeffs;
+	std::vector<uint8_t> valid;  // one per probe, 0 or 1
+};
+
 struct SHQ3Map2Extension
 {
 	std::vector<SHQ3Map2ExtensionPage> pages;
 	SHHullMesh hull_mesh;
+	SHGrid grid;
 };
 
 // Writes `ext` to `path`. The whole input is checked first; input only a
 // caller bug can produce returns false, with a message naming the field and,
-// where there is one, the value and the page or hull index, and creates no
-// file:
+// where there is one, the value and the page, hull or probe index, and
+// creates no file:
 //   - a page width or height below 1;
 //   - coefficient or visibility counts that differ from width * height needs;
-//   - a non-finite coefficient, visibility value or position;
-//   - a visibility outside [0, 1], or a negative L0 component;
+//   - a non-finite coefficient, visibility value, position, grid origin or
+//     grid spacing;
+//   - a visibility outside [0, 1], or a negative L0 component in a page luxel
+//     or a valid probe;
 //   - a hull index count that is not a multiple of 3, or zero for a hull;
 //   - hull ranges that are not contiguous in order from index 0 to the end of
 //     the index list;
 //   - an index not below the vertex count;
-//   - any count that does not fit in a uint32.
+//   - grid dimensions of which some but not all are 0;
+//   - a grid spacing component not above 0, when the grid has probes;
+//   - probe coefficient or valid-flag counts that differ from what the
+//     dimensions need;
+//   - a valid flag other than 0 or 1, or an invalid probe with a coefficient
+//     other than 0;
+//   - any count that does not fit in a uint32, the probe count included.
 // The bytes are written to "<path>.tmp" and renamed over `path` once
 // complete. If that fails, returns false with a message naming the path,
 // removes the temporary file and leaves any file at `path` unchanged. Two
@@ -136,9 +189,11 @@ bool SaveSHQ3Map2Extension( const SHQ3Map2Extension& ext, const char* path, std:
 
 // Reads an extension. Returns std::nullopt, with a message in `*error`, for a
 // file that cannot be opened, or with a wrong magic, an unknown version, a
-// size other than its header and page sizes imply, a page width or height of
-// 0 or above 2^31 - 1, or values the writer would refuse. Sizes are checked
-// against the file before any page or hull storage is allocated.
+// size other than its header, page, hull and grid sizes imply, a page width or
+// height of 0 or above 2^31 - 1, or values the writer would refuse (a
+// non-finite binary16 or float32 included). Sizes are checked against the
+// file, with arithmetic that cannot overflow, before any page, hull or probe
+// storage is allocated.
 std::optional<SHQ3Map2Extension> LoadSHQ3Map2Extension( const char* path, std::string* error );
 
 // Writes `page`'s L0 RGB as a Radiance RGBE .hdr image for inspection: row 0

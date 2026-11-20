@@ -13,11 +13,11 @@ The entity plugin SHALL expose a game type named `pbr`, selected when a `.game` 
 - **THEN** entities named `light`, `light_spot`, and `light_sun` are created as PBR lights
 
 ### Requirement: Point light keys
-A `light` entity SHALL read `origin`, `_color` (linear RGB, default 1 1 1), `intensity` (float, default 100, radiant flux in watts), and `radius` (float, default 256, cutoff distance in map units). The renderer SHALL receive the light as a point light with those values. The editor SHALL draw the existing radius sphere at `radius` when light radii display is enabled.
+A `light` entity SHALL read `origin`, `_color` (linear RGB, default 1 1 1), `intensity` (float, default 50000, radiant flux in the light model's arbitrary linear unit), and `radius` (float, default 256, cutoff distance in map units). The renderer SHALL receive the light as a point light with those values. The editor SHALL draw the existing radius sphere at `radius` when light radii display is enabled.
 
 #### Scenario: Default point light
 - **WHEN** a `light` entity is placed with no keys other than `origin`
-- **THEN** it renders in lighting mode as a white point light of 100 W radiant flux and cutoff 256
+- **THEN** it renders in lighting mode as a white point light of radiant flux 50000 (the model's linear unit) and cutoff 256
 
 #### Scenario: Radius edited
 - **WHEN** the `radius` key is changed in the entity inspector

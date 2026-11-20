@@ -1,7 +1,7 @@
 # PBR overlay for Quake III Arena
 
 This pack overlays the downloaded Quake III Arena gamepack so that `Q3.game` authors PBR levels: physical light
-entities, the lighting preview's documentation, and a build entry that compiles the town. Materials are ordinary
+entities, the lighting preview's documentation, and three build entries that compile the town. Materials are ordinary
 `scripts/*.shader` files with vanilla stages plus top-level `qer_pbr_*` keywords (plan §Material authoring; the
 benchmark's `content/benchmark/scripts/bench.shader` is the worked example).
 
@@ -27,7 +27,7 @@ default for Quake 3 based games and can be turned off with the camera preference
 ```
 games/Q3.game                       the downloaded game file with entities="pbr"
 Q3.game/baseq3/_pbr_lights.ent      definitions of light, light_spot and light_sun (the only copy)
-Q3.game/default_build_menu.xml      the downloaded build menu plus the "Town" build
+Q3.game/default_build_menu.xml      the downloaded build menu plus the three "Town" builds
 README.md                           this file (not installed)
 ```
 
@@ -41,20 +41,46 @@ allowlists exactly those two lines.
 
 ## Build menu
 
-The overlay's `default_build_menu.xml` is the downloaded Quake III menu, unchanged, plus one build at the end:
+The overlay's `default_build_menu.xml` is the downloaded Quake III menu, unchanged, plus three builds at the end.
+Each runs `-meta -keeplights`, then `-vis -saveprt`, then a light stage:
 
-| Build | Runs |
+| Build | Light stage |
 |---|---|
-| Town: BSP -keeplights + VIS + light (placeholder) | `-meta -keeplights`, then `-vis -saveprt`, then `-light -patchshadows` |
+| Town (draft) | `-light -shbake -shsamples 128` |
+| Town (pre-release) | `-light -shbake -shsamples 512 -super 2` |
+| Town (final) | `-light -shbake -shsamples 2048 -super 2` |
 
-These are the stock check's compile stages (`tools/stockcheck/`), so a compile from the editor is the compile the
-check gates. `-keeplights` keeps every light entity in the BSP for `renderer_sh`. The `-light` lightmap is a
-placeholder: q3map2 treats every classname starting with `light` as its own light and reads none of the physical
-keys, so the stock lighting looks nothing like the preview until sh-baker writes the lightmap (`-shbake`, task B5,
-which joins this build).
+These are the stock check's compile stages (`tools/stockcheck/`); the check runs the draft's light stage
+(`-light -shbake`, whose defaults are 128 samples and `-super 1`), so a draft compile from the editor is the compile
+the check gates. `-keeplights` keeps every light entity in the BSP for `renderer_sh`. `-shbake` runs both bakes (see
+"The SH bake" below): the lightmap for stock ioquake3 and `maps/<name>/<name>.shsf` for `renderer_sh`. It needs the
+bundled q3map2 built with `SH_BAKER=1`; a plain build stops at the light stage and says how to rebuild
+(`tools/stockcheck/README.md` gives the steps).
 
 The editor reads `<settings>/Q3.game/build_menu.xml` in preference to the default menu once that file exists (it is
-written when the menu is customised). If the Town build is missing, delete that file or add the build by hand.
+written when the menu is customised). If the Town builds are missing, delete that file or add them by hand.
+
+### Quality presets
+
+The presets differ only in `-shsamples`, the exact number of rays per point, and `-super`, which bakes 2 × 2
+super-luxels per luxel and averages them. On the benchmark (12 cores, 5 bounces), with the noise measured against a
+4096-sample `-super 2` bake as the root mean square of the lightmap byte error (steps of the stored 0..64 range):
+
+| Build | Points per bake | Compile | Lightmap noise | Side-file L0 noise | Use it for |
+|---|---|---|---|---|---|
+| Town (draft) | 41939 | 1.6 s (0.7 + 0.8) | 5.0 | 119% | iterating on geometry and lights |
+| Town (pre-release) | 157346 | 22 s (10.3 + 11.9) | 0.75 (dark 0.82, bright 0.34) | 22% | screenshots, playtests, comparing with the preview |
+| Town (final) | 157346 | 90 s (41.7 + 48.3) | 0.28 (dark 0.31, bright 0.17) | 7% | the shipped pk3 |
+
+Compile is the whole build, with the indirect and full bakes' times in brackets. Dark is a reference byte below 8,
+bright 24 or more. The side-file figure is the relative error of each luxel's L0 luminance. The draft's lightmap
+figure also holds the difference between `-super 1` and `-super 2` wherever light changes within a luxel, so it
+overstates the draft's noise. The final preset's 0.28 is at the floor that rounding to 8 bits sets (1/√12 ≈ 0.29).
+Time grows linearly with samples × points: a 4096-sample `-super 2` light stage on the benchmark takes 187 s.
+
+Hard lighting (a sun through a narrow gap, sharp spot edges) needs about 4096 samples to converge smoothly; the
+day-time Sponza baked at that into two 2048² pages took about 1.5 hours. Use `-shsamples 4096` by hand when the
+final preset still shows blotches. A denoiser or path guiding could close the gap later, at low priority.
 
 ## Light entities and units
 
@@ -70,7 +96,10 @@ written when the menu is customised). If the Town build is missing, delete that 
 - Irradiance at distance `d`: `E = I / d²` with `d` in **map units**, zero beyond `radius`.
 - Sun: `E = intensity`, no falloff, every lit surface receives it. `angles` is pitch/yaw/roll of the direction the
   light *travels* (Quake convention, positive pitch looks down). At most one sun is honoured: the first in map order.
-- `_color` is linear RGB and multiplies the irradiance.
+- `_color` is linear RGB and multiplies the irradiance. The editor divides it by its largest component
+  (`plugins/entity/colour.h` `read_colour_normalized`), so only the hue counts: `0.5 0.5 0.5` lights exactly like
+  `1 1 1`, and brightness is set with `intensity`. A missing, unparsable or all-zero `_color` is white. The bake does
+  the same.
 - **Spatial scale is the Quake 3 map unit.** The engine (`sh-renderer`) divides by the squared distance in raw
   scene units and never converts to metres, so neither does the editor. A watt here is therefore "per map unit²",
   which is why sensible flux values are in the tens of thousands (a 50000 light gives `E ≈ 1` at 64 units).
@@ -220,7 +249,7 @@ Procedure:
 
    (`CameraRenderMode 4` is lighting mode.) The entity boxes are drawn in the capture; disable them with the entity
    filters, or keep the camera outside them.
-2. Engine: compile with the Town build (or the stock check), load the map in `renderer_sh` with
+2. Engine: compile with a Town build (or the stock check), load the map in `renderer_sh` with
    `+set fs_game benchmark +devmap bench` and the direct-light-only path (no shadow maps, no SH indirect, no SSAO, no
    sky emission), same resolution, and take a screenshot from the same view.
 3. Compare in linear light after decoding sRGB. Pass criterion: mean absolute error over all pixels ≤ 2/255 and no
@@ -229,3 +258,144 @@ Procedure:
 
 Differences that are expected and must stay inside the tolerance: mip selection and anisotropy, MSAA of the window
 target (the HDR target is single-sampled), and the editor's per-face light culling window versus the engine's.
+
+## The SH bake
+
+`q3map2 -light -shbake` replaces q3map2's lighting with sh-baker, lit by the entities above and by emissive
+surfaces. Every other step of `-light` (luxel mapping, `-super`, page layout) is q3map2's own. It runs two bakes over
+the same points (super-luxels, one point per light-grid point, draw vertices):
+
+| Bake | Light at the baked point | Writes | Read by |
+|---|---|---|---|
+| full | direct plus indirect | the BSP lightmap pages, vertex colours and light grid | stock ioquake3 |
+| indirect | indirect only, no direct light (punctual or emissive) | the side file `maps/<name>/<name>.shsf`: SH pages, solid hull mesh, SH grid | `renderer_sh` |
+
+`renderer_sh` computes direct light at runtime from the light entities, so the side file holds only what they
+bounce. Each bake costs about the same; the default runs both. On the benchmark each takes under a second at the
+defaults (41939 points); "Quality presets" above gives the times of the three Town builds.
+
+### Options
+
+| Option | Effect |
+|---|---|
+| `-shbake` | run both bakes; needs q3map2 built with `SH_BAKER=1` |
+| `-shnofull` | skip the full bake: lightmap luxels and vertex colours get the neutral byte 64, the grid neutral ambient 63 63 63 with no directed light |
+| `-shnoindirect` | skip the indirect bake: no side file |
+| `-shsamples N` | rays per point, exactly (default 128): q3map2 turns off sh-baker's adaptive stop |
+| `-shbounces N` | maximum path depth (default 5) |
+| `-shdumpl0` | also write each side-file page's L0 as `maps/<name>/<name>_l0_<page>.hdr`, for inspection; never packed |
+
+`-shnofull` and `-shnoindirect` may both be given; then nothing is baked. Every `-shbake` run first deletes an earlier
+run's side file and dumps, so none is left next to a BSP whose pages it doesn't match. `-super N`, `-samplesize`,
+`-nogrid`, `-novertex`, `-threads` and the other layout options keep their meaning, but `-threads` limits only
+q3map2's own stages: sh-baker's bakes use every core. The output doesn't depend on the thread count. `-deluxe`, `-external`, a page
+size other than 128 (`-lightmapsize`, `q3map_lightmapSize`), `-trisoup`, `-bounce`, `-approx`, `-fill`, `-nolm` and the
+debug colour modes are refused. Options that tune only q3map2's own lighting (`-fast`, `-samples`, `-filter`,
+`-patchshadows`, `-gamma`, `-dirty`, ...) are ignored with one warning. `q3map2 -help light` lists them all.
+
+### What differs from the preview
+
+- **Every light casts in the bake**, point lights and `_shadows 0` spots and suns included: sh-baker has no per-light
+  shadow switch. The preview and `renderer_sh` keep the caster rule (point lights never cast). The difference shows
+  in the stock lightmap's direct light and, slightly, in bounced light. No warning is printed; A9 judges it.
+- **The bake is Lambert.** It reads only the base colour (times `qer_pbr_baseColorFactor`), the alpha test and
+  emission. Normal, metallic-roughness and occlusion maps don't change baked light, and metal or glossy surfaces bounce
+  light as diffuse.
+- **Emissive direct light is not in the side file.** The indirect bake drops it with the rest of direct light, and
+  `renderer_sh` adds it only once it evaluates `light_area` (task C7). The stock lightmap has it.
+- **Surfaces cast by the caster rule above.** Brushes whose every side casts opaque also go in as solid hulls.
+
+### Warnings
+
+The light stage warns about inputs the bake doesn't read: once per kind for the keys, keywords and classnames, once
+per image, brush, light or shader for the rest. None fails the compile or the stock check:
+
+- q3map2-only light keys: a light's `spawnflags` or `fade`; worldspawn `_minlight`, `_minvertexlight`,
+  `_mingridlight`, `_maxlight` and `_ambient`, and `_ambient` on any other entity;
+- the shader keywords `q3map_sun`, `q3map_sunExt`, `q3map_skyLight` and `q3map_surfaceLight`;
+- a classname starting with `light` that is none of `light`, `light_spot`, `light_sun` and `light_area`;
+- a second `light_sun` (only the first in map order lights the bake);
+- a light with zero or negative `intensity` (left out);
+- an image that can't be loaded (white in its place);
+- a brush that makes no closed hull (skipped; its draw surfaces still occlude);
+- per emissive shader, the number of its surfaces with no attached `light_area` or `_proxy` light. The bake lights
+  from those surfaces anyway; the preview and `renderer_sh` don't. `light_area` and `_proxy` lights themselves are
+  left out of the bake without a warning, since the emitting surface already bakes. The benchmark's neon sign gives
+  this warning for its 5 drawn faces;
+- the number of points whose full-bake irradiance, or indirect-bake SH or visibility, isn't finite (stored as 0, the
+  grid probe invalid), once per bake.
+
+### Encoding
+
+Per channel, a luxel's or vertex's irradiance E from the full bake becomes a byte as a Lambert approximation of the
+preview's tonemap (`ShLightmapBytes`, `tools/quake3/q3map2/light_sh_model.h`):
+
+```
+d    = E / π
+t    = clamp( Uncharted2( d ) / Uncharted2( 11.2 ), 0, 1 )   // the preview's Hable constants and white point
+byte = round( 63.75 × sRGB_encode( t ) )
+```
+
+opengl1 at default cvars in a window shifts the byte left by 2, so a white Lambert surface shows what the preview
+would show at exposure 1, up to 8-bit steps. Only bytes 0 to 64 are used, about 65 levels, so dark gradients band.
+The preview's specular and its tonemap of albedo × light (Q3 multiplies the albedo by tonemapped light) are not
+reproduced; saturated colours drift in the highlights. The neutral bytes of `-shnofull` are 64 for lightmaps and
+vertex colours (a multiplier of 1.0 on opengl1) and ambient 63 63 63, directed 0 for the grid (64 would trigger the
+engine's rescale, below). The grid bytes are fitted to the full bake's grid SH as ambient plus one directional light;
+the engine rules and constants they are solved against follow.
+
+## How the stock renderers read the baked bytes
+
+`-shbake` writes the lightmap pages, vertex colours and light grid for **opengl1 at default cvars in a window**, the
+calibration target (B5 design decisions 5 and 6). These are the engine's rules, read from the fork's source
+(`../ioq3-custom/ioq3` at `0135354f`, task 6.3). `tools/quake3/q3map2/light_sh_model.h` holds the same constants and
+its tests check them.
+
+### opengl1 (`renderergl1`)
+
+| Rule | Value at defaults | Source |
+|---|---|---|
+| Overbright bits | `tr.overbrightBits` 0: `r_overBrightBits 1` is forced to 0 without hardware gamma and in any window | `tr_image.cpp:1194-1216` |
+| `identityLight` | 1 / (1 << 0) = 1, so `identityLightByte` is 255 | `tr_image.cpp:1218-1219` |
+| Load-time shift | `r_mapOverBrightBits 2` − 0 = 2: lightmap, vertex and grid bytes are shifted left by 2, so byte 64 is a multiplier of 1.0 | `tr_bsp.cpp:103-127` |
+| Rescale | if any shifted channel exceeds 255, the whole triple is scaled by 255 / max, which shifts the hue; bytes are therefore kept at 63 or below | `tr_bsp.cpp:115-124` |
+| Grid load | ambient and directed triples each go through that shift; the grid origin is `gridSize` · ceil(world mins / `gridSize`) | `tr_bsp.cpp:1762-1803` |
+| Zero-ambient skip | a cell whose shifted ambient sums to 0 is skipped as one in a wall, and the trilinear weights of the rest are renormalised when they sum below 0.99 | `tr_light.cpp:197-199, 245-249` |
+| `r_ambientScale` | 0.6, applied after the trilinear blend | `tr_init.cpp:1005`, `tr_light.cpp:250` |
+| `r_directedScale` | 1 | `tr_init.cpp:1006`, `tr_light.cpp:251` |
+| Floor | `identityLight` · 32 = 32 is added to every model's ambient after the scale | `tr_light.cpp:332-337` |
+| Ambient clamp | each channel at `identityLightByte` (255) | `tr_light.cpp:360-365` |
+| Diffuse | a vertex facing away from the light direction gets the ambient; otherwise ambient + N·L · directed, each channel clamped at 255 | `tr_shade_calc.cpp:1062-1106` |
+
+So a model's face realises min(255, 4a · 0.6 + 32) facing away from the grid direction and adds 4d · N·L facing it,
+for grid bytes a and d, against 4 × byte for a lightmapped wall. The fit (`ShFitGridPoint`) solves the bytes from
+that. What it cannot reach: a model is never darker than 32/255 (the floor), and its ambient never exceeds
+4 · 63 · 0.6 + 32 = 183.2/255; directed light makes up the rest only on faces towards the light. Because of the skip,
+`-shbake` gives every baked grid point at least ambient 1 1 1, even a dark one with no directed light, so a dark point
+still pulls a model towards the floor instead of being replaced by its brighter neighbours; only points left in solid
+are 0. On the benchmark that leaves 3 of 1275 points at zero (358 under q3map2's own rule, which raises ambient only
+when directed isn't zero).
+
+The grid is coarse (q3map2's default `gridsize` is 64 64 128), and a model takes the trilinear blend of the eight
+cells around its origin, so near a light it can be noticeably brighter or darker than the floor under it: the 128-unit
+vertical spacing blends floor-level light with light up to 128 units higher. A worldspawn `gridsize` with a smaller
+z (for example `64 64 64`) narrows that at the cost of grid size; the side file's SH grid follows the same spacing.
+
+### opengl2 (`renderergl2`) at defaults
+
+opengl2 is not calibrated; A9 measures it. Its differences:
+
+- **Shift by 1.** `tr.overbrightBits` is `r_overBrightBits` (1), clamped only to `r_mapOverBrightBits`, with no window
+  or hardware-gamma test (`tr_image.cpp:2912-2926`). The load-time shift is therefore 2 − 1 = 1, `identityLight` is
+  0.5 and the model floor is 16.
+- **×2 except `rgbGen vertex`.** Stages with `rgbGen identity`, `lightingDiffuse` and `exactVertex` (the implicit
+  shader of a vertex-lit surface) are multiplied by 1 << 1 = 2 (`tr_shade.cpp:604-686`), so lightmaps, the grid and
+  implicit vertex lighting come out at the same pre-tonemap value as opengl1: 4 × byte for a lightmap, and
+  2 · 2a · 0.6 + 2 · 16 = 4a · 0.6 + 32 for a model's ambient. An explicit `rgbGen vertex` stage is not multiplied, so
+  it shows at half of opengl1's brightness.
+- **Clamps.** The model's ambient and directed triples are each scaled down by their largest channel when it exceeds
+  255 in the halved units (`tr_light.cpp:387-418`), not clamped per channel, and N·L is evaluated per pixel. At grid
+  bytes of 63 or below the ambient stays under that limit, so there is no 183/255 ceiling before the tonemap.
+- **Auto-exposure.** `r_hdr 1`, `r_toneMap 1` and `r_autoExposure 1` (`tr_init.cpp:1201-1212`) tonemap the frame with
+  an exposure taken from its own average luminance (`tr_backend.cpp:1575-1577`), so absolute brightness follows the
+  view: dark views are lifted and bright ones lowered. Values above 1.0 survive until the tonemap.

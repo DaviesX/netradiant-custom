@@ -60,6 +60,13 @@ static void color_saturate( Vector3& color, float saturation ){
 	lmscale, lightmapCompensate are applied last, since they try to emulate engine effects (bitshift, clamp)
 */
 Vector3b ColorToBytes( const Vector3& color, float scale/* = 1*/, float lmscale/* = 1*/ ){
+	/* B5: -shbake's colours are linear irradiance, encoded as the editor preview's tonemap
+	   (design decision 5); the scales and the lightmap colour options don't apply. Without
+	   the full bake every colour is the neutral 64, whatever the placeholder holds */
+	if ( shBake ) {
+		return shNoFull? ShNeutralLightmapBytes() : ShLightmapBytes( color );
+	}
+
 	/* user inputs are not range checked, sanitize here... */
 	if ( scale <= 0 ) scale = 1;
 	if ( lmscale <= 0 ) lmscale = 1;

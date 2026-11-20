@@ -75,11 +75,11 @@ The benchmark SHALL keep these occlusion cases:
 - **THEN** the street under the patch arch shows the arch's sun shadow
 
 ### Requirement: Benchmark compile flags
-The map SHALL compile with the bundled q3map2 using `-meta -keeplights`, then `-vis -saveprt`, then `-light -patchshadows`, with no leak and no `Unknown q3map_* directive` warning. The `-light` lightmap is a placeholder that is not required to resemble the preview.
+The map SHALL compile with the bundled q3map2 using `-meta -keeplights`, then `-vis -saveprt`, then `-light -shbake`, with no leak and no `Unknown q3map_* directive` warning. sh-baker bakes the lightmap (the full bake) and the side file (the indirect bake) from the editor's lights. A9 judges the lightmap's fidelity to the preview.
 
 #### Scenario: Compile
 - **WHEN** the stock check compiles `bench.map`
-- **THEN** q3map2 reports no leak and no unknown directive, and the BSP's entity lump retains the light entities
+- **THEN** q3map2 reports no leak and no unknown directive, the BSP's entity lump retains the light entities, and `maps/bench/bench.shsf` is written
 
 ### Requirement: Documented views
 `maps/bench.cameras` SHALL list named view requests, one per line: name, player origin x y z, yaw. It SHALL include `sign`, from the `info_player_start` origin facing the emissive sign, and the views together SHALL show the fence, the glass, both trees, grass on the lawn and a tree canopy's shadow on the ground. The authoritative position of a view is the eye position recorded by the stock check's `opengl1` run, and editor captures of a view SHALL use that recorded position and yaw from the same check run.
@@ -93,14 +93,14 @@ The map SHALL compile with the bundled q3map2 using `-meta -keeplights`, then `-
 - **THEN** it shows both trees, grass and a canopy shadow on the ground, and the stock screenshots of that view show the same trees and grass
 
 ### Requirement: Single pk3 packaging
-The benchmark SHALL package as one `benchmark.pk3`. It contains the BSP and its lightmaps, the levelshot `levelshots/bench.jpg`, `scripts/*.shader` and `shaderlist.txt`, and every image under `textures/`, the PBR maps included. The levelshot is the loading-screen image; without it the engine prints `Couldn't find image file for shader levelshots/bench.tga`. It contains no other files (no `.map`, `.prt`, editor metadata or `*.import` files).
+The benchmark SHALL package as one `benchmark.pk3`. It contains the BSP and its lightmaps, the SH side file `maps/bench/bench.shsf`, the levelshot `levelshots/bench.jpg`, `scripts/*.shader` and `shaderlist.txt`, and every image under `textures/`, the PBR maps included. The levelshot is the loading-screen image; without it the engine prints `Couldn't find image file for shader levelshots/bench.tga`. It contains no other files (no `.map`, `.prt`, editor metadata, `*.import` files or `.hdr` dumps).
 
 #### Scenario: Pack contents
 - **WHEN** `benchmark.pk3` is listed
-- **THEN** every entry is a BSP, a lightmap image, the levelshot, a shader script, the shader list or an image under `textures/`, and every image a stage references is present
+- **THEN** every entry is a BSP, a lightmap image, the side file, the levelshot, a shader script, the shader list or an image under `textures/`, and every image a stage references is present
 
 ### Requirement: Stock screenshots reviewed by the author
-The author SHALL review the stock check's screenshots of every view on both renderers for content errors: every shader renders with its own image (no missing-texture or default image), the fence, the leaves and the grass are masked, the trees and grass stand upright with their cards visible from both sides, the glass is blended and the sky draws. Lighting SHALL NOT be judged, because the lightmap is a placeholder. The acceptance date SHALL be recorded in `content/benchmark/README.md`.
+The author SHALL review the stock check's screenshots of every view on both renderers for content errors: every shader renders with its own image (no missing-texture or default image), the fence, the leaves and the grass are masked, the trees and grass stand upright with their cards visible from both sides, the glass is blended and the sky draws. Lighting fidelity SHALL NOT be judged here; A9 judges it against the editor preview. The acceptance date SHALL be recorded in `content/benchmark/README.md`.
 
 #### Scenario: Acceptance
 - **WHEN** the stock check's screenshots are shown to the author

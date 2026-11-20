@@ -1,5 +1,5 @@
 <?xml version="1.0"?>
-<!-- Overlay copy of the downloaded Quake III menu (games/NRCPack/Q3.game), unchanged except for the "Town" build at the end; see setup/data/gamepacks/pbr/README.md. -->
+<!-- Overlay copy of the downloaded Quake III menu (games/NRCPack/Q3.game), unchanged except for the three "Town" builds at the end; see setup/data/gamepacks/pbr/README.md. -->
 <!--
 build commands
 [RadiantPath]: path to Radiant .. C:\Program Files\Gtkradiant\
@@ -59,11 +59,21 @@ build commands
 <command>[mbspc] -forcesidesvisible -optimize -bsp2aas &quot;[BspFile]&quot;</command>
 </build>
 <separator />
-<!-- the stock check's compile stages; -keeplights keeps the light entities for renderer_sh, and the lightmap is a placeholder until sh-baker (-shbake) writes it -->
-<build name="Town: BSP -keeplights + VIS + light (placeholder)">
+<!-- the stock check's compile stages; -keeplights keeps the light entities for renderer_sh, and -shbake (q3map2 built with SH_BAKER=1) runs both bakes: the lightmap for stock ioquake3 and the SH side file for renderer_sh. The three presets differ only in -shsamples (exact rays per point) and -super; see setup/data/gamepacks/pbr/README.md -->
+<build name="Town (draft)">
 <command>[q3map2] -meta -keeplights "[MapFile]"</command>
 <command>[q3map2] -vis -saveprt "[MapFile]"</command>
-<command>[q3map2] -light -patchshadows "[MapFile]"</command>
+<command>[q3map2] -light -shbake -shsamples 128 "[MapFile]"</command>
+</build>
+<build name="Town (pre-release)">
+<command>[q3map2] -meta -keeplights "[MapFile]"</command>
+<command>[q3map2] -vis -saveprt "[MapFile]"</command>
+<command>[q3map2] -light -shbake -shsamples 512 -super 2 "[MapFile]"</command>
+</build>
+<build name="Town (final)">
+<command>[q3map2] -meta -keeplights "[MapFile]"</command>
+<command>[q3map2] -vis -saveprt "[MapFile]"</command>
+<command>[q3map2] -light -shbake -shsamples 2048 -super 2 "[MapFile]"</command>
 </build>
 </project>
 

@@ -17,8 +17,8 @@
 \large Direct PBR, shadow mapping, and SH indirect lighting across
 NetRadiant-custom, q3map2 and ioquake3}
 \author{Davis Wen}
-\date{Revision 6 --- 2 October 2026\\
-\small (revision 5: 2 October 2026; revision 4: 1 October 2026; revision 3: 1 October 2026; revision 2: 17 September 2026;
+\date{Revision 7 --- 19 November 2026\\
+\small (revision 6: 2 October 2026; revision 5: 2 October 2026; revision 4: 1 October 2026; revision 3: 1 October 2026; revision 2: 17 September 2026;
 revision 1: 16 September 2026)}
 
 \begin{document}
@@ -44,7 +44,7 @@ The compiled level has three targets, in order of precedence:
   \texttt{opengl2}, at default cvars runs the same pk3 as plain lightmapped Quake~3 content:
   a lightmap baked by \texttt{sh-baker} inside q3map2 (Stage~4), base textures, vanilla shader
   stages, fog volumes. It uses \textbf{no rend2
-  features} --- no normal or specular maps, no \texttt{r\_pbr}, no HDR lightmaps. This is what makes
+  features} --- no normal or specular maps, no \texttt{r\_pbr}. The one planned exception is rend2's HDR lighting files (B6), which \texttt{opengl1} ignores. This is what makes
   the level uploadable to \texttt{lvlworld.com}, and it should look as faithful to the enhanced
   target as a lightmap allows.
 \item \textbf{Enhanced.} The customised ioquake3 with \texttt{renderer\_sh} (the new sh-renderer)
@@ -54,6 +54,54 @@ The compiled level has three targets, in order of precedence:
 Original, non-PBR Quake~3 levels are unaffected: they keep running on \texttt{opengl2}. Every
 enhancement is ignored by the stock target. None replaces stock data. §\ref{sec:contract} turns this
 into rules every stage must satisfy.
+
+\section{What changed in revision 7}\label{sec:rev7}
+
+Emissive surfaces join the one light model. Revision 6 planned runtime light from emissive quads
+only in \texttt{renderer\_sh} (4.5), so the editor could neither author nor preview it, and 3.4's
+parity rule could not cover it. Revision 7 makes area lights editor lights, like the other three.
+
+\begin{description}[style=nextline]
+\item[Area lights are editor lights (2.2 step 6).] A new point entity, \texttt{light\_area}, is a
+  one-sided rectangle: \texttt{origin} at its centre, \texttt{angles} giving the emitting normal,
+  \texttt{width} and \texttt{height} in map units, and \texttt{intensity} as radiance. The editor
+  previews it with LTC (linearly transformed cosines), and \texttt{renderer\_sh} evaluates the same
+  model (4.5). §\ref{sec:units}.
+\item[Attached by geometry, not by reference.] ``Create area light from selected face'' copies the
+  face's rectangle into the entity; the face itself stays in worldspawn and is drawn and lightmapped
+  as before. A brush entity owning the face was rejected: q3map2 compiles it into an inline model,
+  which stock ioquake3 frees with the entity, so the glowing quad would vanish on vanilla. A face
+  reference was rejected: Quake~3 faces have no names, and \texttt{target} links only entities.
+\item[Intensity is derived from the shader.] The command sets the area light's radiance to the
+  face's mean emissive radiance, $\bar L = \texttt{qer\_pbr\_emissiveStrength} \times
+  \texttt{rgbGen const} \times \text{mean linear texel over the face's UV footprint}$, split into
+  \texttt{intensity} (the largest component) and \texttt{\_color}. A proxy's flux is
+  $k\pi\sum_f \bar L_f A_f$ over the selected faces, with $k=1$ for opaque emitters and $k=2$ for
+  all-additive ones (two-sided billboards). ``Re-derive'' repeats it after the shader changes.
+\item[Proxies for everything else.] Non-planar or non-rectangular emitters get an ordinary
+  \texttt{light} or \texttt{light\_spot} with \texttt{\_proxy 1}, created from the selection with
+  the derived flux. Runtime and preview treat a proxy as the light it is.
+\item[The bake reads the surface, not the attachment.] \texttt{sh-baker} already turns every
+  emissive surface into an area light, so \texttt{-shbake} ignores \texttt{light\_area} and
+  \texttt{\_proxy} lights; otherwise the full bake would count the emitter twice. The full bake keeps
+  the emitter's direct light, because the stock lightmap has no other source for it; the indirect
+  bake drops it (\texttt{sh-baker} \#66), so \texttt{renderer\_sh} counts it once, from the attached
+  light. No per-emitter bake switch exists or is needed; revision 6's ``if the author enables baking
+  for the emitter'' is withdrawn. q3map2's placeholder \texttt{-light} skips both too.
+\item[Unattached emitters warn.] An emitter with no attached light still glows on every target and
+  bounces light on the enhanced one, but lights its surroundings directly only in the stock
+  lightmap. \texttt{-shbake} warns once per shader with the count of such surfaces. It is a warning,
+  not a stock-check failure: small glows need no light.
+\item[The preview draws every emitter in linear HDR.] Emitters the preview does not light --- all
+  stages additive, or \texttt{surfaceparm nolightmap} --- are drawn with the same sRGB decode and
+  \texttt{qer\_pbr\_emissiveStrength} as lit ones, instead of the textured-mode image.
+\item[Sidedness.] Area lights are one-sided. \texttt{sh-baker}'s area lights are two-sided
+  (\texttt{light.h:220}, kept for billboard flames), so a free-standing opaque emissive quad also
+  lights its back in the bake. Documented difference; 0.3 judges it.
+\item[Shadows by frustum.] \texttt{\_frustum} (half-angle in degrees, default 0 = none) gives the
+  area light a perspective shadow map from the rectangle's centre along its normal, with the caster
+  rule, in the preview and at runtime. Without it the area light does not cast.
+\end{description}
 
 \section{What changed in revision 6}\label{sec:rev6}
 
@@ -88,7 +136,8 @@ carry everything \texttt{renderer\_sh} needs. Within that, the easiest path in t
   reading of them.
 \item[\texttt{sh-baker} writes the vanilla lightmap.] Stage~4.3 always writes irradiance into the
   BSP lightmap pages, plus the light grid and vertex colours, from the same lights, besides the SH
-  side file. This is no longer optional or conditional on 0.3. The irradiance-to-byte encoding is
+  side file. This is no longer optional or conditional on 0.3. (4.3 now does this with a separate
+  full bake, on by default; the side file takes an indirect-only bake.) The irradiance-to-byte encoding is
   ours to choose so the result looks good on vanilla, for example a roll-off rather than a hard clip
   at the overbright limit. Until 4.3 lands, q3map2 \texttt{-light} produces a placeholder lightmap
   that is not expected to match the preview. 0.3 measures the \texttt{sh-baker} lightmap after 4.3.
@@ -248,14 +297,15 @@ rend2 siblings & No image named \texttt{<base>\_n}, \texttt{\_nh} or \texttt{\_s
   image. &
   rend2 loads those with no keyword (\texttt{renderergl2/tr\_shader.cpp:2150--2215}) and would
   apply PBR data through its lightmap path. \\
-Lights & \texttt{light}, \texttt{light\_spot}, \texttt{light\_sun} with the editor's physical keys
-  (\texttt{intensity}, \texttt{radius}, \texttt{cone}, \texttt{cone\_inner}, \texttt{\_color},
-  \texttt{target}/\texttt{angles}, \texttt{\_shadows}), kept by \texttt{-keeplights}. &
+Lights & \texttt{light}, \texttt{light\_spot}, \texttt{light\_sun}, \texttt{light\_area} with the
+  editor's physical keys (\texttt{intensity}, \texttt{radius}, \texttt{cone}, \texttt{cone\_inner},
+  \texttt{\_color}, \texttt{target}/\texttt{angles}, \texttt{\_shadows}, \texttt{width},
+  \texttt{height}, \texttt{\_frustum}, \texttt{\_proxy}), kept by \texttt{-keeplights}. &
   §\ref{sec:units}. The stock game never uses light entities. \\
-Entities & Classnames the game code spawns, plus \texttt{light\_spot} and \texttt{light\_sun}.
-  Other enhanced-only parameters are extra keys. & Unknown keys are ignored. An unknown classname is
-  discarded after one \texttt{doesn't have a spawn function} line (\texttt{g\_spawn.c:281}), which
-  the stock check allowlists for those two. \\
+Entities & Classnames the game code spawns, plus \texttt{light\_spot}, \texttt{light\_sun} and
+  \texttt{light\_area}. Other enhanced-only parameters are extra keys. & Unknown keys are ignored.
+  An unknown classname is discarded after one \texttt{doesn't have a spawn function} line
+  (\texttt{g\_spawn.c:281}), which the stock check allowlists for those three. \\
 Fog & Stock fog volumes (\texttt{fogparms}). & Works on every target;
   \texttt{renderer\_sh} implements the same semantics. \\
 Lightmaps & The BSP lightmap lump is always complete and is the stock target's only lighting; it
@@ -285,14 +335,17 @@ logfile 2 +devmap <map>}, then for each documented view (\texttt{maps/<map>.came
 \texttt{views.txt}, because \texttt{setviewpos} pushes the player forward) and
 \texttt{screenshot}. It fails on any \texttt{WARNING} line or \texttt{<classname> doesn't have a
 spawn function} line not on a reviewed allowlist (which starts with the
-\texttt{light\_spot}/\texttt{light\_sun} spawn-function lines), on \texttt{R\_FindImageFile could
+\texttt{light\_spot}/\texttt{light\_sun}/\texttt{light\_area} spawn-function lines), on \texttt{R\_FindImageFile could
 not find}, and on \texttt{Couldn't find image file for shader} (\texttt{developer} only,
 \texttt{tr\_shader.cpp:3336}). A missing image is excused only by an allowlist entry naming the
 exact line of an image the engine replaces with a built-in fallback (\texttt{renderergl2}'s
 \texttt{gfx/2d/sunflare}). It also fails on a missing screenshot, on a \texttt{viewpos} that is
 missing or more than 256 units from its request (an ignored teleport), on an abnormal exit and on
 a timeout. The compile (\texttt{-meta -keeplights}, \texttt{-vis -saveprt}, \texttt{-light
--patchshadows}) fails on a leak or on q3map2's \texttt{Unknown q3map\_* directive}. The engine only parses shaders a map uses, so the check covers exactly the
+-shbake} with both bakes, which needs q3map2 built with \texttt{SH\_BAKER=1}) fails on a leak, on
+q3map2's \texttt{Unknown q3map\_* directive} and when the light stage leaves no side file at
+\texttt{maps/<map>/<map>.shsf}; a side file left in the source mod is deleted first, and the pk3
+carries the new one. The engine only parses shaders a map uses, so the check covers exactly the
 shaders the map references. The enhanced check is the same run with \texttt{cl\_renderer sh}.
 There is no calibration mode: nothing is matched against q3map2's lightmap.
 
@@ -518,11 +571,11 @@ pipeline, passing the stock check, with the town's visibility conventions alread
 \item Author under \texttt{Q3.game} and the conventions in the world-building section: low sky
   ceiling, structural shells, detail ornament, fog colour matched to sky, hint brushes across
   streets, area portals in doorways. Materials follow §\ref{sec:materials} from the first shader.
-\item Compile \texttt{q3map2 -meta -keeplights}, \texttt{-vis -saveprt}, \texttt{-light -patchshadows};
-  leak-free is the gate. \texttt{-keeplights} is a BSP-stage option that keeps the light entities
-  in the entity lump for the real-time direct path. \texttt{-light} gives a placeholder lightmap
-  until 4.3, when \texttt{-light -shbake} replaces its lighting with \texttt{sh-baker}'s. No \texttt{-deluxe}:
-  deluxe maps are a rend2 feature.
+\item Compile \texttt{q3map2 -meta -keeplights}, \texttt{-vis -saveprt}, \texttt{-light -shbake}
+  (the overlay's Town builds); leak-free is the gate. \texttt{-keeplights} is a BSP-stage option
+  that keeps the light entities in the entity lump for the real-time direct path. \texttt{-shbake}
+  writes the lightmap and the side file from \texttt{sh-baker} (4.3). No \texttt{-deluxe}: deluxe
+  maps are a rend2 feature.
 \item Exit criterion: walkable in ioquake3 at playable framerate, PVS behaving like an indoor
   level, and the stock check of 0.4 passes.
 \end{itemize}
@@ -621,8 +674,19 @@ gives both stock shaders and the preview:
   \texttt{.mtr} parser; delete \texttt{pbr.game}. The \texttt{pbr} entity module stays, because
   \texttt{Q3.game} uses it. The build menu entry is the overlay menu's ``Town'' build
   (\texttt{-meta -keeplights}, \texttt{-vis -saveprt}, \texttt{-light -patchshadows}); \texttt{-shbake}
-  joins it in 4.3. The documentation is \texttt{setup/data/gamepacks/pbr/README.md}; the benchmark is
+  joins it in 4.3, which splits it into three quality presets. The documentation is \texttt{setup/data/gamepacks/pbr/README.md}; the benchmark is
   \texttt{content/benchmark/}. \emph{Done (\texttt{retire-pbr-game}).}
+\item \textbf{Area lights and emissive proxies} (revision 7; openspec change
+  \texttt{emissive-area-lights}). \texttt{light\_area} in \texttt{\_pbr\_lights.ent}, the
+  \texttt{pbr} entity module and \texttt{RendererLightParams} (an \texttt{eArea} type with the
+  rectangle's half-extent axes); ``Create area light from selected face'', ``Create proxy light from
+  selection'' and ``Re-derive light from emitter'', which derive the radiance or flux of
+  §\ref{sec:rev7}; an LTC branch in the preview's light pass, with the GGX tables shipped beside the
+  GLSL and shared with \texttt{renderer\_sh}; the \texttt{\_frustum} shadow map on the spot shadow
+  path; linear-HDR drawing of emitters the preview does not light; and q3map2's placeholder
+  \texttt{-light} skipping \texttt{light\_area} and \texttt{\_proxy} lights. The benchmark's neon
+  sign gets a \texttt{light\_area}. Exit criterion: the sign lights the wall in the preview, with the
+  stock check passing (its allowlist gains the \texttt{light\_area} line).
 \end{enumerate}
 Exit criterion: the town block renders in the editor's lighting mode under \texttt{Q3.game}, with
 screenshots from the documented views recorded. Numerical parity with
@@ -733,12 +797,19 @@ stock fallback on the same map, and the stock check still passes on the same pk3
 \subsection{3.4 Direct light parity}
 \begin{itemize}
 \item Lights come from the entity lump, preserved by \texttt{-keeplights}, read with the editor's
-  physical model (§\ref{sec:units}): \texttt{light}, \texttt{light\_spot}, \texttt{light\_sun} and
-  their keys, with no conversion constant. This replaces sh-renderer's glTF light scale
+  physical model (§\ref{sec:units}): \texttt{light}, \texttt{light\_spot}, \texttt{light\_sun},
+  \texttt{light\_area} (from 4.5) and their keys, with no conversion constant. This replaces sh-renderer's glTF light scale
   (\texttt{kLightIntensityScale}, \texttt{src/loader.cpp:18}) and \texttt{ComputeLightRadius}
   (\texttt{src/loader.cpp:719}).
+\item Every editor light --- point, spot and sun --- is evaluated at runtime, with the caster rule
+  (point lights never cast; spots and suns unless \texttt{\_shadows 0}). \texttt{renderer\_sh} never
+  reads baked direct light: the side file holds only the indirect bake (4.3). The editor can't read
+  the side file and the engine can, so direct light stays where the preview computes it.
+\item Emissive surfaces give direct light at runtime only through an attached \texttt{light\_area}
+  or \texttt{\_proxy} light, which arrives with 4.5; until then they only glow.
 \item Exit criterion: the editor lighting preview and the engine's direct-light-only render agree
   from the documented camera, within the tolerance already written down for the benchmark map.
+  4.5 extends the same check to the neon sign's \texttt{light\_area}.
 \end{itemize}
 
 \subsection{3.5 Shadow parity and solid hulls}
@@ -753,6 +824,9 @@ stock fallback on the same map, and the stock check still passes on the same pk3
   through its alpha (the fence, leaf cards; \texttt{trans} with \texttt{alphashadow}) are drawn into the
   shadow maps with their alpha test, alongside the hulls. They are non-solid, so the hulls alone
   would drop them, and the editor and sh-baker already cast them.
+\item The bake does not follow the caster rule's per-light part: it shadows every light
+  (§\ref{sec:units}). That changes only baked light (the stock lightmap and, slightly, bounced
+  light), not the runtime shadows compared here.
 \item Known gap: other brushes with non-solid shaders are dropped from the collision lumps. If such a
   brush must cast, mark its material to keep it, or emit casters separately.
 \item Reconcile against the editor's scheme, which deliberately uses \emph{first}-depth casters
@@ -764,9 +838,10 @@ stock fallback on the same map, and the stock check still passes on the same pk3
 
 \section{Stage 4: SH indirect, baked by q3map2}
 
-\textbf{Outcome.} \texttt{sh-baker}, inside q3map2, bakes the editor's lights into q3map2's own
-lightmap pages: SH bands for \texttt{renderer\_sh}, and the stock lightmap, light grid and vertex
-colours for the lvlworld build. No BSP format change.
+\textbf{Outcome.} \texttt{sh-baker}, inside q3map2, bakes the editor's lights on q3map2's own
+lightmap pages in two bakes over the same points: indirect SH bands for \texttt{renderer\_sh}, and
+full irradiance for the stock lightmap, light grid and vertex colours of the lvlworld build. No BSP
+format change.
 
 \subsection{4.1 Decision: link \texttt{sh-baker} into q3map2}
 
@@ -785,7 +860,7 @@ Grounds: q3map2 already has the BSP, shader parsing, patch tessellation, image l
 entities, lightmap page allocation and light-grid points. The stage passes the editor's light
 entities to \texttt{sh-baker} unchanged, so units agree by construction (§\ref{sec:units}). Baking
 in q3map2's lightmap space means \texttt{renderer\_sh} uses the BSP's own coordinates with no
-mapping file, and the same bake fills the stock lightmap (revision 6).
+mapping file, and a second bake over the same points fills the stock lightmap (revision 6, 4.3).
 
 \subsection{4.2 \texttt{sh-baker} changes}
 
@@ -828,9 +903,32 @@ q3map2 includes the headers in \texttt{src/} directly and links the \texttt{libs
   lives in q3map2 as the \emph{q3map2 extension} (\texttt{q3map2\_extension.\{h,cpp\}}), with an
   optional Radiance \texttt{.hdr} dump of L0 for inspection. \texttt{sh-baker} stays unchanged.
   \emph{Done (q3map2; \texttt{sh-baker} PR \#64 closed unmerged).}
+\item \textbf{The editor's light model} (B5). \texttt{Light::range}, which the light tree honours
+  (\texttt{LightBounds::max\_range} and a per-point choice between the BVH and the directional
+  set), and \texttt{Light::ConeFalloff::kSmoothstep}, a hard edge for equal cones. A per-light
+  shadow switch and an exact, separate punctual-direct result were rejected in review: each point's
+  \texttt{SHCoeffs::irradiance} (\texttt{sh\_coeffs.h:26}) is already a cosine-weighted estimate of
+  its irradiance, a per-light pass costs time that light-tree sampling spends better with hundreds
+  of lights, and order-2 SH smears direct area light. So every light casts in a bake.
+  \emph{Done (\texttt{sh-baker} PR \#65, \texttt{ad8f39f}).}
+\item \textbf{Indirect-only skips all direct light} (B5). \texttt{BakeConfig::indirect\_only} drops
+  punctual \emph{and} area direct light at the baked point; bounces still see every light.
+  \emph{Done (\texttt{sh-baker} PR \#66, \texttt{046ff2e}).}
+\item \textbf{Full-sphere points} (B5). \texttt{SurfacePoint::full\_sphere}, default false: rays
+  uniform over the sphere weighted $4\pi$, next-event estimation with a zero normal and no
+  back-face rejection at the baked point only. One such point per light-grid point replaces the
+  pair of opposed hemispheres. Defaults keep every existing bake bit-identical.
+  \emph{Done (\texttt{sh-baker} PR \#67, \texttt{fdad058}).}
+\item \textbf{Fixed sample count} (B5). \texttt{BakeConfig::confidence\_threshold} at or below 0
+  turns off the sensor's adaptive stop, so every valid point takes exactly \texttt{samples} rays.
+  Before, the stop's absolute floor ended any point whose per-sample L0 was constant (one lit only
+  by unshadowed point lights) at its 64-sample minimum, whatever \texttt{samples} said. The default
+  0.01 is unchanged. \emph{Done (\texttt{sh-baker} PR \#68, \texttt{8f181ba}).}
 \end{enumerate}
-The existing light and environment types already cover what q3map2 passes in: point, spot,
-directional, area lights and a Preetham sky; material-less geometry is already a pure occluder.
+The existing light types already cover what q3map2 passes in: point, spot, directional and area
+lights; material-less geometry is already a pure occluder. The point bake never reads the scene's
+environment (a ray that misses returns zero), so there is no sky light; sky surfaces neither cast
+nor emit, and outdoor light comes from \texttt{light\_sun}.
 
 \subsection{4.3 \texttt{-shbake} in q3map2}
 
@@ -839,34 +937,56 @@ directional, area lights and a Preetham sky; material-less geometry is already a
   (\texttt{q3map2 -light -shbake}), after \texttt{MapRawLightmap} has mapped every raw lightmap's
   luxels (origins, normals, clusters). It replaces \texttt{IlluminateRawLightmap}'s lighting math,
   and the light-grid and vertex-light passes, with \texttt{sh-baker}. \texttt{StoreSurfaceLightmaps}
-  then packs the result as usual. It cannot run on the finished BSP: the final pages exist only
-  after \texttt{StoreSurfaceLightmaps}, whose packing depends on the lit values.
+  then packs the result. It cannot run on the finished BSP: the final pages exist only after
+  \texttt{StoreSurfaceLightmaps}. Stock q3map2 packs by lit values; under \texttt{-shbake} collapse
+  and solid stamping are skipped and \texttt{-approx} is refused, so the page layout does not depend
+  on lit bytes and is the same in every toggle mode.
 \item \textbf{Scene.} Draw surfaces --- planar, meta, triangle soups and tessellated patches ---
   go through \texttt{sh-baker}'s q3map2 loader as receivers. Materials from q3map2's
   shader info: the base-colour image, the \texttt{qer\_pbr\_*} maps and factors (q3map2's shader
   parser learns them), additive stages as emitters. Lights are the editor's \texttt{light},
   \texttt{light\_spot} and \texttt{light\_sun} entities read with the physical model of
-  §\ref{sec:units}, not q3map2's light parsing. Occluders follow the editor's shadow-caster rule
-  (§\ref{sec:rev6}).
+  §\ref{sec:units}, not q3map2's light parsing. Occluding surfaces follow the editor's
+  shadow-caster rule (§\ref{sec:rev6}). Every light casts: \texttt{sh-baker} has no per-light shadow
+  switch, so point lights and \texttt{\_shadows 0} lights are shadowed too (§\ref{sec:units}).
 \item \textbf{Solid hulls.} q3map2's draw surfaces are thin, and rays can slip through the cracks
   between them. The blockers are one closed hull per casting brush, structural and detail, built
   from the BSP's brush lumps with q3map2's winding code (\texttt{BaseWindingForPlane},
-  \texttt{ChopWindingInPlace}). Each plane is pushed inward by $\varepsilon$, a little more than
-  the sensor's \texttt{tnear}, so the visible face is always hit first; bevel sides are skipped;
+  \texttt{ChopWindingInPlace}). Each drawn plane is pushed inward by $\varepsilon$, a little more
+  than the sensor's \texttt{tnear}, so the visible face is always hit first; \texttt{nodraw}
+  (caulk) planes stay in place, so caulk seams leave no gap; bevel sides are skipped;
   each hull is added as a material-less surface, which blocks light without shading. The draw
   surfaces stay the receivers and own the luxels. Brushless surfaces (patches, \texttt{misc\_model}
   props, foliage) stay thin. The un-shrunk hulls go into the side file for 3.5.
-\item \textbf{Bake and write.} One \texttt{sh-baker} call bakes every mapped luxel as a
-  caller-supplied point, with one BVH for the map. The SH side data must follow
-  \texttt{StoreSurfaceLightmaps}' approximation to vertex light, solid stamps and deduplication,
-  or those must be disabled when baking SH. All bands to
-  the side file in \texttt{maps/<name>/}, inside the level's single pk3, through the q3map2
-  extension's writer (4.2 item~4): side-file page $i$ is BSP lightmap page $i$, skipped luxels are
-  filled before writing, and hull positions are in BSP units. Never
-  \texttt{lm\_*.hdr}, which stock rend2 would load. Always also write direct plus indirect
-  irradiance into the BSP's 8-bit lightmap lump, the light grid (ambient, directed, direction from
-  SH at the grid points) and vertex colours, so the lvlworld build carries the same light
-  \texttt{renderer\_sh} shows. The irradiance-to-byte encoding is chosen here (§\ref{sec:units}).
+\item \textbf{Points.} One list: every mapped super-luxel, one full-sphere point per light-grid
+  point (4.2 item~7), and every draw vertex. Both bakes take the same list, so their results align
+  index for index; \texttt{sh-baker} seeds per index, so each bake is deterministic.
+\item \textbf{Two independent bakes.} Each is an ordinary \texttt{BakeSHLightMap} call with one BVH
+  for the map, and each converges on its own.
+  \begin{itemize}
+  \item The \emph{full bake} (\texttt{indirect\_only} false) feeds the stock target. Lightmap and
+    vertex irradiance is the point's \texttt{SHCoeffs::irradiance}, a cosine-weighted Monte Carlo
+    estimate at its normal, with no SH ringing; \texttt{-super N} averages away its noise. Each
+    grid point's full-sphere SH is fit as ambient plus one directional light: the direction is the
+    luminance-weighted L1, directed is the $E_\perp$ of a delta light along it, ambient comes from
+    what L0 has left. The bytes then follow the engine's model lighting. Lightmap, grid and vertex
+    colours thus carry direct plus indirect light, as \texttt{renderer\_sh} shows it.
+  \item The \emph{indirect bake} (\texttt{indirect\_only} true) skips all direct light at the
+    point, punctual and emissive; bounces see every light. It feeds \texttt{renderer\_sh}: the side
+    file's luxel pages and its SH grid.
+  \end{itemize}
+\item \textbf{Toggles.} \texttt{-shbake} runs both bakes by default, which gives the shippable pk3;
+  the three Town builds and the stock check use it. \texttt{-shnofull} skips the full bake: the lightmap
+  pages and vertex colours get the neutral byte 64 (a multiplier of 1.0 on \texttt{opengl1}), and
+  the grid gets neutral ambient (63) with no directed light. \texttt{-shnoindirect} skips the indirect
+  bake and writes no side file. Both together bake nothing. Two bakes cost about twice one.
+\item \textbf{Side file.} Written to \texttt{maps/<name>/}, inside the level's single pk3, through
+  the q3map2 extension's writer (4.2 item~4). It always holds the indirect bake: the luxel pages
+  (side-file page $i$ is BSP lightmap page $i$; skipped luxels are filled before writing), the hull
+  mesh in BSP units, and an SH grid. The SH grid has one probe per BSP light-grid point, in the
+  grid's order, with nine RGB coefficients in the pages' basis and a valid flag; a probe left in
+  solid after q3map2's nudge is invalid and zero. Never \texttt{lm\_*.hdr}, which stock rend2 would
+  load. The irradiance-to-byte encoding is chosen here (§\ref{sec:units}).
 \item \textbf{Anti-aliasing.} From \texttt{-super N}: raw lightmaps are mapped at $N\times$
   resolution, each super-luxel is baked as a point, and \texttt{StoreSurfaceLightmaps} averages
   them; SH coefficients are linear, so the side data averages the same way. \texttt{-samples}'
@@ -875,7 +995,101 @@ directional, area lights and a Preetham sky; material-less geometry is already a
   works in Quake units, so the stage converts units or scales the scene.
 \item \textbf{Gaps the stage reports.} q3map2-only light inputs --- \texttt{spawnflags},
   \texttt{fade}, \texttt{q3map\_sun}, \texttt{q3map\_skylight}, \texttt{q3map\_surfacelight} ---
-  are not read; the stage warns on them.
+  are not read; the stage warns on them. \texttt{light\_area} and lights with \texttt{\_proxy 1}
+  are skipped without a warning, because the emitter's surface already bakes their light (revision
+  7). An emissive surface with no attached light gets one warning per shader, with a count. A
+  surface counts as attached when a \texttt{light\_area}'s rectangle is coplanar with it and
+  overlaps it, or a \texttt{\_proxy} light lies within its bounds grown by 64 units.
+\item \textbf{Encoding (as built).} A lightmap or vertex byte is
+  \[ \mathrm{round}\bigl(63.75\cdot\mathrm{sRGB}(U(E/\pi)/U(11.2))\bigr), \]
+  clamped to $0..64$, where $U$ is
+  Hable's filmic curve ($A=0.15$, $B=0.50$, $C=0.10$, $D=0.20$, $E=0.02$, $F=0.30$) and 11.2 the
+  white point; $E/\pi$ at or above it gives 64. The grid fit uses the engine's constants, checked
+  against the fork's \texttt{renderergl1}: load-time shift 2, \texttt{r\_ambientScale} 0.6,
+  \texttt{r\_directedScale} 1, a floor of 32 added to every model's ambient, bytes up to 63
+  before the shift rescales a triple. An all-zero ambient triple out of solid is written
+  1~1~1, because the engine skips a cell whose ambient is zero; directed is then solved from that
+  final byte. The neutral bytes under \texttt{-shnofull} are 64 (lightmap and vertex) and ambient 63
+  with directed 0 (grid). The constants live in \texttt{light\_sh\_model.h}; the gamepack README
+  has the opengl2 differences (shift 1, $\times 2$ except \texttt{rgbGen vertex}, auto-exposure).
+\item \textbf{Measured on the benchmark (B5).} At the defaults (128 samples per point, 5 bounces)
+  on a 12-core machine, both bakes run over the same 41939 points: 38469 super-luxel slots (33510 mapped and baked),
+  1275 grid points (1272 baked, 3 in solid) and 2195 vertices. The indirect bake takes 0.7\,s, the
+  full bake 0.8\,s, and the whole \texttt{-light -shbake} stage about 1.5\,s; at
+  \texttt{-shsamples 16} each bake took 0.1\,s (task 6.2). The output is 3 lightmap pages, a 363776-byte BSP, and a 2929891-byte side file with 86
+  hulls (2088 vertices) and 1275 SH probes ($17\times25\times3$, 1272 valid). \texttt{-threads 1}
+  and the default thread count give BSPs identical in every lump (only the header's compile
+  time differs) and byte-identical side files. The stock check (both bakes,
+  opengl1 and opengl2) passes in 25\,s with a 2322020-byte pk3 (2233284 bytes before \#68, whose exact sample
+  counts change the compressed side file).
+\item \textbf{Samples and quality presets.} q3map2 passes \texttt{confidence\_threshold} 0
+  (4.2 item~8), so \texttt{-shsamples N} is the exact number of rays per point and a bake's time
+  grows linearly with samples times points. The overlay's build menu has three Town builds with the
+  same three stages; only the light stage differs. Measured on the benchmark, with the noise taken
+  against a 4096-sample \texttt{-super 2} bake as the rms lightmap byte error (steps of $0..64$)
+  and the rms relative error of each side-file luxel's L0 luminance:
+
+  \smallskip
+  \begin{tabular}{@{}lllll@{}}
+  \toprule
+  Build & Light stage & Compile & Lightmap & Side file \\
+  \midrule
+  draft & \texttt{-shsamples 128} & 1.6\,s & 5.0 & 119\% \\
+  pre-release & \texttt{-shsamples 512 -super 2} & 22\,s & 0.75 & 22\% \\
+  final & \texttt{-shsamples 2048 -super 2} & 90\,s & 0.28 & 7\% \\
+  \bottomrule
+  \end{tabular}
+  \smallskip
+
+  The draft bakes 41939 points per bake, the other two 157346. The draft's lightmap figure also
+  holds the difference between \texttt{-super 1} and \texttt{-super 2}. The final preset's 0.28 is
+  at the 8-bit rounding floor ($1/\sqrt{12}\approx0.29$); its dark luxels (below byte 8) are at
+  0.31, the pre-release's at 0.82. A 4096-sample \texttt{-super 2} light stage takes 187\,s. The
+  stock check stays at the defaults (128 samples, \texttt{-super 1}). Hard lighting needs about
+  4096 samples to converge smoothly (the day-time Sponza into two $2048^2$ pages took about 1.5
+  hours), so \texttt{-shsamples 4096} remains a manual option. A denoiser or path guiding is a
+  possible later improvement, at low priority.
+\item \textbf{Known gaps.} Found while building the stage; none blocks B5.
+  \begin{itemize}
+  \item \emph{Shadow rule.} The bake shadows every light, point lights and \texttt{\_shadows 0}
+    lights included; the preview and \texttt{renderer\_sh} keep the caster rule
+    (§\ref{sec:units}). 0.3 judges the difference.
+  \item \emph{Emissive direct light.} The side file holds only an emitter's bounce. Its direct
+    light reaches \texttt{renderer\_sh} only through an attached light, so it is missing until
+    C7's LTC area lights. The benchmark's neon sign warns (5 surfaces) until A11 gives it a
+    \texttt{light\_area}.
+  \item \emph{Convergence on L0 alone} (fixed by \texttt{sh-baker} PR \#68). The sensor stopped on
+    L0's variance after its 64-sample minimum. With point lights only, light-tree sampling makes
+    every sample's L0 the same, so a probe stopped at 64 samples whatever \texttt{-shsamples} said,
+    and its L1 direction was the noise of 64 light picks: a probe between two opposed equal lights
+    got ambient 3 and directed 5 where the fit gives 5 and 0. With the adaptive stop off it gets
+    ambient 5 and directed 1 at \texttt{-shsamples 4096}.
+  \item \emph{Threads.} \texttt{-threads} doesn't limit \texttt{sh-baker}'s TBB pool; the bake
+    times are the same at \texttt{-threads 1} and 12. The output doesn't depend on it.
+  \item \emph{Grid floor and spacing.} The engine adds $32/255$ (12.5\%) to every model's ambient,
+    so models can't go as dark as the darkest walls. With the default \texttt{gridsize 64 64 128}
+    the trilinear blend takes in the row 128 units up, so a model near a light reads brighter than
+    the floor under it; the README suggests a smaller $z$ for the town.
+  \item \emph{Monte Carlo noise.} The draft and the stock check bake 128 samples per point; the
+    pre-release and final presets above lower the noise. A9 judges the shipped preset and may
+    change it.
+  \item \emph{Hull seam inset.} A caulk face's bake polygon stops $1/32$ unit short of a drawn
+    neighbour's plane (0.25 opened a strip; flush grazed edge-row rays), so a light within $1/32$
+    unit of a drawn wall plane could still leak along it.
+  \end{itemize}
+\item \textbf{Observations for 0.3.} A sun and shadow check on the benchmark found no
+  \texttt{-shbake} bug: the bake tracks the editor preview closely. Three differences remain, none
+  of them the bake's.
+  \begin{itemize}
+  \item \emph{Dark albedo lifts shadows.} Vanilla draws texture times lightmap, so a shadow on a
+    very dark albedo keeps less contrast than the preview's: about $2.5\times$ lighter on the
+    asphalt.
+  \item \emph{Narrow shadows.} A shadow narrower than the 16-unit luxel (the 8-unit tree trunk)
+    can't show in the lightmap.
+  \item \emph{The editor's shadow map leaks under the arch.} The preview's shadow mapping lets
+    light through the benchmark's arch onto the floor; the bake doesn't. This is a preview
+    limitation, not a bake error.
+  \end{itemize}
 \item \textbf{Build.} \texttt{sh-baker} is the \texttt{tools/sh-baker} submodule, built by its own
   CMake in Release (never Debug, which adds \texttt{-fsanitize=address}) into
   \texttt{libsh\_baker.so}; its dependencies (glog, Embree, TBB, xatlas) load through the library.
@@ -899,13 +1113,45 @@ directional, area lights and a Preetham sky; material-less geometry is already a
 
 \subsection{4.4 Runtime and exit}
 \begin{itemize}
-\item \texttt{renderer\_sh} reads the side file and runs the indirect BRDF: Ramamoorthi--Hanrahan
-  cosine convolution for diffuse, SH evaluated along the reflection vector for specular. A map
-  without the side file falls back to the BSP lightmap.
+\item \texttt{renderer\_sh} computes direct light at runtime for every editor light (3.4) and takes
+  only indirect light from the side file. Surfaces read their luxel SH and run the indirect BRDF:
+  Ramamoorthi--Hanrahan cosine convolution for diffuse, SH evaluated along the reflection vector for
+  specular.
+\item Dynamic models (players, weapons, items) read the SH grid: trilinear interpolation of the
+  eight surrounding probes' coefficients, which is exact blending because SH is linear. Invalid
+  probes are dropped and the remaining weights renormalised. The result is evaluated per pixel at
+  the normal and clamped at 0.
+\item A map without the side file falls back to the BSP lightmap. Legacy non-PBR levels run on
+  \texttt{opengl2}. The stock fallback uses the full bake's lightmap, grid and vertex colours.
+\item Emissive direct light. The indirect bake leaves out direct light from emissive surfaces
+  (\texttt{sh-baker} \#66), and runtime direct light covers only the light entities, so
+  \texttt{renderer\_sh} gets it from attached \texttt{light\_area} and \texttt{\_proxy} lights (4.5).
+  An unattached emitter only glows and bounces there; \texttt{-shbake} warns about it. The emissive
+  surfaces themselves still draw through their additive stage.
 \item Exit criterion: the town block passes the stock check, and \texttt{renderer\_sh} renders all
-  three bands.
+  three bands on surfaces and lights dynamic models from the SH grid.
 \item Editor preview of baked SH stays optional and last. The editor has no lightmap coordinates on
   source geometry, and the engine covers the need.
+\end{itemize}
+
+\subsection{4.5 Follow-up: LTC area lights}
+\begin{itemize}
+\item The author attaches lights in the editor (2.2 step 6, revision 7): a \texttt{light\_area} on
+  a static emissive quad, or a \texttt{\_proxy} \texttt{light}/\texttt{light\_spot} on anything
+  else. \texttt{renderer\_sh} evaluates a \texttt{light\_area} with the same LTC model and tables as
+  the editor preview (§\ref{sec:units}), and a proxy as the point or spot light it is.
+\item No bake change. \texttt{-shbake} ignores attached lights; the indirect bake already drops
+  every emitter's direct light (\#66), so runtime direct light is counted once, and the full bake
+  keeps it for the stock lightmap.
+\item \texttt{\_frustum} gives the area light a shadow map from the rectangle's centre, with the
+  caster rule, as in the preview.
+\item Optional, enhanced-only: \texttt{renderer\_sh} may modulate the area light by the shader's
+  emissive image, normalised to its mean so the total stays the same, and by the current
+  \texttt{animMap} frame. The parity check runs without modulation, which the editor does not have.
+  The bake uses the first frame.
+\item Moving emissive quads come later.
+\item Exit criterion: the benchmark's neon sign lights the wall at runtime, agreeing with the editor
+  preview within 3.4's tolerance, and the indirect bake does not count its direct light again.
 \end{itemize}
 
 \section{Units and colour space (cross-cutting)}\label{sec:units}
@@ -917,7 +1163,8 @@ constant between consumers.
 \begin{itemize}
 \item \textbf{Point.} \texttt{light}: \texttt{intensity} is radiant flux (default 50000); radiant
   intensity is $\texttt{intensity}/4\pi$, falling off with the inverse square of the distance in raw
-  map units; culled beyond \texttt{radius} (default 256). Never casts shadows.
+  map units; culled beyond \texttt{radius} (default 256). Never casts shadows in the preview or at
+  runtime.
 \item \textbf{Spot.} \texttt{light\_spot}: the same flux concentrated in the cone, radiant intensity
   $\texttt{intensity}/(2\pi(1-\cos\texttt{cone}))$; \texttt{cone} is the outer half-angle (default
   45°), \texttt{cone\_inner} the inner one (default 30°), smoothstep between; direction from
@@ -925,9 +1172,29 @@ constant between consumers.
 \item \textbf{Sun.} \texttt{light\_sun}: \texttt{intensity} is the irradiance on a surface facing it
   (default 3), direction from \texttt{angles}, no cutoff. One sun is honoured, the first in map
   order. \texttt{q3map\_sun} is not read.
-\item \textbf{Colour and shadows.} \texttt{\_color} is linear RGB. Spots and suns cast unless
-  \texttt{\_shadows 0}.
-\item \textbf{Lightmap encoding.} \texttt{-shbake} converts irradiance to the 8-bit lightmap lump.
+\item \textbf{Area} (revision 7). \texttt{light\_area}: a one-sided rectangle centred on the
+  origin, emitting along the forward vector of \texttt{angles}, \texttt{width} along its right
+  vector and \texttt{height} along its up vector, in map units. \texttt{intensity} is the radiance
+  $L$, uniform over the rectangle. That fits the point model: on the normal its radiant intensity is
+  $LA$, so at distance $d$ it gives $E \approx LA/d^2$, and its flux is $\pi LA$. Direct light is the
+  LTC integral over the rectangle (Heitz et al.\ 2016), clipped to the emitting side: the exact
+  form factor for diffuse and GGX through the LTC tables for specular, the same tables in the editor
+  and \texttt{renderer\_sh}. Culled beyond \texttt{radius} (default 256). The derived radiance is
+  that of §\ref{sec:rev7}.
+\item \textbf{Proxy} (revision 7). \texttt{\_proxy 1} on a \texttt{light} or \texttt{light\_spot}
+  marks it as standing in for an emissive surface; the preview and \texttt{renderer\_sh} treat it as
+  an ordinary point or spot, and the bake ignores it, as it ignores \texttt{light\_area}.
+\item \textbf{Emissive surfaces.} Every target draws a surface's own radiance (§\ref{sec:materials}).
+  It lights other surfaces only through the bake (the full bake directly and by bounce, the
+  indirect bake by bounce) and, in the preview and at runtime, through an attached light.
+\item \textbf{Colour and shadows.} \texttt{\_color} is linear RGB. In the editor preview and
+  \texttt{renderer\_sh}'s runtime direct light, spots and suns cast unless \texttt{\_shadows 0},
+  area lights cast only with a non-zero \texttt{\_frustum}, and point lights never cast. The bake shadows every light, point lights and \texttt{\_shadows 0}
+  lights included, because \texttt{sh-baker} has no per-light shadow switch. This is a documented
+  difference, with no warning: it changes the stock lightmap's direct light and, slightly, bounced
+  light. 0.3 judges it.
+\item \textbf{Lightmap encoding.} \texttt{-shbake} converts the full bake's irradiance to the 8-bit
+  lightmap lump.
   The stock renderers at default cvars in a window shift lightmap bytes by 2, so a byte saturates
   at 64; the encoding is chosen to look good there, for example a roll-off toward that limit rather
   than a hard clip. It is recorded with the stage and judged by 0.3.
@@ -980,7 +1247,7 @@ reference look is reachable.
   by default, so vegetation shaders carry \texttt{q3map\_forceMeta}. Grass is static crossed quads, not
   \texttt{autosprite}, which only the engine would turn to the camera.
 \item \textbf{Use a spot where occlusion matters.} Point lights do not cast shadows in the editor
-  preview; a \texttt{light\_spot} does.
+  preview or at runtime; a \texttt{light\_spot} does. (The bake shadows both.)
 \item \textbf{Stock content only.} Every entity, key and shader keyword obeys
   §\ref{sec:contract} and §\ref{sec:materials}; the stock check is the arbiter.
 \end{itemize}
@@ -992,7 +1259,7 @@ reference look is reachable.
 Risk & Mitigation \\
 \midrule
 Stock rend2 picks up PBR data by accident &
-  The contract: reserved suffixes, no rend2 keywords, no \texttt{lm\_*.hdr}. The stock check runs
+  The contract: reserved suffixes, no rend2 keywords, and no \texttt{lm\_*.hdr} until B6 allows rend2's three HDR lighting files. The stock check runs
   the shipped pk3. \\
 The fork's renderers drift from upstream &
   Accepted: they are machine-converted to C++ and otherwise original. Each stock-check run records
@@ -1025,6 +1292,17 @@ The \texttt{ri.*} refactor spreads through sh-renderer &
   The one non-additive part of §3.1; done first, before feature work, so nothing is ported twice. \\
 Point lights over-light occluded areas in the preview &
   Authoring convention: spots where occlusion matters. \\
+The bake shadows lights the preview does not &
+  Documented difference (§\ref{sec:units}); it affects only baked light. 0.3 judges it. \\
+\texttt{renderer\_sh} lacks emissive direct light &
+  Attached \texttt{light\_area} and \texttt{\_proxy} lights (2.2 step 6, 4.5). \\
+An unattached emitter lights the stock lightmap but not \texttt{renderer\_sh} &
+  \texttt{-shbake} warns per shader; attach a light where the glow should light the room. \\
+An attached light drifts from its emitter's shader &
+  ``Re-derive light from emitter''; the rectangle and radiance are plain keys, visible in the
+  entity inspector. \\
+One-sided area lights against \texttt{sh-baker}'s two-sided emitters &
+  Matters only for free-standing opaque quads. Documented difference; 0.3 judges it. \\
 Texture loader preferences alter colour data &
   Audit gamma and compression paths before choosing where linearisation happens. \\
 Non-solid brushes needed as casters are dropped from the collision lumps &
@@ -1050,18 +1328,25 @@ Item & Depends on & Note \\
 1 Silent Hill look & 0.2, 0.3 & Content and cvars; the flashlight needs the game-code decision. \\
 2.2 steps 1--4 & --- & Additive; materials, preview and light entities under \texttt{Q3.game}. \\
 2.2 step 5 & 0.1 & Deletes \texttt{pbr.game}; keeps the \texttt{pbr} entity module. \\
+2.2 step 6 & 2.2 step 4, 0.4 & \texttt{light\_area}, \texttt{\_proxy} lights and their LTC preview
+  (revision 7). \\
 3.1 \texttt{ri.*} refactor & --- & Decided; not additive, so it goes first. \\
 3.3 Tier 1 features & 3.1, 0.2 & Walkable town under \texttt{cl\_renderer sh}. \\
 3.3 Tier 2 features & Tier 1 & Sky and fog first; they define the town. \\
-3.4 Direct light parity & 2.2, Tier 1 & Editor and engine read lights identically. \\
+3.4 Direct light parity & 2.2, Tier 1 & Editor and engine read lights identically; every light's
+  direct term is computed at runtime, never baked. \\
 3.5 Shadow parity & 3.4, 4.3 & Hulls loaded from the side file, validated against the town
   block. \\
-4.2 \texttt{sh-baker} PRs & --- & Can start now; reviewed and merged one at a time. Item~1 ships
-  as a stack of seven PRs. \\
-4.3 \texttt{-shbake} & 4.2, 0.2, 0.4 & Runs inside \texttt{-light} on q3map2's own luxels; bakes SH
-  and the stock lightmap, grid and vertex colours, and writes the hull mesh to the side file; stock
-  check on the single pk3. \\
-4.4 SH at runtime & 4.3, Tier 1 & All bands from the side file. \\
+4.2 \texttt{sh-baker} PRs & --- & Reviewed and merged one at a time. Item~1 shipped as a stack of
+  seven PRs; all eight items are merged (item~8 as PR \#68). \\
+4.3 \texttt{-shbake} & 4.2, 0.4 & Runs inside \texttt{-light} on q3map2's own luxels. Two bakes
+  over the same points, toggled by \texttt{-shnofull} and \texttt{-shnoindirect}: the full bake
+  fills the stock lightmap, grid and vertex colours; the indirect bake fills the side file's pages
+  and SH grid, beside the hull mesh. Stock check on the single pk3. \\
+4.4 SH at runtime & 4.3, Tier 1 & Indirect only: luxel SH on surfaces, the SH grid on dynamic
+  models. \\
+4.5 LTC area lights & 4.4, 2.2 step 6 & Runtime direct light from attached lights, with the
+  editor's model and tables. \\
 4.x Editor SH preview & 4.4 & Optional. \\
 \bottomrule
 \end{tabular}
