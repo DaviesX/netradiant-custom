@@ -1047,8 +1047,8 @@ nor emit, and outdoor light comes from \texttt{light\_sun}.
   0.31, the pre-release's at 0.82. A 4096-sample \texttt{-super 2} light stage takes 187\,s. The
   stock check stays at the defaults (128 samples, \texttt{-super 1}). Hard lighting needs about
   4096 samples to converge smoothly (the day-time Sponza into two $2048^2$ pages took about 1.5
-  hours), so \texttt{-shsamples 4096} remains a manual option. A denoiser or path guiding is a
-  possible later improvement, at low priority.
+  hours), so \texttt{-shsamples 4096} remains a manual option. Path guiding and denoising
+  (\texttt{sh-baker} Phases 10 and 11) attack this noise in 4.6.
 \item \textbf{Known gaps.} Found while building the stage; none blocks B5.
   \begin{itemize}
   \item \emph{Shadow rule.} The bake shadows every light, point lights and \texttt{\_shadows 0}
@@ -1152,6 +1152,76 @@ nor emit, and outdoor light comes from \texttt{light\_sun}.
 \item Moving emissive quads come later.
 \item Exit criterion: the benchmark's neon sign lights the wall at runtime, agreeing with the editor
   preview within 3.4's tolerance, and the indirect bake does not count its direct light again.
+\end{itemize}
+
+\subsection{4.6 Follow-up: less noise per sample}
+\texttt{sh-baker}'s \texttt{GEMINI.md} adds two phases against bake noise: Phase 10, reusable path
+guiding, and Phase 11, OIDN denoising of indirect SH lightmaps. Both are written for
+\texttt{sh-baker}'s own glTF and xatlas pipeline (charts, an atlas, EXR output). Under
+\texttt{-shbake}, q3map2 owns the mapping, so each phase splits into a library part in
+\texttt{sh-baker} (B7, B9) and a q3map2 part (B8, B10). The side file's L0 error (119\%, 22\% and
+7\% for the three presets, 4.3) is the noise that matters; the final preset's stock lightmap is
+already at the 8-bit floor. Both passes are opt-in. Without them, the output is byte-identical to
+today's.
+\begin{itemize}
+\item \textbf{Guiding in \texttt{sh-baker}} (B7). The point bake gets the guide as optional input,
+  keyed by caller-defined entries instead of lightmap UVs:
+  \begin{itemize}
+  \item a \texttt{PathGuide} type with no file format: 16 equal-solid-angle bins per entry, a frame,
+    and a chart id for validation;
+  \item a point-to-entry map, where $-1$ means unguided;
+  \item \texttt{BakeConfig::seed}, so training and production draw independent streams. Today the
+    stream is fixed at $12345+i$ (\texttt{baker.cpp:186}).
+  \end{itemize}
+  The sensor ray mixes the guide with the uniform sampler and uses per-ray mixture densities,
+  sky escapes included. Reuse at the first diffuse hit needs the hit's identity: \texttt{Occlusion}
+  carries the geometry, primitive and barycentrics, and \texttt{Q3Map2Surface} gains optional guide
+  UVs and a chart id. Training is a library call, \texttt{TrainPathGuide}. Phase 10's
+  \texttt{sh\_guide\_main} and atlas file are the CLI's own layer on top. One PR per step, reviewed
+  as before.
+\item \textbf{\texttt{-shguide} in q3map2} (B8).
+  \begin{itemize}
+  \item Entries are luxels: the $N^2$ super-luxels of one luxel pool into one entry, and a raw
+    lightmap is a chart. A super-luxel block never straddles two raw lightmaps, so Phase 10's
+    mixed-chart blocks do not arise.
+  \item Grid and vertex points stay unguided.
+  \item Draw surfaces pass their raw-lightmap super-luxel coordinates as guide UVs. Hits on surfaces
+    without a lightmap fall back to cosine sampling.
+  \item The guide is trained in-process before the bakes. One guide serves both bakes, because their
+    sensor rays and bounces are the same and only the full bake's NEE at the point differs.
+  \item An optional cache, \texttt{maps/<name>/<name>.shguide}, is fingerprinted by the draw
+    surfaces and the raw lightmap layout. It is never packed into the pk3.
+  \item Exit: the preset table of 4.3 remeasured with guiding on, plus the time to train, on the
+    benchmark and on a hard indoor map; the stock check passes.
+  \end{itemize}
+\item \textbf{Denoising in \texttt{sh-baker}} (B9). OIDN's \texttt{RTLightmap} on the CPU, as an
+  optional CMake dependency (Apache-2.0, compatible with the GPLv3 that \texttt{SH\_BAKER=1} already
+  implies).
+  \begin{itemize}
+  \item An opaque \texttt{SHDenoiser} owns the device and the scratch buffers, so the OIDN headers
+    stay out of the public ones, as with Embree.
+  \item \texttt{DenoiseSHCrop} takes one caller-supplied crop with a validity mask. It pads the crop
+    from the chart's own values and filters L0 in HDR mode. It filters L1 and L2 as ratios to L0 in
+    directional mode, then multiplies them back, and a black crop stays black. It writes back valid
+    texels only.
+  \item Variants: irradiance alone, and a query for whether the library was built with OIDN.
+  \item Errors come back as values, because q3map2 builds without exceptions.
+  \end{itemize}
+\item \textbf{\texttt{-shdenoise} in q3map2} (B10).
+  \begin{itemize}
+  \item Each raw lightmap is a crop. The pass runs after the super-sample downsample and before the
+    pages are assembled, in \texttt{StoreSurfaceLightmaps}, on the indirect bake's luxels.
+  \item Raw lightmaps are small, often $16\times16$ or less, so per-crop overhead and quality are
+    measured first. Filtering at super-luxel resolution in \texttt{ShBakeWorld} is the fallback.
+  \item Grid and vertex points are not crops and stay raw.
+  \item Denoising the full bake's irradiance, the stock lightmap and B6's HDR files with it, is a
+    separate opt-in judged by 0.3 at the draft preset.
+  \item q3map2 refuses \texttt{-shdenoise} when the library lacks OIDN.
+  \item Exit: Phase 11.4's measurements on q3map2's output, against the 4096-sample references of
+    4.3, with guiding off and on: signed L1/L2 relit under several normals, dark rooms, doorway
+    edges and neighbouring raw lightmaps, and peak memory against the 32\,GB budget. The stock
+    check passes.
+  \end{itemize}
 \end{itemize}
 
 \section{Units and colour space (cross-cutting)}\label{sec:units}
@@ -1347,6 +1417,8 @@ Item & Depends on & Note \\
   models. \\
 4.5 LTC area lights & 4.4, 2.2 step 6 & Runtime direct light from attached lights, with the
   editor's model and tables. \\
+4.6 Guiding (B7, B8) & 4.3 & Opt-in; \texttt{sh-baker} PRs first, then \texttt{-shguide}. \\
+4.6 Denoising (B9, B10) & 4.3 & Opt-in; independent of guiding, measured with it off and on. \\
 4.x Editor SH preview & 4.4 & Optional. \\
 \bottomrule
 \end{tabular}
