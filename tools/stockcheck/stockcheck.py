@@ -29,7 +29,7 @@ RUN_TIMEOUT = 120
 COMPILE_STAGES = [
     ("bsp", ["-meta", "-keeplights"]),
     ("vis", ["-vis", "-saveprt"]),
-    ("light", ["-light", "-patchshadows"]),
+    ("light", ["-light", "-shbake"]),  # both bakes; needs a q3map2 built with SH_BAKER=1
 ]
 COMPILE_FAILURES = [re.compile(r"leaked", re.I), re.compile(r"Unknown q3map_\* directive")]
 # missing images are failures that no allowlist entry can excuse
@@ -143,10 +143,12 @@ def compile_map(args, mod_name, tmp, out):
     for ext in (".bsp", ".prt", ".srf", ".lin"):
         if os.path.isfile(os.path.join(maps, args.map + ext)):
             os.remove(os.path.join(maps, args.map + ext))
+    # and a stale side file or -shdumpl0 dump would hide a light stage that wrote none
     lm_dir = os.path.join(maps, args.map)
+    stale_dump = re.compile(re.escape(args.map) + r"_l0_\d+\.hdr")
     if os.path.isdir(lm_dir):
         for name in os.listdir(lm_dir):
-            if name.startswith("lm_"):
+            if name.startswith("lm_") or name == args.map + ".shsf" or stale_dump.fullmatch(name):
                 os.remove(os.path.join(lm_dir, name))
     map_path = os.path.join(mod, "maps", args.map + ".map")
     common = ["-game", "quake3", "-fs_basepath", root, "-fs_homepath", os.path.join(root, "home"), "-fs_game", mod_name]
@@ -160,9 +162,15 @@ def compile_map(args, mod_name, tmp, out):
         reasons = []
         if result.returncode != 0:
             reasons.append("q3map2 %s exited with %d" % (stage, result.returncode))
+            lines = log.splitlines()
+            # Error() prints its message on the line after this banner (common/inout.cpp)
+            reasons += ["%s: %s" % (stage, lines[i + 1].strip()) for i, line in enumerate(lines[:-1])
+                        if line.strip() == "************ ERROR ************"]
         reasons += ["%s: %s" % (stage, line.strip()) for line in bad]
         if reasons:
             return False, reasons, mod
+    if not os.path.isfile(os.path.join(lm_dir, args.map + ".shsf")):
+        return False, ["light: no side file at maps/%s/%s.shsf" % (args.map, args.map)], mod
     return True, [], mod
 
 
@@ -173,6 +181,7 @@ def pack(mod, mod_name, map_name, pk3):
         if os.path.isfile(os.path.join(mod, rel)):
             entries.append(rel)
     add("maps/%s.bsp" % map_name)
+    add("maps/%s/%s.shsf" % (map_name, map_name))  # the SH side file for renderer_sh; stock ioquake3 never opens it
     lm_dir = os.path.join(mod, "maps", map_name)
     if os.path.isdir(lm_dir):
         for name in sorted(os.listdir(lm_dir)):

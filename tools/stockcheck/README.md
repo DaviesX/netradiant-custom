@@ -14,17 +14,31 @@ directory name is the `fs_game`) and the map name. It exits 0 only if every row 
 | Option | Default |
 |---|---|
 | `--engine` | `/home/davis/projects/ioq3-custom/ioq3/build/Release/ioquake3`, the fork's build; its renderer libraries sit beside it |
-| `--q3map2` | `install/q3map2` in this repository |
+| `--q3map2` | `install/q3map2` in this repository, built with `SH_BAKER=1` (below) |
 | `--q3base` | `/home/davis/q3game/q3data`, which holds `baseq3/pak0.pk3` to `pak8.pk3` |
 | `--out` | `stockcheck-out/` in this repository (git-ignored) |
 
 A missing engine, q3map2, pak, `.map`, `.cameras` file or allowlist, or a duplicate view name, stops the check before
-anything is compiled. Stale compile outputs in the mod (`maps/<map>.bsp`, `maps/<map>/lm_*`, ...) are deleted from the
-compile copy, never packed.
+anything is compiled. Stale compile outputs in the mod (`maps/<map>.bsp`, `maps/<map>/lm_*`, the side file
+`maps/<map>/<map>.shsf`, `-shdumpl0` dumps `maps/<map>/<map>_l0_*.hdr`, ...) are deleted from the compile copy, never
+packed.
 It needs Python 3 with Pillow.
 
+The light stage runs `-shbake`, so q3map2 must be built with sh-baker. Build the submodule's library in Release, then
+q3map2 with `SH_BAKER=1`, which copies `libsh_baker.so` into `install/` beside it:
+
+```
+git submodule update --init tools/sh-baker
+cmake -S tools/sh-baker -B tools/sh-baker/build -DCMAKE_BUILD_TYPE=Release
+cmake --build tools/sh-baker/build --target sh_baker -j$(nproc)
+make binaries-q3map2 SH_BAKER=1 -j$(nproc)
+```
+
+A q3map2 built without it stops the light stage with `-shbake: this q3map2 was built without SH_BAKER=1; rebuild it
+...`, and the compile row fails showing that line.
+
 **Don't touch the mouse or keyboard during a run.** The engine opens two 1280×720 windows on the desktop, one after
-the other, and takes screenshots from them. A run takes about 20 seconds.
+the other, and takes screenshots from them. A run takes about 25 seconds.
 
 ## What it does
 
@@ -32,18 +46,23 @@ the other, and takes screenshots from them. A run takes about 20 seconds.
    q3map2 there with a fresh homepath, so it never reads `~/.q3a`:
    - `-meta -keeplights`, which keeps every light entity in the BSP for `renderer_sh`;
    - `-vis -saveprt`;
-   - `-light -patchshadows`.
+   - `-light -shbake`, which runs both sh-baker bakes from the physical lights: the full bake writes the lightmap pages,
+     the light grid and the vertex colours for stock ioquake3, and the indirect bake writes the side file
+     `maps/<map>/<map>.shsf` for `renderer_sh`. It runs at the defaults, 128 samples per point and `-super 1`, the
+     "Town (draft)" build's light stage; the pre-release and final builds' extra samples only lower noise, which the
+     check doesn't judge.
 
-   A non-zero exit, `leaked` or `Unknown q3map_* directive` fails the row, and the offending lines are shown.
-   The `-light` lightmap is a placeholder: q3map2 reads none of the physical light keys (`intensity`, `cone`, ...).
-   sh-baker will write the real lightmap (task B5), so lighting is never judged here.
+   A non-zero exit, `leaked` or `Unknown q3map_* directive` fails the row, and the offending lines are shown. So does a
+   light stage that leaves no side file. Lighting is never judged here; task A9 judges the lightmap against the editor
+   preview.
 2. **Pack.** `<mod>.pk3` gets only:
    - `maps/<map>.bsp` and any external lightmaps (`maps/<map>/lm_*`);
+   - the side file `maps/<map>/<map>.shsf`. Stock ioquake3 never opens it;
    - `levelshots/<map>.jpg` or `.tga`, the loading-screen image. Without one the engine reports a missing image;
    - `scripts/*.shader` and `scripts/shaderlist.txt`;
    - images (`.tga`, `.jpg`, `.png`) under `textures/`.
 
-   Nothing else goes in: no `.map`, `.prt`, `.srf`, `*.import` or READMEs.
+   Nothing else goes in: no `.map`, `.prt`, `.srf`, `*.import`, `.hdr` dumps or READMEs.
 3. **Run**, once per renderer, in another fresh basepath holding only the stock paks and the pk3, so no loose file in
    the source mod can hide a missing one. The generated `stockcheck.cfg` loads the map with `devmap`, then for each view
    in `maps/<map>.cameras` runs `setviewpos`, waits, prints `viewpos` and takes a screenshot. It quits after a final wait.

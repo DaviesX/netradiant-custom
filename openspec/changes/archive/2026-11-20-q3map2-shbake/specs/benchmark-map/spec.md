@@ -3,7 +3,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Benchmark compile flags
-The map SHALL compile with the bundled q3map2 using `-meta -keeplights`, then `-vis -saveprt`, then `-light -shbake`, with no leak and no `Unknown q3map_* directive` warning. The lightmap is baked by sh-baker from the editor's lights. A9 judges its fidelity to the preview.
+The map SHALL compile with the bundled q3map2 using `-meta -keeplights`, then `-vis -saveprt`, then `-light -shbake`, with no leak and no `Unknown q3map_* directive` warning. sh-baker bakes the lightmap (the full bake) and the side file (the indirect bake) from the editor's lights. A9 judges the lightmap's fidelity to the preview.
 
 #### Scenario: Compile
 - **WHEN** the stock check compiles `bench.map`

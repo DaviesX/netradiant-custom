@@ -92,11 +92,13 @@ The stock check compiles with the bundled q3map2:
 
 1. `-meta -keeplights`. `-keeplights` keeps every light entity in the BSP for `renderer_sh`.
 2. `-vis -saveprt`.
-3. `-light -patchshadows`. Patches cast, as in the editor.
+3. `-light -shbake`, which needs q3map2 built with `SH_BAKER=1` (`tools/stockcheck/README.md` gives the steps).
 
-The `-light` lightmap is a placeholder. q3map2 treats every classname starting with `light` as its own light and reads
-none of the physical keys (`intensity`, `cone`, `cone_inner`), so the stock lighting looks nothing like the editor
-preview. sh-baker writes the real lightmap from the same lights (task B5), and A9 judges how faithful it is.
+`-shbake` runs sh-baker from the map's physical lights. The full bake writes the lightmap, the light grid and the
+vertex colours for stock ioquake3, and the indirect bake writes `maps/bench/bench.shsf` for `renderer_sh`. A9 judges
+how faithful the lightmap is to the editor preview. The stock check bakes at the defaults (128 samples per point); the
+overlay's Town builds add pre-release and final presets. The gamepack README's "The SH bake"
+(`setup/data/gamepacks/pbr/README.md`) has the details.
 
 ## Vegetation
 
@@ -115,11 +117,10 @@ the fog. They are placeholder art for the town's vegetation (task A10), written 
 - **Collision.** `q3map_clipModel` on `bark` autoclips the trunks, so they stop the player. It clips even a `nonsolid`
   shader, so only `bark` has it. Leaves and grass are `surfaceparm nonsolid`.
 - **Shadows.** In the editor preview, leaves cast through their alpha and grass casts nothing, which the `garden`
-  captures show. The shaders declare this the same way to q3map2 (`alphashadow` on leaves, none on grass), but q3map2
-  reads none of the physical light keys, so its placeholder lightmap doesn't demonstrate it. sh-baker follows the
-  editor's caster rule, so B5 must apply the alpha test in its caster. `renderer_sh` builds its casters from
-  collision-brush hulls today, so the canopy shadows (and the fence's) reach the engine only once C5 casts from
-  alpha-tested draw surfaces.
+  captures show. The shaders declare this the same way to q3map2 (`alphashadow` on leaves, none on grass). The
+  `-shbake` lightmap shows it too: sh-baker's shadow rays pass through the leaves' alpha (B5, with B2b), and grass
+  casts nothing. `renderer_sh` builds its casters from collision-brush hulls today, so the canopy shadows (and the
+  fence's) reach the engine only once C5 casts from alpha-tested draw surfaces.
 - **Mesh conventions.** Both loaders read OBJ through assimp, rotate Y-up to Z-up and flip the winding. So the
   generator writes Y-up geometry with counter-clockwise front faces, explicit normals (bent outward from the canopy or
   clump centre), and `usemtl` set to the full shader name.

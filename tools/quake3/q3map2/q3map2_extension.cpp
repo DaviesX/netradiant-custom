@@ -82,12 +82,14 @@ using q3map2_extension_internal::FloatToHalf;
 using q3map2_extension_internal::HalfToFloat;
 
 constexpr char c_magic[4] = { 'S', 'H', 'S', 'F' };
-constexpr uint32_t c_version = 1;
+constexpr uint32_t c_version = 2;
 constexpr uint64_t c_headerBytes = 24;
 constexpr uint64_t c_pageHeaderBytes = 8;
 constexpr int c_valuesPerLuxel = 27;
 constexpr uint64_t c_bytesPerLuxel = ( c_valuesPerLuxel + 1 ) * 2;
 constexpr uint64_t c_maxPageSide = std::numeric_limits<int32_t>::max();
+constexpr uint64_t c_gridHeaderBytes = 36;
+constexpr uint64_t c_bytesPerProbe = c_valuesPerLuxel * 4 + 1;
 
 void SetError( std::string* error, const std::string& message ){
 	if ( error != nullptr ) {
@@ -209,6 +211,85 @@ std::string HullMeshProblem( const SHHullMesh& mesh ){
 	return {};
 }
 
+std::string VectorText( const Vector3& v ){
+	return "(" + Num( v.x() ) + ", " + Num( v.y() ) + ", " + Num( v.z() ) + ")";
+}
+
+bool VectorFinite( const Vector3& v ){
+	return std::isfinite( v.x() ) && std::isfinite( v.y() ) && std::isfinite( v.z() );
+}
+
+std::string DimensionsText( const uint32_t dims[3] ){
+	return Str( dims[0] ) + " x " + Str( dims[1] ) + " x " + Str( dims[2] );
+}
+
+// Checks one probe's values, `coeffs` its 27; empty when they are right. The
+// message is the part after "probe i".
+std::string ProbeValueProblem( const float* coeffs, unsigned valid ){
+	if ( valid > 1 ) {
+		return ": valid flag " + Str( valid ) + " is neither 0 nor 1";
+	}
+	for ( int i = 0; i < c_valuesPerLuxel; ++i ) {
+		const std::string where = " coefficient " + Str( i / 3 ) + " channel " + Str( i % 3 );
+		if ( !std::isfinite( coeffs[i] ) ) {
+			return where + ": non-finite value " + Num( coeffs[i] );
+		}
+		if ( valid == 0 && coeffs[i] != 0.0f ) {
+			return where + ": " + Num( coeffs[i] ) + " in an invalid probe (valid flag 0), expected 0";
+		}
+		if ( valid == 1 && i < 3 && coeffs[i] < 0.0f ) {
+			return where + ": negative L0 component " + Num( coeffs[i] );
+		}
+	}
+	return {};
+}
+
+std::string GridProblem( const SHGrid& grid ){
+	if ( !VectorFinite( grid.origin ) ) {
+		return "grid.origin: non-finite value " + VectorText( grid.origin );
+	}
+	if ( !VectorFinite( grid.spacing ) ) {
+		return "grid.spacing: non-finite value " + VectorText( grid.spacing );
+	}
+	const uint32_t* dims = grid.dimensions;
+	const int zeros = ( dims[0] == 0 ) + ( dims[1] == 0 ) + ( dims[2] == 0 );
+	if ( zeros != 0 && zeros != 3 ) {
+		return "grid.dimensions: " + DimensionsText( dims ) + " has some but not all components 0";
+	}
+	uint64_t probes = 0;
+	if ( zeros == 0 ) {
+		// Each factor is below 2^32, so x * y fits 64 bits; compare before
+		// multiplying by z.
+		const uint64_t xy = uint64_t( dims[0] ) * dims[1];
+		if ( xy > std::numeric_limits<uint32_t>::max() / dims[2] ) {
+			return "grid: probe count " + DimensionsText( dims ) + " does not fit in a uint32";
+		}
+		probes = xy * dims[2];
+		for ( int i = 0; i < 3; ++i ) {
+			if ( !( grid.spacing[i] > 0.0f ) ) {
+				return "grid.spacing: " + VectorText( grid.spacing ) + " has a component not above 0";
+			}
+		}
+	}
+	if ( grid.coeffs.size() != probes * c_valuesPerLuxel ) {
+		std::string have = Str( grid.coeffs.size() ) + " values";
+		if ( grid.coeffs.size() % c_valuesPerLuxel == 0 ) {
+			have += " (" + Str( grid.coeffs.size() / c_valuesPerLuxel ) + " probes)";
+		}
+		return "grid.coeffs: " + have + ", expected " + Str( probes * c_valuesPerLuxel ) + " (" + Str( probes ) + " probes of 27, " +
+		       DimensionsText( dims ) + ")";
+	}
+	if ( grid.valid.size() != probes ) {
+		return "grid.valid: " + Str( grid.valid.size() ) + " flags, expected " + Str( probes ) + " (" + DimensionsText( dims ) + ")";
+	}
+	for ( size_t i = 0; i < probes; ++i ) {
+		if ( std::string problem = ProbeValueProblem( &grid.coeffs[i * c_valuesPerLuxel], grid.valid[i] ); !problem.empty() ) {
+			return "grid probe " + Str( i ) + problem;
+		}
+	}
+	return {};
+}
+
 std::string ExtensionProblem( const SHQ3Map2Extension& ext ){
 	if ( std::string problem = CountProblem( ext.pages.size(), "pages" ); !problem.empty() ) {
 		return problem;
@@ -221,7 +302,10 @@ std::string ExtensionProblem( const SHQ3Map2Extension& ext ){
 			return problem;
 		}
 	}
-	return HullMeshProblem( ext.hull_mesh );
+	if ( std::string problem = HullMeshProblem( ext.hull_mesh ); !problem.empty() ) {
+		return problem;
+	}
+	return GridProblem( ext.grid );
 }
 
 // --- Serialization --------------------------------------------------------
@@ -244,6 +328,7 @@ std::vector<uint8_t> Serialize( const SHQ3Map2Extension& ext ){
 		total += c_pageHeaderBytes + c_bytesPerLuxel * page.visibility.size();
 	}
 	total += 8 * mesh.hulls.size() + 12 * mesh.positions.size() + 4 * mesh.indices.size();
+	total += c_gridHeaderBytes + c_bytesPerProbe * ext.grid.valid.size();
 
 	std::vector<uint8_t> out;
 	out.reserve( total );
@@ -280,6 +365,19 @@ std::vector<uint8_t> Serialize( const SHQ3Map2Extension& ext ){
 	for ( uint32_t index : mesh.indices ) {
 		PutU32( index, out );
 	}
+	const SHGrid& grid = ext.grid;
+	for ( const Vector3* v : { &grid.origin, &grid.spacing } ) {
+		for ( int i = 0; i < 3; ++i ) {
+			PutU32( std::bit_cast<uint32_t>( ( *v )[i] ), out );
+		}
+	}
+	for ( uint32_t dim : grid.dimensions ) {
+		PutU32( dim, out );
+	}
+	for ( float value : grid.coeffs ) {
+		PutU32( std::bit_cast<uint32_t>( value ), out );
+	}
+	out.insert( out.end(), grid.valid.begin(), grid.valid.end() );
 	return out;
 }
 
@@ -427,7 +525,7 @@ std::optional<SHQ3Map2Extension> LoadSHQ3Map2Extension( const char* path, std::s
 	in.seek( 4 );
 	const uint32_t version = in.u32();
 	if ( version != c_version ) {
-		return fail( "unknown version " + Str( version ) + " (only version 1 is supported)" );
+		return fail( "unknown version " + Str( version ) + " (only version 2 is supported)" );
 	}
 	const uint64_t page_count = in.u32();
 	const uint64_t hull_count = in.u32();
@@ -435,8 +533,10 @@ std::optional<SHQ3Map2Extension> LoadSHQ3Map2Extension( const char* path, std::s
 	const uint64_t index_count = in.u32();
 
 	// Sizes first, without allocating: every count is below 2^32, so none of
-	// these sums can overflow 64 bits.
-	const uint64_t tail = 8 * hull_count + 12 * vertex_count + 4 * index_count;
+	// these sums can overflow 64 bits. `tail` is the hulls and the smallest
+	// grid; the pages must end by `pages_end`.
+	const uint64_t hull_bytes = 8 * hull_count + 12 * vertex_count + 4 * index_count;
+	const uint64_t tail = hull_bytes + c_gridHeaderBytes;
 	const uint64_t minimum = c_headerBytes + c_pageHeaderBytes * page_count + tail;
 	if ( minimum > size ) {
 		return shorter( minimum );
@@ -462,8 +562,34 @@ std::optional<SHQ3Map2Extension> LoadSHQ3Map2Extension( const char* path, std::s
 		}
 		pos += luxels * c_bytesPerLuxel;
 	}
-	if ( pos != pages_end ) {
-		return fail( "file is longer than expected: " + Str( pos + tail ) + " bytes implied, has " + Str( size ) );
+	// The grid header is in the file, since pos <= pages_end.
+	const uint64_t grid_pos = pos + hull_bytes;
+	in.seek( grid_pos + 24 );
+	uint32_t dims[3];
+	for ( uint32_t& dim : dims ) {
+		dim = in.u32();
+	}
+	const int zeros = ( dims[0] == 0 ) + ( dims[1] == 0 ) + ( dims[2] == 0 );
+	if ( zeros != 0 && zeros != 3 ) {
+		return fail( "grid dimensions " + DimensionsText( dims ) + " have some but not all components 0" );
+	}
+	uint64_t probe_count = 0;
+	if ( zeros == 0 ) {
+		// Bound each factor by what the rest of the file can hold before
+		// multiplying, so nothing overflows.
+		const uint64_t room = ( size - grid_pos - c_gridHeaderBytes ) / c_bytesPerProbe;
+		const uint64_t xy = uint64_t( dims[0] ) * dims[1];
+		if ( xy > room || dims[2] > room / xy ) {
+			return fail( "file is shorter than expected: grid (" + DimensionsText( dims ) + ") does not fit in " + Str( size ) + " bytes" );
+		}
+		probe_count = xy * dims[2];
+		if ( probe_count > std::numeric_limits<uint32_t>::max() ) {
+			return fail( "grid probe count " + DimensionsText( dims ) + " does not fit in a uint32" );
+		}
+	}
+	const uint64_t implied = grid_pos + c_gridHeaderBytes + c_bytesPerProbe * probe_count;
+	if ( implied != size ) {
+		return fail( "file is longer than expected: " + Str( implied ) + " bytes implied, has " + Str( size ) );
 	}
 
 	// The sizes match the file; decode, applying the writer's value rules.
@@ -539,6 +665,36 @@ std::optional<SHQ3Map2Extension> LoadSHQ3Map2Extension( const char* path, std::s
 			return fail( "hull index " + Str( index ) + " at " + Str( i ) + " not below vertex count " + Str( vertex_count ) );
 		}
 		mesh.indices[i] = index;
+	}
+
+	SHGrid& grid = ext.grid;
+	for ( Vector3* v : { &grid.origin, &grid.spacing } ) {
+		for ( int i = 0; i < 3; ++i ) {
+			( *v )[i] = in.f32();
+		}
+	}
+	if ( !VectorFinite( grid.origin ) ) {
+		return fail( "non-finite grid origin " + VectorText( grid.origin ) );
+	}
+	if ( !VectorFinite( grid.spacing ) ) {
+		return fail( "non-finite grid spacing " + VectorText( grid.spacing ) );
+	}
+	if ( probe_count != 0 && !( grid.spacing.x() > 0.0f && grid.spacing.y() > 0.0f && grid.spacing.z() > 0.0f ) ) {
+		return fail( "grid spacing " + VectorText( grid.spacing ) + " has a component not above 0" );
+	}
+	for ( int i = 0; i < 3; ++i ) {
+		grid.dimensions[i] = dims[i];
+	}
+	in.seek( grid_pos + c_gridHeaderBytes );
+	grid.coeffs.resize( probe_count * c_valuesPerLuxel );
+	for ( float& value : grid.coeffs ) {
+		value = in.f32();
+	}
+	grid.valid.assign( bytes.end() - probe_count, bytes.end() );
+	for ( uint64_t i = 0; i < probe_count; ++i ) {
+		if ( std::string problem = ProbeValueProblem( &grid.coeffs[i * c_valuesPerLuxel], grid.valid[i] ); !problem.empty() ) {
+			return fail( "grid probe " + Str( i ) + problem );
+		}
 	}
 	return ext;
 }

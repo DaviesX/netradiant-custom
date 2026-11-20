@@ -164,6 +164,33 @@ SHHullMesh TriangleMesh( std::vector<uint32_t> indices, std::vector<SHHullRange>
 	return mesh;
 }
 
+float& ProbeCoeff( SHGrid& grid, size_t probe, int k, int c ){
+	return grid.coeffs[( probe * 9 + k ) * 3 + c];
+}
+
+// A valid grid of nx * ny * nz probes, all valid, whose values vary by probe,
+// coefficient and channel.
+SHGrid MakeGrid( uint32_t nx, uint32_t ny, uint32_t nz ){
+	SHGrid grid;
+	grid.origin = Vector3( -128, 64, -8 );
+	grid.spacing = Vector3( 64, 64, 128 );
+	grid.dimensions[0] = nx;
+	grid.dimensions[1] = ny;
+	grid.dimensions[2] = nz;
+	const size_t probes = size_t( nx ) * ny * nz;
+	grid.coeffs.resize( probes * 27 );
+	grid.valid.assign( probes, 1 );
+	for ( size_t i = 0; i < probes; ++i ) {
+		for ( int k = 0; k < 9; ++k ) {
+			for ( int c = 0; c < 3; ++c ) {
+				const float v = 0.3f + 1.7f * i + 0.013f * k + 0.0071f * c;
+				ProbeCoeff( grid, i, k, c ) = ( k == 0 || ( i + k + c ) % 2 == 0 ) ? v : -v;
+			}
+		}
+	}
+	return grid;
+}
+
 // The extension of the "Golden bytes" scenario.
 SHQ3Map2Extension GoldenExtension(){
 	SHQ3Map2Extension ext;
@@ -179,6 +206,19 @@ SHQ3Map2Extension GoldenExtension(){
 	page.visibility = { 0.25f };
 	ext.pages.push_back( page );
 	ext.hull_mesh = TriangleMesh( { 0, 1, 2 }, { { 0, 3 } } );
+	SHGrid& grid = ext.grid;
+	grid.origin = Vector3( -64, 0, 8 );
+	grid.spacing = Vector3( 64, 64, 128 );
+	grid.dimensions[0] = 2;
+	grid.dimensions[1] = 1;
+	grid.dimensions[2] = 1;
+	grid.coeffs.assign( 2 * 27, 0.0f );
+	for ( int k = 0; k < 9; ++k ) {
+		ProbeCoeff( grid, 0, k, 0 ) = float( k );
+		ProbeCoeff( grid, 0, k, 1 ) = k + 0.25f;
+		ProbeCoeff( grid, 0, k, 2 ) = k + 0.5f;
+	}
+	grid.valid = { 1, 0 };
 	return ext;
 }
 
@@ -188,6 +228,10 @@ constexpr size_t c_goldenCoeffs = 32; // coefficient k channel c: +6k + 2c
 constexpr size_t c_goldenVisibility = 86;
 constexpr size_t c_goldenVertices = 96;
 constexpr size_t c_goldenIndices = 132;
+constexpr size_t c_goldenGrid = 144;          // origin; spacing at +12, dimensions at +24
+constexpr size_t c_goldenProbeCoeffs = 180;   // probe i coefficient k channel c: +108i + 12k + 4c
+constexpr size_t c_goldenValid = 396;         // one byte per probe
+constexpr size_t c_goldenSize = 398;
 
 void CheckSameValues( const SHQ3Map2Extension& written, const SHQ3Map2Extension& read ){
 	CHECK( read.pages.size() == written.pages.size() );
@@ -218,6 +262,23 @@ void CheckSameValues( const SHQ3Map2Extension& written, const SHQ3Map2Extension&
 	CHECK( r.hulls.size() == w.hulls.size() );
 	for ( size_t h = 0; h < w.hulls.size() && h < r.hulls.size(); ++h ) {
 		CHECK( r.hulls[h].first_index == w.hulls[h].first_index && r.hulls[h].index_count == w.hulls[h].index_count );
+	}
+	// The grid is float32: exact, bit for bit.
+	const SHGrid& wg = written.grid;
+	const SHGrid& rg = read.grid;
+	for ( int i = 0; i < 3; ++i ) {
+		CHECK( Bits( rg.origin[i] ) == Bits( wg.origin[i] ) );
+		CHECK( Bits( rg.spacing[i] ) == Bits( wg.spacing[i] ) );
+		CHECK( rg.dimensions[i] == wg.dimensions[i] );
+	}
+	CHECK( rg.valid == wg.valid );
+	CHECK( rg.coeffs.size() == wg.coeffs.size() );
+	if ( rg.coeffs.size() == wg.coeffs.size() ) {
+		bool same = true;
+		for ( size_t i = 0; i < wg.coeffs.size(); ++i ) {
+			same = same && Bits( rg.coeffs[i] ) == Bits( wg.coeffs[i] );
+		}
+		CHECK_MSG( same, "grid values" );
 	}
 }
 
@@ -277,8 +338,8 @@ void TestHalfRoundingAndClamp(){
 void TestGoldenBytes(){
 	// Built by hand from the layout in q3map2_extension.h.
 	const std::vector<uint8_t> expected = {
-		// Header: magic, version 1, 1 page, 1 hull, 3 vertices, 3 indices.
-		'S', 'H', 'S', 'F', 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 3, 0, 0, 0, 3, 0, 0, 0,
+		// Header: magic, version 2, 1 page, 1 hull, 3 vertices, 3 indices.
+		'S', 'H', 'S', 'F', 2, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 3, 0, 0, 0, 3, 0, 0, 0,
 		// Page: width 1, height 1.
 		1, 0, 0, 0, 1, 0, 0, 0,
 		// Coefficient planes, (k, k + 0.5, -k) as binary16 R, G, B.
@@ -300,9 +361,32 @@ void TestGoldenBytes(){
 		0, 0, 0x80, 0x3F, 0, 0, 0, 0, 0, 0, 0, 0, //
 		0, 0, 0, 0, 0, 0, 0x80, 0x3F, 0, 0, 0, 0, //
 		// Indices 0, 1, 2.
-		0, 0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0 };
-	CHECK( expected.size() == 24u + 64u + 8u + 36u + 12u );
-	CHECK( expected.size() == 144u );
+		0, 0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0,
+		// Grid origin (-64, 0, 8): -64.0f is 0xC2800000, 8.0f is 0x41000000.
+		0, 0, 0x80, 0xC2, 0, 0, 0, 0, 0, 0, 0x00, 0x41, //
+		// Spacing (64, 64, 128): 64.0f is 0x42800000, 128.0f is 0x43000000.
+		0, 0, 0x80, 0x42, 0, 0, 0x80, 0x42, 0, 0, 0x00, 0x43, //
+		// Dimensions 2, 1, 1.
+		2, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0,
+		// Probe 0, (k, k + 0.25, k + 0.5) as float32 R, G, B.
+		0, 0, 0x00, 0x00, 0, 0, 0x80, 0x3E, 0, 0, 0x00, 0x3F, // 0: 0, 0.25, 0.5
+		0, 0, 0x80, 0x3F, 0, 0, 0xA0, 0x3F, 0, 0, 0xC0, 0x3F, // 1: 1, 1.25, 1.5
+		0, 0, 0x00, 0x40, 0, 0, 0x10, 0x40, 0, 0, 0x20, 0x40, // 2: 2, 2.25, 2.5
+		0, 0, 0x40, 0x40, 0, 0, 0x50, 0x40, 0, 0, 0x60, 0x40, // 3: 3, 3.25, 3.5
+		0, 0, 0x80, 0x40, 0, 0, 0x88, 0x40, 0, 0, 0x90, 0x40, // 4: 4, 4.25, 4.5
+		0, 0, 0xA0, 0x40, 0, 0, 0xA8, 0x40, 0, 0, 0xB0, 0x40, // 5: 5, 5.25, 5.5
+		0, 0, 0xC0, 0x40, 0, 0, 0xC8, 0x40, 0, 0, 0xD0, 0x40, // 6: 6, 6.25, 6.5
+		0, 0, 0xE0, 0x40, 0, 0, 0xE8, 0x40, 0, 0, 0xF0, 0x40, // 7: 7, 7.25, 7.5
+		0, 0, 0x00, 0x41, 0, 0, 0x04, 0x41, 0, 0, 0x08, 0x41, // 8: 8, 8.25, 8.5
+		// Probe 1, invalid: 27 zeros.
+		0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, //
+		0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, //
+		0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, //
+		// Valid flags: probe 0 valid, probe 1 invalid.
+		1, 0 };
+	CHECK( expected.size() == 24u + 64u + 8u + 36u + 12u + 36u + 216u + 2u );
+	CHECK( expected.size() == c_goldenSize );
+	CHECK( expected.size() == 398u );
 	const fs::path path = g_dir / "golden.shsf";
 	std::string error;
 	CHECK_MSG( SaveSHQ3Map2Extension( GoldenExtension(), P( path ).c_str(), &error ), error );
@@ -412,6 +496,106 @@ void TestWriterRefusals(){
 	}
 }
 
+SHQ3Map2Extension OneGrid( uint32_t nx, uint32_t ny, uint32_t nz ){
+	SHQ3Map2Extension ext;
+	ext.grid = MakeGrid( nx, ny, nz );
+	return ext;
+}
+
+void TestGridWriterRefusals(){
+	{ // The "Wrong probe count" scenario.
+		SHQ3Map2Extension ext = OneGrid( 2, 2, 2 );
+		ext.grid.coeffs.resize( 7 * 27 );
+		ext.grid.valid.resize( 7 );
+		CheckRefused( ext, "grid.coeffs: 189 values (7 probes), expected 216 (8 probes of 27, 2 x 2 x 2)" );
+	}
+	{
+		SHQ3Map2Extension ext = OneGrid( 2, 2, 2 );
+		ext.grid.valid.resize( 7 );
+		CheckRefused( ext, "grid.valid: 7 flags, expected 8 (2 x 2 x 2)" );
+	}
+	{ // Probes given for a grid with no probes.
+		SHQ3Map2Extension ext = OneGrid( 1, 1, 1 );
+		for ( uint32_t& dim : ext.grid.dimensions ) {
+			dim = 0;
+		}
+		CheckRefused( ext, "grid.coeffs: 27 values (1 probes), expected 0 (0 probes of 27, 0 x 0 x 0)" );
+	}
+	{
+		SHQ3Map2Extension ext = OneGrid( 2, 1, 1 );
+		ext.grid.dimensions[1] = 0;
+		CheckRefused( ext, "grid.dimensions: 2 x 0 x 1 has some but not all components 0" );
+	}
+	{
+		SHQ3Map2Extension ext;
+		ext.grid.dimensions[2] = 3;
+		CheckRefused( ext, "grid.dimensions: 0 x 0 x 3 has some but not all components 0" );
+	}
+	{ // The probe count must fit in a uint32; checked before the arrays.
+		SHQ3Map2Extension ext;
+		ext.grid.spacing = Vector3( 1, 1, 1 );
+		ext.grid.dimensions[0] = 65536;
+		ext.grid.dimensions[1] = 65536;
+		ext.grid.dimensions[2] = 1;
+		CheckRefused( ext, "grid: probe count 65536 x 65536 x 1 does not fit in a uint32" );
+		ext.grid.dimensions[0] = 0xFFFFFFFF;
+		ext.grid.dimensions[1] = 0xFFFFFFFF;
+		ext.grid.dimensions[2] = 0xFFFFFFFF;
+		CheckRefused( ext, "grid: probe count 4294967295 x 4294967295 x 4294967295 does not fit in a uint32" );
+	}
+	{
+		SHQ3Map2Extension ext = OneGrid( 2, 1, 1 );
+		ext.grid.spacing.y() = 0.0f;
+		CheckRefused( ext, "grid.spacing: (64, 0, 128) has a component not above 0" );
+		ext.grid.spacing.y() = -64.0f;
+		CheckRefused( ext, "grid.spacing: (64, -64, 128) has a component not above 0" );
+	}
+	{
+		SHQ3Map2Extension ext = OneGrid( 2, 1, 1 );
+		ext.grid.origin.z() = std::numeric_limits<float>::quiet_NaN();
+		CheckRefused( ext, "grid.origin: non-finite value (-128, 64, nan)" );
+	}
+	{
+		SHQ3Map2Extension ext = OneGrid( 2, 1, 1 );
+		ext.grid.spacing.x() = std::numeric_limits<float>::infinity();
+		CheckRefused( ext, "grid.spacing: non-finite value (inf, 64, 128)" );
+	}
+	{ // A non-finite origin is refused even with no probes.
+		SHQ3Map2Extension ext;
+		ext.grid.origin.x() = std::numeric_limits<float>::infinity();
+		CheckRefused( ext, "grid.origin: non-finite value (inf, 0, 0)" );
+	}
+	{
+		SHQ3Map2Extension ext = OneGrid( 2, 1, 1 );
+		ProbeCoeff( ext.grid, 1, 4, 2 ) = std::numeric_limits<float>::quiet_NaN();
+		CheckRefused( ext, "grid probe 1 coefficient 4 channel 2: non-finite value nan" );
+	}
+	{
+		SHQ3Map2Extension ext = OneGrid( 2, 1, 1 );
+		ProbeCoeff( ext.grid, 1, 0, 1 ) = -0.25f;
+		CheckRefused( ext, "grid probe 1 coefficient 0 channel 1: negative L0 component -0.25" );
+	}
+	{ // The "Invalid probe with data" scenario.
+		SHQ3Map2Extension ext = OneGrid( 2, 2, 1 );
+		ext.grid.valid[3] = 0;
+		for ( int i = 0; i < 27; ++i ) {
+			ext.grid.coeffs[3 * 27 + i] = 0.0f;
+		}
+		ProbeCoeff( ext.grid, 3, 0, 0 ) = 0.5f;
+		CheckRefused( ext, "grid probe 3 coefficient 0 channel 0: 0.5 in an invalid probe (valid flag 0), expected 0" );
+	}
+	{
+		SHQ3Map2Extension ext = OneGrid( 2, 2, 1 );
+		ext.grid.valid[3] = 2;
+		CheckRefused( ext, "grid probe 3: valid flag 2 is neither 0 nor 1" );
+	}
+	{ // An invalid probe's negative higher band is data too.
+		SHQ3Map2Extension ext = GoldenExtension();
+		ProbeCoeff( ext.grid, 1, 8, 2 ) = -1.0f;
+		CheckRefused( ext, "grid probe 1 coefficient 8 channel 2: -1 in an invalid probe (valid flag 0), expected 0" );
+	}
+}
+
 void TestMissingDirectory(){
 	const fs::path path = g_dir / "no_such_dir" / "town.shsf";
 	std::string error;
@@ -464,8 +648,10 @@ void TestRoundTripKeepsOrderAndSizes(){
 	ext.pages.push_back( MakePage( 1, 1, 7.0f ) );
 	ext.pages.push_back( MakePage( 3, 5, 1.25f ) );
 	ext.hull_mesh = TwoHullMesh();
+	ext.grid = MakeGrid( 3, 2, 2 );
 	std::optional<SHQ3Map2Extension> read = RoundTrip( ext, "town.shsf" );
-	CHECK( fs::file_size( g_dir / "town.shsf" ) == 24u + ( 8 + 56 * 8 ) + ( 8 + 56 * 1 ) + ( 8 + 56 * 15 ) + 8 * 2 + 12 * 5 + 4 * 9 );
+	CHECK( fs::file_size( g_dir / "town.shsf" ) ==
+	       24u + ( 8 + 56 * 8 ) + ( 8 + 56 * 1 ) + ( 8 + 56 * 15 ) + 8 * 2 + 12 * 5 + 4 * 9 + 36 + 109 * 12 );
 	if ( !read ) {
 		return;
 	}
@@ -479,19 +665,112 @@ void TestRoundTripKeepsOrderAndSizes(){
 }
 
 void TestEmptyPartsAllowed(){
-	SHQ3Map2Extension hulls_only;
+	SHQ3Map2Extension hulls_only;  // no pages, a non-empty hull mesh
 	hulls_only.hull_mesh = TwoHullMesh();
+	hulls_only.grid = MakeGrid( 1, 2, 1 );
 	if ( auto read = RoundTrip( hulls_only, "a.shsf" ) ) {
 		CheckSameValues( hulls_only, *read );
 	}
-	SHQ3Map2Extension pages_only = OnePage( 2, 3 );
+	SHQ3Map2Extension pages_only = OnePage( 2, 3 );  // pages, an empty hull mesh
+	pages_only.grid = MakeGrid( 2, 1, 1 );
 	if ( auto read = RoundTrip( pages_only, "b.shsf" ) ) {
 		CheckSameValues( pages_only, *read );
 	}
-	if ( auto read = RoundTrip( SHQ3Map2Extension(), "c.shsf" ) ) {
-		CHECK( read->pages.empty() && read->hull_mesh.positions.empty() && read->hull_mesh.hulls.empty() );
+	SHQ3Map2Extension no_probes = OnePage( 2, 3 );  // pages and hulls, no probes
+	no_probes.hull_mesh = TwoHullMesh();
+	if ( auto read = RoundTrip( no_probes, "c.shsf" ) ) {
+		CheckSameValues( no_probes, *read );
 	}
-	CHECK( fs::file_size( g_dir / "c.shsf" ) == 24u );
+	if ( auto read = RoundTrip( SHQ3Map2Extension(), "d.shsf" ) ) {
+		CHECK( read->pages.empty() && read->hull_mesh.positions.empty() && read->hull_mesh.hulls.empty() );
+		CHECK( read->grid.coeffs.empty() && read->grid.valid.empty() );
+		CHECK( read->grid.dimensions[0] == 0 && read->grid.dimensions[1] == 0 && read->grid.dimensions[2] == 0 );
+	}
+	CHECK( fs::file_size( g_dir / "d.shsf" ) == 60u );
+}
+
+// The "Probe order kept" scenario: probe i of a 2 x 3 x 2 grid has L0 red i.
+void TestGridRoundTripKeepsProbeOrder(){
+	SHQ3Map2Extension ext;
+	ext.grid = MakeGrid( 2, 3, 2 );
+	for ( size_t i = 0; i < 12; ++i ) {
+		ProbeCoeff( ext.grid, i, 0, 0 ) = float( i );
+	}
+	// Probe 7 invalid, with zero coefficients.
+	ext.grid.valid[7] = 0;
+	for ( int i = 0; i < 27; ++i ) {
+		ext.grid.coeffs[7 * 27 + i] = 0.0f;
+	}
+	std::optional<SHQ3Map2Extension> read = RoundTrip( ext, "grid.shsf" );
+	CHECK( fs::file_size( g_dir / "grid.shsf" ) == 24u + 36u + 109u * 12u );
+	if ( !read ) {
+		return;
+	}
+	CheckSameValues( ext, *read );
+	CHECK( read->grid.dimensions[0] == 2 && read->grid.dimensions[1] == 3 && read->grid.dimensions[2] == 2 );
+	if ( read->grid.coeffs.size() != 12 * 27 ) {
+		return;
+	}
+	for ( uint32_t z = 0; z < 2; ++z ) {
+		for ( uint32_t y = 0; y < 3; ++y ) {
+			for ( uint32_t x = 0; x < 2; ++x ) {
+				const size_t i = x + 2 * ( y + 3 * z );
+				CHECK( i % 2 == x && ( i / 2 ) % 3 == y && i / 6 == z );
+				const float expected = i == 7 ? 0.0f : float( i );
+				CHECK_MSG( ProbeCoeff( read->grid, i, 0, 0 ) == expected, "probe " + std::to_string( i ) );
+			}
+		}
+	}
+	CHECK( read->grid.valid[7] == 0 && read->grid.valid[6] == 1 );
+}
+
+// The "Probe coefficients exact" scenario: float32, unclamped and unrounded.
+void TestProbeCoefficientsExact(){
+	SHQ3Map2Extension ext = OneGrid( 1, 1, 1 );
+	const float big = 1e6f;
+	const float fine = 1.0f + std::ldexp( 1.0f, -20 );
+	ProbeCoeff( ext.grid, 0, 0, 0 ) = big;
+	ProbeCoeff( ext.grid, 0, 5, 1 ) = fine;
+	ProbeCoeff( ext.grid, 0, 6, 2 ) = -big;
+	ext.grid.origin = Vector3( -1e7f, 0.1f, 3.25f );
+	if ( auto read = RoundTrip( ext, "exact.shsf" ) ) {
+		CHECK( Bits( ProbeCoeff( read->grid, 0, 0, 0 ) ) == Bits( big ) );
+		CHECK( Bits( ProbeCoeff( read->grid, 0, 5, 1 ) ) == Bits( fine ) );
+		CHECK( Bits( ProbeCoeff( read->grid, 0, 6, 2 ) ) == Bits( -big ) );
+		CheckSameValues( ext, *read );
+	}
+}
+
+// A grid with no probes keeps the origin and spacing it was given.
+void TestZeroProbeGrid(){
+	SHQ3Map2Extension ext = GoldenExtension();
+	ext.grid = SHGrid();
+	ext.grid.origin = Vector3( 1, 2, 3 );
+	ext.grid.spacing = Vector3( -4, 0, 5 );  // not checked without probes
+	if ( auto read = RoundTrip( ext, "nogrid.shsf" ) ) {
+		CheckSameValues( ext, *read );
+	}
+	CHECK( fs::file_size( g_dir / "nogrid.shsf" ) == c_goldenSize - 2 * 109 );
+	// Dropping the golden file's two probes and setting its dimensions to 0
+	// gives the same bytes.
+	SHQ3Map2Extension zero = GoldenExtension();
+	zero.grid.dimensions[0] = 0;
+	zero.grid.dimensions[1] = 0;
+	zero.grid.dimensions[2] = 0;
+	zero.grid.coeffs.clear();
+	zero.grid.valid.clear();
+	const fs::path path = g_dir / "zero.shsf";
+	std::string error;
+	CHECK_MSG( SaveSHQ3Map2Extension( zero, P( path ).c_str(), &error ), error );
+	CHECK_MSG( SaveSHQ3Map2Extension( GoldenExtension(), P( g_dir / "golden.shsf" ).c_str(), &error ), error );
+	std::vector<uint8_t> golden = ReadBytes( g_dir / "golden.shsf" );
+	if ( golden.size() == c_goldenSize ) {
+		golden.resize( c_goldenProbeCoeffs );
+		for ( int i = 0; i < 3; ++i ) {
+			PutU32At( golden, c_goldenGrid + 24 + 4 * i, 0 );
+		}
+		CHECK( ReadBytes( path ) == golden );
+	}
 }
 
 void TestWindingKept(){
@@ -528,21 +807,41 @@ void TestReaderRejections(){
 	}
 	const SHQ3Map2Extension golden = GoldenExtension();
 	CheckRejected( golden, []( std::vector<uint8_t>& b ){ b[0] = 'X'; }, "bad magic" );
-	CheckRejected( golden, []( std::vector<uint8_t>& b ){ PutU32At( b, 4, 2 ); }, "unknown version 2" );
+	CheckRejected( golden, []( std::vector<uint8_t>& b ){ PutU32At( b, 4, 1 ); }, "unknown version 1" );
+	CheckRejected( golden, []( std::vector<uint8_t>& b ){ PutU32At( b, 4, 3 ); }, "unknown version 3" );
 	CheckRejected( golden, []( std::vector<uint8_t>& b ){ b.pop_back(); }, "shorter than expected" );
-	CheckRejected( golden, []( std::vector<uint8_t>& b ){ b.push_back( 0 ); }, "longer than expected: 144 bytes implied, has 145" );
+	CheckRejected( golden, []( std::vector<uint8_t>& b ){ b.push_back( 0 ); }, "longer than expected: 398 bytes implied, has 399" );
+	// Truncated inside the hulls or the grid header.
+	CheckRejected( golden, []( std::vector<uint8_t>& b ){ b.resize( c_goldenGrid + 20 ); }, "shorter than expected" );
+	CheckRejected( golden, []( std::vector<uint8_t>& b ){ b.resize( 100 ); }, "shorter than expected" );
 	CheckRejected( golden, []( std::vector<uint8_t>& b ){ PutU32At( b, c_goldenWidth, 0 ); }, "page 0 has size 0 x 1" );
 	CheckRejected( golden, []( std::vector<uint8_t>& b ){ PutU32At( b, c_goldenWidth + 4, 0 ); }, "page 0 has size 1 x 0" );
-	{ // Every count 0xFFFFFFFF in a 24-byte file.
+	{ // The "Huge counts in a small file" scenario: every count 0xFFFFFFFF in a 24-byte file.
 		std::vector<uint8_t> bytes( 24, 0xFF );
 		std::memcpy( bytes.data(), "SHSF", 4 );
-		PutU32At( bytes, 4, 1 );
-		CheckBytesRejected( bytes, "shorter than expected: needs at least 137438953464 bytes, has 24" );
+		PutU32At( bytes, 4, 2 );
+		// 24 + 36 + (8 + 8 + 12 + 4) * 0xFFFFFFFF.
+		CheckBytesRejected( bytes, "shorter than expected: needs at least 137438953500 bytes, has 24" );
 	}
-	{ // One huge page in a 32-byte file.
-		std::vector<uint8_t> bytes( 32, 0 );
+	{ // The "Huge grid in a small file" scenario: a 60-byte file, no pages or hulls.
+		std::vector<uint8_t> bytes( 60, 0 );
 		std::memcpy( bytes.data(), "SHSF", 4 );
-		PutU32At( bytes, 4, 1 );
+		PutU32At( bytes, 4, 2 );
+		for ( int i = 0; i < 3; ++i ) {
+			PutU32At( bytes, 24 + 12 + 4 * i, 1 );  // spacing
+			PutU32At( bytes, 24 + 24 + 4 * i, 0xFFFFFFFF );
+		}
+		CheckBytesRejected( bytes, "shorter than expected: grid (4294967295 x 4294967295 x 4294967295) does not fit in 60 bytes" );
+		PutU32At( bytes, 24 + 24, 1 );
+		PutU32At( bytes, 24 + 28, 1 );
+		CheckBytesRejected( bytes, "shorter than expected: grid (1 x 1 x 4294967295) does not fit in 60 bytes" );
+		PutU32At( bytes, 24 + 32, 1 );
+		CheckBytesRejected( bytes, "shorter than expected: grid (1 x 1 x 1) does not fit in 60 bytes" );
+	}
+	{ // One huge page in a 68-byte file.
+		std::vector<uint8_t> bytes( 68, 0 );
+		std::memcpy( bytes.data(), "SHSF", 4 );
+		PutU32At( bytes, 4, 2 );
 		PutU32At( bytes, 8, 1 );
 		PutU32At( bytes, 24, 0xFFFFFFFF );
 		PutU32At( bytes, 28, 0xFFFFFFFF );
@@ -550,7 +849,7 @@ void TestReaderRejections(){
 		// The largest sizes a page may have still fail the size walk.
 		PutU32At( bytes, 24, 0x7FFFFFFF );
 		PutU32At( bytes, 28, 0x7FFFFFFF );
-		CheckBytesRejected( bytes, "page 0 (2147483647 x 2147483647) does not fit in 32 bytes" );
+		CheckBytesRejected( bytes, "page 0 (2147483647 x 2147483647) does not fit in 68 bytes" );
 	}
 	CheckRejected( golden, []( std::vector<uint8_t>& b ){ PutU32At( b, c_goldenIndices + 8, 3 ); },
 	               "hull index 3 at 2 not below vertex count 3" );
@@ -560,7 +859,7 @@ void TestReaderRejections(){
 	CheckRejected( two_hulls, []( std::vector<uint8_t>& b ){ PutU32At( b, 24 + 8, 7 ); }, "hull 1 starts at index 7, expected 6" );
 	CheckRejected( two_hulls, []( std::vector<uint8_t>& b ){ PutU32At( b, 24 + 4, 0 ); }, "hull 0 has index count 0, not a positive multiple of 3" );
 	CheckRejected( two_hulls, []( std::vector<uint8_t>& b ){ PutU32At( b, 24 + 12, 2 ); }, "hull 1 has index count 2, not a positive multiple of 3" );
-	// Drop hull 1 from the header count and its range from the file.
+	// Drop hull 1 from the header count (at 12) and its range from the file.
 	CheckRejected( two_hulls, []( std::vector<uint8_t>& b ){
 		PutU32At( b, 12, 1 );
 		b.erase( b.begin() + 32, b.begin() + 40 );
@@ -578,6 +877,63 @@ void TestReaderRejections(){
 	               "negative L0 component -0.5 at page 0 luxel 0 coefficient 0 channel 1" );
 	CheckRejected( golden, []( std::vector<uint8_t>& b ){ PutU32At( b, c_goldenVertices + 12 + 4, 0x7FC00000 ); },
 	               "non-finite hull position (1, nan, 0) at vertex 1" );
+}
+
+void TestGridReaderRejections(){
+	const SHQ3Map2Extension golden = GoldenExtension();
+	const size_t spacing = c_goldenGrid + 12;
+	const size_t dims = c_goldenGrid + 24;
+	// Dimensions: some but not all 0.
+	CheckRejected( golden, [=]( std::vector<uint8_t>& b ){ PutU32At( b, dims + 4, 0 ); },
+	               "grid dimensions 2 x 0 x 1 have some but not all components 0" );
+	// Dimensions that need more probes than the file holds, or fewer.
+	CheckRejected( golden, [=]( std::vector<uint8_t>& b ){ PutU32At( b, dims + 8, 2 ); },
+	               "shorter than expected: grid (2 x 1 x 2) does not fit in 398 bytes" );
+	CheckRejected( golden, [=]( std::vector<uint8_t>& b ){ PutU32At( b, dims, 1 ); },
+	               "longer than expected: 289 bytes implied, has 398" );
+	// Non-finite origin, spacing and probe coefficient.
+	CheckRejected( golden, [=]( std::vector<uint8_t>& b ){ PutU32At( b, c_goldenGrid + 8, 0x7F800000 ); },
+	               "non-finite grid origin (-64, 0, inf)" );
+	CheckRejected( golden, [=]( std::vector<uint8_t>& b ){ PutU32At( b, spacing + 4, 0x7FC00000 ); },
+	               "non-finite grid spacing (64, nan, 128)" );
+	CheckRejected( golden, []( std::vector<uint8_t>& b ){ PutU32At( b, c_goldenProbeCoeffs + 12 * 2 + 4, 0x7FC00000 ); },
+	               "grid probe 0 coefficient 2 channel 1: non-finite value nan" );
+	// Spacing not above 0.
+	CheckRejected( golden, [=]( std::vector<uint8_t>& b ){ PutU32At( b, spacing + 8, 0 ); },
+	               "grid spacing (64, 64, 0) has a component not above 0" );
+	CheckRejected( golden, [=]( std::vector<uint8_t>& b ){ PutU32At( b, spacing, 0xC2800000 ); },
+	               "grid spacing (-64, 64, 128) has a component not above 0" );
+	// A negative L0 component in a valid probe: probe 0's L0 red 0 becomes -1.
+	CheckRejected( golden, []( std::vector<uint8_t>& b ){ PutU32At( b, c_goldenProbeCoeffs, 0xBF800000 ); },
+	               "grid probe 0 coefficient 0 channel 0: negative L0 component -1" );
+	// The "Bad valid flag in the file" scenario, and a flag of 0xFF.
+	CheckRejected( golden, []( std::vector<uint8_t>& b ){ b[c_goldenValid + 1] = 2; }, "grid probe 1: valid flag 2 is neither 0 nor 1" );
+	CheckRejected( golden, []( std::vector<uint8_t>& b ){ b[c_goldenValid] = 0xFF; }, "grid probe 0: valid flag 255 is neither 0 nor 1" );
+	// Probe 0 marked invalid while it holds data; probe 1 (invalid) given data.
+	CheckRejected( golden, []( std::vector<uint8_t>& b ){ b[c_goldenValid] = 0; },
+	               "grid probe 0 coefficient 0 channel 1: 0.25 in an invalid probe (valid flag 0), expected 0" );
+	CheckRejected( golden, []( std::vector<uint8_t>& b ){ PutU32At( b, c_goldenProbeCoeffs + 108 + 12 * 3, 0x3F000000 ); },
+	               "grid probe 1 coefficient 3 channel 0: 0.5 in an invalid probe (valid flag 0), expected 0" );
+	// Marking probe 1 valid is fine: its zero coefficients are data.
+	{
+		const fs::path path = g_dir / "valid.shsf";
+		CHECK( SaveSHQ3Map2Extension( golden, P( path ).c_str(), nullptr ) );
+		std::vector<uint8_t> bytes = ReadBytes( path );
+		if ( bytes.size() == c_goldenSize ) {
+			bytes[c_goldenValid + 1] = 1;
+			WriteBytes( path, bytes );
+			std::string error;
+			std::optional<SHQ3Map2Extension> read = LoadSHQ3Map2Extension( P( path ).c_str(), &error );
+			CHECK_MSG( read.has_value(), error );
+			if ( read ) {
+				CHECK( read->grid.valid == ( std::vector<uint8_t>{ 1, 1 } ) );
+			}
+		}
+	}
+	// The golden file reads back as written.
+	if ( auto read = RoundTrip( golden, "golden.shsf" ) ) {
+		CheckSameValues( golden, *read );
+	}
 }
 
 // --- L0 dump --------------------------------------------------------------
@@ -733,13 +1089,18 @@ int main(){
 		{ "HalfRoundingAndClamp", TestHalfRoundingAndClamp },
 		{ "GoldenBytes", TestGoldenBytes },
 		{ "WriterRefusals", TestWriterRefusals },
+		{ "GridWriterRefusals", TestGridWriterRefusals },
 		{ "MissingDirectory", TestMissingDirectory },
 		{ "RenameFailureCleansUp", TestRenameFailureCleansUp },
 		{ "OverwriteReplacesBytes", TestOverwriteReplacesBytes },
 		{ "RoundTripKeepsOrderAndSizes", TestRoundTripKeepsOrderAndSizes },
 		{ "EmptyPartsAllowed", TestEmptyPartsAllowed },
+		{ "GridRoundTripKeepsProbeOrder", TestGridRoundTripKeepsProbeOrder },
+		{ "ProbeCoefficientsExact", TestProbeCoefficientsExact },
+		{ "ZeroProbeGrid", TestZeroProbeGrid },
 		{ "WindingKept", TestWindingKept },
 		{ "ReaderRejections", TestReaderRejections },
+		{ "GridReaderRejections", TestGridReaderRejections },
 		{ "DumpMatchesL0", TestDumpMatchesL0 },
 		{ "DumpWritesNegativeL0AsZero", TestDumpWritesNegativeL0AsZero },
 		{ "DumpRefusesRend2Names", TestDumpRefusesRend2Names },
