@@ -1,0 +1,75 @@
+[
+  {
+    "classname": "light_sun",
+    "_color": "0.973327 0.60087 0.441245",
+    "angles": "50 145 0",
+    "intensity": "5",
+    "origin": "0 0 200"
+  },
+  {
+    "classname": "light_spot",
+    "_color": "1 0.672443 0.304987",
+    "_proxy": "1",
+    "_shadows": "1",
+    "angles": "90 0 0",
+    "cone": "60",
+    "cone_inner": "45",
+    "intensity": "209104",
+    "origin": "-448 -48 180",
+    "radius": "512"
+  },
+  {
+    "classname": "light_spot",
+    "_color": "1 0.672443 0.304987",
+    "_proxy": "1",
+    "_shadows": "1",
+    "angles": "90 0 0",
+    "cone": "60",
+    "cone_inner": "45",
+    "intensity": "209104",
+    "origin": "-48 448 180",
+    "radius": "512"
+  },
+  {
+    "classname": "light_spot",
+    "_color": "1 0.672443 0.304987",
+    "_proxy": "1",
+    "_shadows": "1",
+    "angles": "90 0 0",
+    "cone": "60",
+    "cone_inner": "45",
+    "intensity": "209104",
+    "origin": "448 48 180",
+    "radius": "512"
+  },
+  {
+    "classname": "light_spot",
+    "_color": "1 0.672443 0.304987",
+    "_proxy": "1",
+    "_shadows": "1",
+    "angles": "90 0 0",
+    "cone": "60",
+    "cone_inner": "45",
+    "intensity": "209104",
+    "origin": "48 -320 180",
+    "radius": "512"
+  },
+  {
+    "classname": "light_area",
+    "_color": "0.806952 0.871367 1",
+    "_frustum": "70",
+    "angles": "90 0 0",
+    "height": "64",
+    "intensity": "8",
+    "origin": "-560 560 -168",
+    "radius": "512",
+    "width": "64"
+  },
+  {
+    "classname": "light",
+    "_color": "1 0.85 0.65",
+    "intensity": "150000",
+    "origin": "560 560 -200",
+    "radius": "400"
+  }
+]

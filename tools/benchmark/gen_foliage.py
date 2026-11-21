@@ -5,6 +5,9 @@ Writes into content/benchmark/ (see content/benchmark/README.md, "Vegetation"):
   textures/bench/bark_c.tga, bark_nrm.tga, leaves.tga, grass.tga, dirt_c.tga
   models/bench/tree.obj, grass_clump.obj, grass_patch.obj (each with a .mtl)
 
+main() takes the texture and model directories and the shader prefix, so tools/town/gen_textures.py writes the same
+vegetation into content/town/; run as a script it writes the benchmark's.
+
 The outputs are committed; nothing in the editor or the stock check runs this script. Re-running it with the same
 Pillow version rewrites identical files (fixed seed, fixed float formatting). Last run with Pillow 12.3.0.
 
@@ -390,7 +393,12 @@ def make_grass_patch(rng):
 
 # ---------------------------------------------------------------- main
 
-def main():
+def main(textures=TEXTURES, models=MODELS, prefix="textures/bench"):
+    """Write the vegetation into the given texture and model directories, with shaders named <prefix>/bark, /leaves
+    and /grass. save_tga() and Mesh.write() use the module's directories, so they are set here and stay set."""
+    global TEXTURES, MODELS, BARK, LEAVES, GRASS
+    TEXTURES, MODELS = textures, models
+    BARK, LEAVES, GRASS = (prefix + "/" + name for name in ("bark", "leaves", "grass"))
     os.makedirs(TEXTURES, exist_ok=True)
     os.makedirs(MODELS, exist_ok=True)
     written = []
