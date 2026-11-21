@@ -4,6 +4,7 @@
 \usepackage{lmodern}
 \usepackage{amsmath}
 \usepackage{booktabs}
+\usepackage{longtable}
 \usepackage{enumitem}
 \usepackage{xcolor}
 \usepackage{hyperref}
@@ -17,8 +18,8 @@
 \large Direct PBR, shadow mapping, and SH indirect lighting across
 NetRadiant-custom, q3map2 and ioquake3}
 \author{Davis Wen}
-\date{Revision 7 --- 19 November 2026\\
-\small (revision 6: 2 October 2026; revision 5: 2 October 2026; revision 4: 1 October 2026; revision 3: 1 October 2026; revision 2: 17 September 2026;
+\date{Revision 8 --- 21 November 2026\\
+\small (revision 7: 19 November 2026; revision 6: 2 October 2026; revision 5: 2 October 2026; revision 4: 1 October 2026; revision 3: 1 October 2026; revision 2: 17 September 2026;
 revision 1: 16 September 2026)}
 
 \begin{document}
@@ -55,7 +56,70 @@ Original, non-PBR Quake~3 levels are unaffected: they keep running on \texttt{op
 enhancement is ignored by the stock target. None replaces stock data. §\ref{sec:contract} turns this
 into rules every stage must satisfy.
 
+\section{What changed in revision 8}\label{sec:rev8}
+
+Decided 2026-11-21. \texttt{renderer\_sh} is built for direct invocation by ioquake3 only, and the
+sky becomes a light source. Stage~3 is restructured around that.
+
+\begin{description}[style=nextline]
+\item[\texttt{renderer\_sh} is sh-renderer grown into an ioquake3 module.] The existing
+  \texttt{ioq3-custom/sh-renderer} becomes a renderer module loaded by \texttt{cl\_renderer sh}
+  through \texttt{GetRefAPI}, beside \texttt{opengl1} and \texttt{opengl2}, which stay untouched.
+  The engine glue goes in \texttt{ioq3/code/renderersh/} and \texttt{cmake/renderer\_sh.cmake}
+  (neither exists yet). sh-renderer changes go as pull requests to
+  \texttt{github.com/DaviesX/sh-renderer}, which the user reviews and merges; nothing is pushed or
+  opened without asking, as with \texttt{sh-baker}.
+\item[Direct invocation only; the glTF path is deleted.] There is no compatibility with the
+  exporter $\to$ glTF $\to$ sh-renderer path. C0 deletes from sh-renderer: the glTF loader
+  (\texttt{loader.cpp}'s glTF parts and \texttt{loader\_layers\_test}), tinygltf, tinyexr, the
+  EXR/xatlas SH atlas input, \texttt{SH\_material\_layers} parsing, \texttt{kLightIntensityScale}
+  (\texttt{loader.cpp:18}), \texttt{ComputeLightRadius} (\texttt{scene.cpp:585--590}), the stray
+  Embree include (\texttt{scene.h:3}), the unused glTF \texttt{AreaLight}
+  (\texttt{scene.h:169--177}, \texttt{loader.cpp:757--793}) and the analytic sky for maps. The
+  glTF loader is not kept for sh-renderer's own tests; they switch to synthetic inputs. Revision
+  7's ``its glTF loader stays for its own tests and tools'' is withdrawn.
+\item[The Q3 layer compositor is reference code.] The compositor already on sh-renderer's main
+  (PRs \#15--\#18: \texttt{q3\_layer.h}, \texttt{q3\_layer\_bind}, \texttt{q3\_composite.glsl},
+  per-layer descriptor SSBOs) is reused. Under \texttt{renderer\_sh} it is fed from shader text,
+  and suspected bugs are fixed there. sh-renderer PRs \#19 (cutout coverage) and \#20 (additive
+  pass) were closed as superseded; their features are redone from shader text in C2, C3 and C5.
+\item[Parser decided: \texttt{renderer\_sh} writes its own.] A small BSP and shader loader in raw
+  Z-up map units over \texttt{ri.FS\_*}. It does not link \texttt{libioq3\_map}, which reads only 5
+  of the 17 lumps, knows no \texttt{qer\_pbr\_*}, \texttt{alphaFunc} or \texttt{rgbGen const}, and
+  pulls in glog, gflags, Embree and tinygltf. \texttt{renderergl2}'s \texttt{tr\_bsp},
+  \texttt{tr\_shader} and \texttt{tr\_curve} are the reference for meaning. The open decision of
+  revision 4 is closed and no longer blocks C2.
+\item[GL context: requested, not taken over.] ioquake3 has no existing context to take over: each
+  renderer module calls \texttt{GLimp\_Init} (\texttt{sdl\_glimp.c} is compiled into every module,
+  \texttt{cmake/renderer\_common.cmake:15--18}; \texttt{renderergl2/tr\_init.cpp:264--267}), and
+  \texttt{sdl\_glimp.c} asks for at most GL~3.2 core (\texttt{:545--548}). sh-renderer needs 4.6
+  core with a debug context and an sRGB framebuffer (\texttt{window.cpp:72--78}, \texttt{:114}).
+  \texttt{sdl\_glimp.c} gains a context-request parameter that only \texttt{renderer\_sh} sets;
+  \texttt{opengl1} and \texttt{opengl2} request exactly what they do today. This replaces the
+  \texttt{r\_glMajorVersion}-style cvars designed in \texttt{ioq3-custom/docs/c\_interface\_design.tex}
+  (\texttt{:298--300}), and the earlier wording ``initialise against an already-current GL
+  context''.
+\item[Sky environment light.] Missing in all three tracks until now: the point bake reads no
+  environment, the editor preview has only a constant ambient, and sh-renderer's sky term is a flat
+  colour times baked visibility. The map's sky shader now emits, with the same derivation as
+  emitters, in the units of §\ref{sec:units}. The indirect bake records only sky visibility, never
+  sky radiance, so \texttt{renderer\_sh} can change the sky without a rebake: it projects the sky to
+  SH at load and multiplies its irradiance by the baked visibility (C6). The full bake adds the
+  sky's radiance, so the stock lightmap gets direct and bounced sky light (B11 \texttt{sh-baker} PR,
+  B12 q3map2). Side file v3 adds visibility per grid probe (B13). The editor preview's sky light is
+  unshadowed (A12). Sky still never casts. §\ref{sec:sky}.
+\item[Track C restructured.] C0 cleans sh-renderer for the module; C1 brings the module up; C2 is
+  Tier~1; C3 splits into C3a (sky and fog) and C3b (the rest of Tier~2); C4b loads the side file,
+  ahead of C5 and C6; C8 is the spot-flashlight ABI, gated by the game-code decision. 3.4 follows
+  Tier~1. Light units are no longer open: the editor's physical model is authoritative. Corrected
+  in passing: \texttt{refexport\_t} has 30 entry points, not 37 (\texttt{tr\_public.h:37--117};
+  \texttt{A3D\_RenderGeometry} is compiled out).
+\end{description}
+
 \section{What changed in revision 7}\label{sec:rev7}
+
+Kept for the record. Revision 8 keeps its light decisions; \texttt{renderer\_sh} embeds its own
+copy of the LTC tables (4.5).
 
 Emissive surfaces join the one light model. Revision 6 planned runtime light from emissive quads
 only in \texttt{renderer\_sh} (4.5), so the editor could neither author nor preview it, and 3.4's
@@ -246,7 +310,7 @@ parsed lights to the baker (§\ref{sec:rev6}).
 \item[Open: parser reuse for \texttt{renderer\_sh}.]
   Revision 2 planned for \texttt{renderer\_sh} to consume the exporter's parsing code
   (\texttt{libioq3\_map}). With the exporter out of the pipeline this is a decision, not a given.
-  §\ref{sec:open}.
+  Decided by revision 8: \texttt{renderer\_sh} writes its own (§\ref{sec:rev8}).
 \end{description}
 
 \section{Earlier revisions}
@@ -346,7 +410,10 @@ a timeout. The compile (\texttt{-meta -keeplights}, \texttt{-vis -saveprt}, \tex
 q3map2's \texttt{Unknown q3map\_* directive} and when the light stage leaves no side file at
 \texttt{maps/<map>/<map>.shsf}; a side file left in the source mod is deleted first, and the pk3
 carries the new one. The engine only parses shaders a map uses, so the check covers exactly the
-shaders the map references. The enhanced check is the same run with \texttt{cl\_renderer sh}.
+shaders the map references. The enhanced check is the same run with \texttt{cl\_renderer sh}
+(added by C2). It must also assert from the console that \texttt{renderer\_sh} loaded, because a
+module that fails to load prints \texttt{failed:} (\texttt{cl\_main.c:3190}) and the engine
+continues on \texttt{opengl2}.
 There is no calibration mode: nothing is matched against q3map2's lightmap.
 
 \subsection{Open decisions}\label{sec:open}
@@ -357,12 +424,10 @@ There is no calibration mode: nothing is matched against q3map2's lightmap.
   engine, stock included; that call is omni-only (\texttt{tr\_public.h:75}: origin, intensity,
   colour), so a spot flashlight needs a \texttt{refexport\_t} extension that only the customised
   engine has, with the omni light as the stock fallback. The BSP and pk3 rules do not depend on the
-  choice.
-\item \textbf{BSP and shader parsing in \texttt{renderer\_sh}.} Reuse the exporter's parsing code
-  (\texttt{libioq3\_map}: BSP lumps, patch triangulation, shader scripts, entities), or write the
-  runtime's own. The first is less code; the second avoids carrying a library whose parent tool is
-  out of the pipeline. q3map2's SH stage does not depend on this: it uses q3map2's own parsing.
+  choice. It gates the flashlight of Stage~1 (A10) and the spot-flashlight ABI (C8, 3.6).
 \end{itemize}
+The parser for \texttt{renderer\_sh}, open until revision 7, is decided: it writes its own
+(§\ref{sec:rev8}).
 
 \section{Material authoring}\label{sec:materials}
 
@@ -420,6 +485,9 @@ Emissive (sRGB) & An additive stage (\texttt{blendFunc add}) carrying the emissi
   stock target shows it unchanged; \texttt{sh-baker} already bakes additive layers as area lights
   (``Bake additive SH\_material\_layers surfaces as area lights'', \texttt{843237b}), so the glow
   also reaches the lightmap once 4.3 lands; \texttt{q3map\_surfacelight} is not needed.
+\item \textbf{Sky emission} (revision 8). A sky shader (\texttt{surfaceparm sky}) with
+  \texttt{qer\_pbr\_emissiveStrength} lights the map from its image, read as radiance the same
+  way; without the keyword it emits nothing. §\ref{sec:sky}.
 \item \textbf{Factors are enhanced-only.} The stock target never sees \texttt{qer\_pbr\_baseColorFactor};
   where the stock look matters, bake the factor into the texture instead.
 \item \textbf{Reserved suffixes.} Never name an image \texttt{<base>\_n}, \texttt{<base>\_nh} or
@@ -449,9 +517,18 @@ Emissive (sRGB) & An additive stage (\texttt{blendFunc add}) carrying the emissi
   \texttt{tr\_public.h} already carries \texttt{extern "C"} guards (\texttt{:25}, \texttt{:214}).
   The \texttt{refexport\_t}/\texttt{refimport\_t} boundary is therefore usable from C++ directly.
   \textbf{This obsoletes the separate C-ABI wrapper} previously planned for \texttt{sh-renderer}
-  (\texttt{ioq3-custom/docs/c\_interface\_design.tex}); only the control inversion --- initialise
-  against an existing GL context, expose discrete load/update/render/resize/shutdown calls, point
-  the GL loader at the engine's --- remains necessary.
+  (\texttt{ioq3-custom/docs/c\_interface\_design.tex}); only the control inversion --- create the
+  context through the engine's \texttt{GLimp\_Init}, expose discrete load/update/render/resize/shutdown
+  calls, load the GL functions through SDL --- remains necessary.
+\item \textbf{There is no existing GL context to take over.} Each renderer module calls
+  \texttt{GLimp\_Init} itself: \texttt{code/sdl/sdl\_glimp.c} is compiled into every module
+  (\texttt{cmake/renderer\_common.cmake:15--18}; \texttt{renderergl2/tr\_init.cpp:264--267}), and
+  it asks for at most GL~3.2 core (\texttt{sdl\_glimp.c:545--548}). sh-renderer needs 4.6 core.
+  3.1 has the decision.
+\item \textbf{\texttt{ri.FS\_FileExists} searches no pk3.} It is
+  \texttt{FS\_FileExists\_HomeData} (\texttt{cl\_main.c:3238}), so a renderer probing a packed
+  asset with it never finds one --- the trap that sank B6 (below). Packed assets are probed with
+  \texttt{ri.FS\_ReadFile}.
 \item \texttt{renderergl2} (rend2) already implements, off or on by cvar in
   \texttt{tr\_init.cpp}: \texttt{r\_pbr} (\texttt{:1241}, default \textbf{0}), \texttt{r\_hdr}
   (\texttt{:1201}, default 1), \texttt{r\_toneMap} (\texttt{:1206}), \texttt{r\_normalMapping} and
@@ -510,8 +587,11 @@ wired, which is why it does not carry over as-is:
   the BSP.
 \end{itemize}
 \textbf{Carried over:} \texttt{sh-renderer} as \texttt{renderer\_sh} (Stage~3) and \texttt{sh-baker}
-as a library linked into q3map2 (Stage~4). \texttt{ioq3-materialize} and the exporter's glTF output
-are not part of this plan; the exporter's parsing code is an open decision (§\ref{sec:open}).
+as a library linked into q3map2 (Stage~4). \texttt{ioq3-materialize} and the exporter are not part
+of this plan, and neither is its parsing code: \texttt{renderer\_sh} writes its own loader
+(§\ref{sec:rev8}). The glTF path is dropped from \texttt{sh-renderer}, not kept for its own
+tests: C0 deletes the glTF loader, tinygltf, tinyexr and the EXR/xatlas SH atlas input
+(§\ref{sec:rev8}).
 
 \subsection{The editor and q3map2}
 
@@ -625,7 +705,8 @@ pool of light, no discernible skyline.
   keep the stock fallback's \texttt{fogparms} reading close to it.
 \item \textbf{Carried flashlight.} A player-attached dynamic spot light, shadow-casting, is the
   defining mechanic. It needs the game-code decision of §\ref{sec:open}. In \texttt{renderer\_sh}
-  it is a shadowed spot using the editor's spot atlas scheme; the stock fallback gets the omni
+  it is a shadowed spot using the editor's spot atlas scheme, added to the scene through the ABI of
+  3.6 (C8); the stock fallback gets the omni
   dynamic light that \texttt{trap\_R\_AddLightToScene} provides.
 \item \textbf{Grass and trees.} Overgrown verges and bare trees belong to the town's look. Build
   them as the benchmark does: \texttt{misc\_model} meshes merged into the BSP by q3map2, every
@@ -634,7 +715,8 @@ pool of light, no discernible skyline.
   (by hand, or a compile-time scatter the editor cannot preview) is decided here.
 \item \textbf{Darkness budget.} With physical units and a tonemap, the ambient floor is what
   separates ``dark and readable'' from ``black''. Fix an exposure and ambient for the town and
-  record them next to the map, as the benchmark already does.
+  record them next to the map, as the benchmark already does. With sky light (§\ref{sec:sky}) the
+  sky shader's \texttt{qer\_pbr\_emissiveStrength} is part of that budget.
 \item Exit criterion: a side-by-side against Silent Hill 1 reference stills that the author
   accepts. This is a judgement call, deliberately, and it gates nothing downstream.
 \end{itemize}
@@ -715,6 +797,20 @@ screenshots from the documented views recorded. Numerical parity with
 \textbf{Outcome.} A second renderer module that carries the project, then direct PBR and shadows
 matching the editor preview.
 
+\textbf{Shape (revision 8).} \texttt{renderer\_sh} is \texttt{ioq3-custom/sh-renderer} grown into
+an ioquake3 renderer module, loaded by \texttt{cl\_renderer sh} through \texttt{GetRefAPI}; the
+engine glue lives in \texttt{ioq3/code/renderersh/} and \texttt{cmake/renderer\_sh.cmake}. It is
+invoked directly by the engine only; the glTF path is gone (§\ref{sec:rev8}). Changes to
+sh-renderer go as pull requests to \texttt{github.com/DaviesX/sh-renderer}, reviewed and merged by
+the user. It works in raw Z-up map units, as the editor and q3map2 do. Packed assets are probed with
+\texttt{ri.FS\_ReadFile}, never \texttt{ri.FS\_FileExists}, which searches no pk3
+(§\ref{sec:rend2facts}).
+
+Tasks (Track~C): C0 cleanup and C1 module bring-up (3.1); C2 Tier~1 (3.3); C3a sky and fog, C3b the
+rest of Tier~2 (3.3); C4 direct-light parity (3.4); C4b the side-file loader (4.4); C5 shadow parity
+(3.5); C6 SH at runtime (4.4); C7 LTC area lights (4.5); C8 the spot-flashlight ABI (3.6). A task
+may run out of order once its \texttt{needs} are met.
+
 \subsection{3.1 Decision: build the Quake 3 feature set out in sh-renderer}
 
 \textbf{Decided.} The missing feature set is added to \texttt{sh-renderer}, which becomes
@@ -740,16 +836,48 @@ Rationale:
 
 \textbf{What changes in sh-renderer's inputs.} It renders the BSP, not a glTF: draw surfaces with
 their q3map2 lightmap coordinates, materials from the shader text of §\ref{sec:materials}, the SH
-bands from the side file of Stage~4. Its glTF loader stays for its own tests and tools. The parser it uses is the open decision of §\ref{sec:open}.
+bands from the side file of Stage~4. It reads them with its own small BSP and shader loader over
+\texttt{ri.FS\_*}, with \texttt{renderergl2}'s \texttt{tr\_bsp}, \texttt{tr\_shader} and
+\texttt{tr\_curve} as the reference for meaning; it does not link \texttt{libioq3\_map}. No glTF
+loader is kept, not even for its tests. The Q3 layer compositor already on sh-renderer's main
+(\texttt{q3\_layer.h}, \texttt{q3\_layer\_bind}, \texttt{q3\_composite.glsl}, per-layer
+descriptor SSBOs) is reused, fed from shader text instead of glTF extras.
 
-\textbf{The one part that is not additive}, and is planned as a refactor rather than a feature:
+\textbf{C0: cleanup for the module} (one sh-renderer PR). Delete the glTF and EXR path and its
+dependencies as listed in §\ref{sec:rev8}, rewrite \texttt{GEMINI.md}'s phases to match C1--C7 and
+the module stack (no GLFW, gflags, glog, tinygltf or tinyexr), and switch the tests to synthetic
+inputs.
+
+\textbf{C1: the one part that is not additive}, planned as a refactor rather than a feature:
 \texttt{sh-renderer} currently owns its process. It uses \texttt{glog}, \texttt{gflags}, its own
-file I/O, and its own GLFW window and frame loop. As a renderer module it must route logging
-through \texttt{ri.Printf}/\texttt{ri.Error}, configuration through \texttt{ri.Cvar\_Get},
-\emph{all} file access through \texttt{ri.FS\_ReadFile} so assets come from \texttt{.pk3} via the
-engine's VFS, allocation through \texttt{ri.Hunk\_Alloc}, and must initialise against an
-already-current GL context with glad pointed at the engine's loader. This touches every module's
-edges. Do it first, before any feature work, so no feature is ported twice.
+file I/O, and its own GLFW window and frame loop. As a renderer module:
+\begin{itemize}
+\item \textbf{Build.} \texttt{cmake/renderer\_sh.cmake} behind \texttt{BUILD\_RENDERER\_SH}.
+  \texttt{sh\_renderer} is a shared library built with \texttt{-march=native} today
+  (\texttt{sh-renderer/CMakeLists.txt:11}, \texttt{:114}); the module links it as a static or
+  object library, and \texttt{-march=native} and the Eigen alignment it implies stay out of the
+  engine's translation units.
+\item \textbf{GL context.} \texttt{GLimp\_Init} in the shared \texttt{sdl\_glimp.c} gains a
+  context-request parameter that only \texttt{renderer\_sh} sets: 4.6 core, debug, sRGB
+  framebuffer. \texttt{opengl1} and \texttt{opengl2} request exactly what they do today. Below 4.6,
+  \texttt{renderer\_sh} stops with \texttt{ri.Error}. glad is loaded through
+  \texttt{SDL\_GL\_GetProcAddress} after \texttt{GLimp\_Init}, in translation units separate from
+  \texttt{sdl\_glimp.c}'s \texttt{qgl*} pointers.
+\item \textbf{Window, input, frame.} GLFW and \texttt{input.cpp} are removed; input belongs to the
+  engine. The frame loop is inverted onto \texttt{BeginFrame}, \texttt{RenderScene} and
+  \texttt{EndFrame}.
+\item \textbf{Engine services.} Logging through a shim over \texttt{ri.Printf}/\texttt{ri.Error},
+  configuration through \texttt{ri.Cvar\_Get}, GLSL and \emph{every} other file through
+  \texttt{ri.FS\_ReadFile}, so assets come from the pk3 through the engine's VFS. Level-lifetime
+  buffers may use \texttt{ri.Hunk\_Alloc}; the rest \texttt{ri.Malloc} or the C++ allocator.
+\item \textbf{Gamma.} ioquake3's \texttt{r\_gamma} and hardware gamma are reconciled with
+  \texttt{GL\_FRAMEBUFFER\_SRGB}.
+\item \textbf{Exit.} A cleared frame under \texttt{cl\_renderer sh}, with the console proving
+  that \texttt{renderer\_sh} loaded (a failed load falls back to \texttt{opengl2},
+  §\ref{sec:verify}).
+\end{itemize}
+This touches every module's edges. Do it first, before any feature work, so no feature is ported
+twice.
 
 \subsection{3.2 Free: link, do not reimplement}
 
@@ -760,20 +888,30 @@ plus \texttt{tr\_font.c}, \texttt{tr\_noise.c}, \texttt{tr\_subs.c} and \texttt{
 
 \subsection{3.3 Feature inventory}
 
-\texttt{refexport\_t} has 37 entry points. Ordered below by whether the town is playable without
+\texttt{refexport\_t} has 30 entry points (\texttt{tr\_public.h:37--117}, with
+\texttt{A3D\_RenderGeometry} compiled out). Ordered below by whether the town is playable without
 the item. The LOC figures are the corresponding rend2 sources, as an order-of-magnitude scope
 reference --- not as code to copy.
 
-\textbf{Tier 1 --- required to boot and walk the map.}
+\textbf{Tier 1 --- required to boot and walk the map} (C2; needs C1 and the town block, A8).
 \begin{itemize}
 \item Module skeleton: \texttt{GetRefAPI}, the \texttt{refexport\_t} table,
-  \texttt{BeginFrame}/\texttt{EndFrame}/\texttt{Shutdown}, and the control inversion off GLFW.
-\item The \texttt{ri.*} refactor of §3.1.
-\item \texttt{LoadWorld} from \texttt{.bsp}, plus \texttt{SetWorldVisData}, \texttt{inPVS} and
-  PVS-based cluster culling, and \texttt{GetEntityToken} (cgame reads the entity lump through the
-  renderer).
-\item Materials from shader text: the base-colour stage, the \texttt{qer\_pbr\_*} keywords,
-  additive emissive stages, and the defaults of §\ref{sec:materials} where absent.
+  \texttt{BeginFrame}/\texttt{EndFrame}/\texttt{Shutdown}, and the control inversion off GLFW
+  (C1).
+\item The \texttt{ri.*} refactor of §3.1 (C1).
+\item \texttt{LoadWorld} from \texttt{.bsp} with the module's own loader: every Tier-1 lump,
+  visdata and the light grid included, patches, plus \texttt{SetWorldVisData}, \texttt{inPVS} and
+  PVS-based cluster culling, \texttt{LightForPoint}, and \texttt{GetEntityToken} (cgame reads the
+  entity lump through the renderer).
+\item Materials from shader text into the existing layer structs: the base-colour stage, the
+  \texttt{qer\_pbr\_*} keywords (with \texttt{qer\_pbr\_occlusion} as its own map; occlusion is
+  read today, \texttt{radiance.frag:393}, but unused in the BRDF), additive emissive stages,
+  \texttt{rgbGen const}, \texttt{alphaFunc} (replacing the fixed 0.5 cutoff,
+  \texttt{depth\_w\_normal.frag:19}), \texttt{cull} and \texttt{surfaceparm}, and the defaults of
+  §\ref{sec:materials} where absent. \texttt{tcMod}, \texttt{rgbGen wave}, \texttt{blendFunc} and
+  \texttt{animMap} go into the layer runtime.
+\item Coordinates: sh-renderer's Y-up metres become Z-up map units (\texttt{camera.cpp:45},
+  \texttt{cascade.cpp:70}, \texttt{:77}, \texttt{:172}).
 \item 2D: \texttt{SetColor}, \texttt{DrawStretchPic}, \texttt{RegisterShaderNoMip}. Without these
   there is no HUD, no menu and no console --- an ortho quad batcher, small but unavoidable.
 \item Frame protocol: \texttt{ClearScene}, \texttt{AddRefEntityToScene}, \texttt{RenderScene},
@@ -785,17 +923,24 @@ reference --- not as code to copy.
   407 LOC.)
 \end{itemize}
 
-\textbf{Tier 2 --- playable, but visibly wrong without it.}
+\textbf{Tier 2 --- playable, but visibly wrong without it.} C3a (sky and fog) needs C2; C3b (the
+rest) needs C3a and may run after C4.
 \begin{itemize}
-\item \textbf{Sky} (\texttt{tr\_sky}, 859 LOC). Highest priority of this tier for this project
-  specifically: the low sky ceiling is the town's defining structural element.
-\item \textbf{Fog volumes}, with the stock \texttt{fogparms} semantics so the same map reads the
-  same on both targets. The primary aesthetic of Stage 1; the town does not read without them.
-\item Multi-stage shader runtime: \texttt{tcMod}, \texttt{rgbGen}, blend funcs, \texttt{animMap},
-  \texttt{deformVertexes} (\texttt{tr\_shade\_calc}, 825 LOC, plus part of \texttt{tr\_shader},
-  3898). Already designed in \texttt{ioq3-custom/docs/layer\_material\_compositing.tex}.
-\item \texttt{MarkFragments} --- bullet holes and blood decals (\texttt{tr\_marks}, 467 LOC).
-\item \texttt{AddPolyToScene} --- cgame's particle and effect path leans on it heavily.
+\item \textbf{Sky} (C3a; \texttt{tr\_sky}, 859 LOC). Highest priority of this tier for this project
+  specifically: the low sky ceiling is the town's defining structural element. The
+  \texttt{skyparms} farbox and cloud layer replace sh-renderer's analytic sky. The sky is drawn,
+  not a light entity: its light is the sky SH times baked visibility, in C6 (§\ref{sec:sky}).
+\item \textbf{Fog volumes} (C3a), with the stock \texttt{fogparms} semantics so the same map reads
+  the same on both targets, from the BSP fog lump, including a camera inside a volume with no fog
+  surface (\texttt{content/town/README.md:58}), and the fog/tonemap order of Stage~1. The primary
+  aesthetic of Stage 1; the town does not read without them.
+\item Multi-stage shader runtime (C3b for what C2 leaves): \texttt{deformVertexes} and
+  \texttt{alphaGen} (\texttt{tr\_shade\_calc}, 825 LOC, plus part of \texttt{tr\_shader}, 3898).
+  The layer runtime already exists in sh-renderer (PRs \#15--\#18, designed in
+  \texttt{ioq3-custom/docs/layer\_material\_compositing.tex}); it is fed from shader text, and its
+  suspected bugs are fixed there.
+\item \texttt{MarkFragments} (C3b) --- bullet holes and blood decals (\texttt{tr\_marks}, 467 LOC).
+\item \texttt{AddPolyToScene} (C3b) --- cgame's particle and effect path leans on it heavily.
 \end{itemize}
 
 \textbf{Tier 3 --- stub or defer.}
@@ -810,29 +955,44 @@ reference --- not as code to copy.
 
 Exit criterion for Stage 3.3: the town block is walkable under \texttt{cl\_renderer sh} with a
 working HUD and player model, screenshots from the documented views can be compared against the
-stock fallback on the same map, and the stock check still passes on the same pk3.
+stock fallback on the same map, and the stock check still passes on the same pk3. C2's exit adds
+a \texttt{cl\_renderer sh} run to \texttt{tools/stockcheck}.
 
 \subsection{3.4 Direct light parity}
+C4; needs Tier~1 (C2) and the light entities under \texttt{Q3.game} (A6).
 \begin{itemize}
-\item Lights come from the entity lump, preserved by \texttt{-keeplights}, read with the editor's
-  physical model (§\ref{sec:units}): \texttt{light}, \texttt{light\_spot}, \texttt{light\_sun},
-  \texttt{light\_area} (from 4.5) and their keys, with no conversion constant. This replaces sh-renderer's glTF light scale
-  (\texttt{kLightIntensityScale}, \texttt{src/loader.cpp:18}) and \texttt{ComputeLightRadius}
-  (\texttt{src/loader.cpp:719}).
-\item Every editor light --- point, spot and sun --- is evaluated at runtime, with the caster rule
-  (point lights never cast; spots and suns unless \texttt{\_shadows 0}). \texttt{renderer\_sh} never
+\item Lights come from the BSP entity lump, preserved by \texttt{-keeplights}, read with the
+  editor's physical model (§\ref{sec:units}) and the gamepack README's formulas: \texttt{light},
+  \texttt{light\_spot}, \texttt{light\_sun}, \texttt{light\_area} (from 4.5) and their keys,
+  with no conversion constant --- radiant intensity flux$/4\pi$ for points and
+  flux$/(2\pi(1-\cos\texttt{cone}))$ for spots, normalised \texttt{\_color}, zero beyond
+  \texttt{radius}. Light units are not open: the editor's model is authoritative. sh-renderer's
+  glTF light scale (\texttt{kLightIntensityScale}) and \texttt{ComputeLightRadius} are deleted.
+\item The sky term leaves the direct-light pass. sh-renderer adds \texttt{u\_sky\_color}
+  $\times$ sun intensity$/10$ $\times$ baked visibility (\texttt{radiance.frag:423--424}), a flat
+  colour. C6 replaces it with the sky shader's SH irradiance times the same visibility
+  (§\ref{sec:sky}); 3.4's parity check runs with sky emission off.
+\item Every editor light --- point, spot and sun --- is evaluated at runtime, with the per-light
+  caster rule (point lights never cast; spots and suns unless \texttt{\_shadows 0}). \texttt{renderer\_sh} never
   reads baked direct light: the side file holds only the indirect bake (4.3). The editor can't read
   the side file and the engine can, so direct light stays where the preview computes it.
+\item Shadow atlas tiles: the editor gives its 16 tiles to the 16 lights nearest the camera;
+  sh-renderer ranks by flux$/d^2$ and caps at 10 (\texttt{scene.cpp:732--747}). The engine matches
+  the editor.
 \item Emissive surfaces give direct light at runtime only through an attached \texttt{light\_area}
   or \texttt{\_proxy} light, which arrives with 4.5; until then they only glow.
-\item Exit criterion: the editor lighting preview and the engine's direct-light-only render agree
-  from the documented camera, within the tolerance already written down for the benchmark map.
-  4.5 extends the same check to the benchmark fireplace's \texttt{light\_area}.
+\item Exit criterion: the gamepack README's unshadowed parity check --- the editor lighting preview
+  and the engine's direct-light-only render from the documented camera, with ambient and sky
+  emission off, agree to a mean absolute error of at most 2/255 in linear light, with no
+  $8\times8$ block above 6/255. 4.5 extends the same check to the benchmark fireplace's
+  \texttt{light\_area}.
 \end{itemize}
 
 \subsection{3.5 Shadow parity and solid hulls}
+C5; needs C4, the side-file loader C4b (4.4) and B5.
 \begin{itemize}
-\item Load the solid hull mesh that \texttt{-shbake} writes into the side file (4.3): one closed
+\item Take the solid hull mesh that \texttt{-shbake} writes into the side file (4.3), through the
+  side-file loader (C4b, 4.4): one closed
   convex hull per casting brush, structural and detail, which q3map2 builds from the brush and
   brushside lumps. Use the hulls as front-face-culled casters; draw surfaces remain receivers. The
   bake's blockers and the renderer's casters are then one solid set, and nothing is rebuilt at
@@ -841,7 +1001,9 @@ stock fallback on the same map, and the stock check still passes on the same pk3
 \item Alpha-tested draw surfaces cast too: surfaces whose shader the editor's caster rule says casts
   through its alpha (the fence, leaf cards; \texttt{trans} with \texttt{alphashadow}) are drawn into the
   shadow maps with their alpha test, alongside the hulls. They are non-solid, so the hulls alone
-  would drop them, and the editor and sh-baker already cast them.
+  would drop them, and the editor and sh-baker already cast them. Hulls plus these surfaces replace
+  sh-renderer's ``every non-additive surface casts''. Cascade range and padding are in map units,
+  matched to the README.
 \item The bake does not follow the caster rule's per-light part: it shadows every light
   (§\ref{sec:units}). That changes only baked light (the stock lightmap and, slightly, bounced
   light), not the runtime shadows compared here.
@@ -852,6 +1014,17 @@ stock fallback on the same map, and the stock check still passes on the same pk3
   undefined for patches and models. The constants and their provenance are already tabulated in
   the gamepack README; that table moves with the pack in Stage 2.
 \item Exit criterion: the town block's shadows match between editor and engine.
+\end{itemize}
+
+\subsection{3.6 Spot-flashlight ABI}
+C8; needs C4 and the game-code decision (§\ref{sec:open}). Blocks the flashlight of Stage~1 (A10).
+\begin{itemize}
+\item \texttt{trap\_R\_AddLightToScene} is omni-only. A \texttt{refexport\_t} extension adds a
+  shadowed spot light, drawn with C4's spot atlas.
+\item A mod's cgame must detect the extension before calling it, because an unknown syscall is
+  fatal on a stock engine; without it the cgame falls back to \texttt{trap\_R\_AddLightToScene}.
+\item The ABI's shape --- a \texttt{REF\_API\_VERSION} bump or an extension lookup --- is decided
+  in the task.
 \end{itemize}
 
 \section{Stage 4: SH indirect, baked by q3map2}
@@ -942,11 +1115,20 @@ q3map2 includes the headers in \texttt{src/} directly and links the \texttt{libs
   Before, the stop's absolute floor ended any point whose per-sample L0 was constant (one lit only
   by unshadowed point lights) at its 64-sample minimum, whatever \texttt{samples} said. The default
   0.01 is unchanged. \emph{Done (\texttt{sh-baker} PR \#68, \texttt{8f181ba}).}
+\item \textbf{Sky radiance in the full bake} (B11, revision 8). When
+  \texttt{Scene::environment} (\texttt{std::optional<Environment>}, \texttt{scene.h:89--114},
+  \texttt{:145--146}) is set and the bake is not \texttt{indirect\_only}, rays that escape, at the
+  baked point and after bounces, return its radiance. \texttt{indirect\_only} bakes never add sky
+  radiance; they keep recording only the escape fraction (environment visibility,
+  \texttt{baker.cpp:202,231}), which is what lets the runtime change the sky. An unset environment
+  gives bit-identical bakes. Coordinated with B7, whose guided sensor rays already include sky
+  escapes. Not started.
 \end{enumerate}
 The existing light types already cover what q3map2 passes in: point, spot, directional and area
-lights; material-less geometry is already a pure occluder. The point bake never reads the scene's
-environment (a ray that misses returns zero), so there is no sky light; sky surfaces neither cast
-nor emit, and outdoor light comes from \texttt{light\_sun}.
+lights; material-less geometry is already a pure occluder. Today the point bake never reads the
+scene's environment (a ray that misses returns zero), so there is no sky light yet, and outdoor
+light comes from \texttt{light\_sun}. Item~9 adds it to the full bake only: sky surfaces still
+never cast, and the indirect bake stays sky-free apart from visibility (§\ref{sec:sky}).
 
 \subsection{4.3 \texttt{-shbake} in q3map2}
 
@@ -964,7 +1146,9 @@ nor emit, and outdoor light comes from \texttt{light\_sun}.
   shader info: the base-colour image, the \texttt{qer\_pbr\_*} maps and factors (q3map2's shader
   parser learns them), additive stages as emitters. Lights are the editor's \texttt{light},
   \texttt{light\_spot} and \texttt{light\_sun} entities read with the physical model of
-  §\ref{sec:units}, not q3map2's light parsing. Occluding surfaces follow the editor's
+  §\ref{sec:units}, not q3map2's light parsing. With B12 the map's sky shader becomes the full
+  bake's \texttt{Environment}, derived as in the editor; the indirect bake gets none
+  (§\ref{sec:sky}). Occluding surfaces follow the editor's
   shadow-caster rule (§\ref{sec:rev6}). Every light casts: \texttt{sh-baker} has no per-light shadow
   switch, so point lights and \texttt{\_shadows 0} lights are shadowed too (§\ref{sec:units}).
 \item \textbf{Solid hulls.} q3map2's draw surfaces are thin, and rays can slip through the cracks
@@ -1135,12 +1319,26 @@ nor emit, and outdoor light comes from \texttt{light\_sun}.
   only indirect light from the side file. Surfaces read their luxel SH and run the indirect BRDF:
   Ramamoorthi--Hanrahan cosine convolution for diffuse, SH evaluated along the reflection vector for
   specular.
-\item Dynamic models (players, weapons, items) read the SH grid: trilinear interpolation of the
-  eight surrounding probes' coefficients, which is exact blending because SH is linear. Invalid
-  probes are dropped and the remaining weights renormalised. The result is evaluated per pixel at
-  the normal and clamped at 0.
-\item A map without the side file falls back to the BSP lightmap. Legacy non-PBR levels run on
-  \texttt{opengl2}. The stock fallback uses the full bake's lightmap, grid and vertex colours.
+\item \textbf{Side-file loader} (C4b; needs C2 and B13). \texttt{maps/<name>/<name>.shsf} version~3
+  (\texttt{q3map2\_extension.h}), read through \texttt{ri.FS\_ReadFile}. Other versions are
+  refused; the pages are checked against the BSP lightmap pages. When the file is absent or does not
+  match, the map falls back to the BSP lightmap. The reader is MIT, written from the format
+  description, because \texttt{q3map2\_extension} is GPL-2.0-or-later and sh-renderer MIT. C5 takes
+  the hull mesh and C6 the pages and grid from it.
+\item \textbf{SH at runtime} (C6; needs C4b). Per-page RGB L0--L2 replaces sh-renderer's EXR atlas
+  and its luma-only L1/L2 (\texttt{radiance.frag:344--373}).
+\item Dynamic models (players, weapons, items) and vertex-lit surfaces read the SH grid; the side
+  file has no per-vertex SH. Trilinear interpolation of the eight surrounding probes' coefficients
+  is exact blending because SH is linear. Invalid probes are dropped and the remaining weights
+  renormalised. The result is evaluated per pixel at the normal and clamped at 0.
+\item Sky light (C6, needs C3a for the sky images). At load the sky shader is projected to L0--L2
+  SH with the editor's derivation; a surface adds that SH's irradiance at its normal times the
+  luxel visibility plane, and grid lighting times the probes' visibility (side file v3, B13),
+  interpolated like the SH. The visibility is a scalar fraction of escaped rays, not directional,
+  and the indirect bake carries no sky radiance, so enhanced sky light has no bounce; that is the
+  price of a sky that changes without a rebake.
+\item Legacy non-PBR levels run on \texttt{opengl2}. The stock fallback uses the full bake's
+  lightmap, grid and vertex colours.
 \item Emissive direct light. The indirect bake leaves out direct light from emissive surfaces
   (\texttt{sh-baker} \#66), and runtime direct light covers only the light entities, so
   \texttt{renderer\_sh} gets it from attached \texttt{light\_area} and \texttt{\_proxy} lights (4.5).
@@ -1153,6 +1351,7 @@ nor emit, and outdoor light comes from \texttt{light\_sun}.
 \end{itemize}
 
 \subsection{4.5 Follow-up: LTC area lights}
+C7; needs C6 and A11.
 \begin{itemize}
 \item The author attaches lights in the editor (2.2 step 6, revision 7): a \texttt{light\_area} on
   a static emissive quad, or a \texttt{\_proxy} \texttt{light}/\texttt{light\_spot} on anything
@@ -1162,7 +1361,9 @@ nor emit, and outdoor light comes from \texttt{light\_sun}.
   every emitter's direct light (\#66), so runtime direct light is counted once, and the full bake
   keeps it for the stock lightmap.
 \item \texttt{\_frustum} gives the area light a shadow map from the rectangle's centre, with the
-  caster rule, as in the preview.
+  caster rule, as in the preview. It shares C4's atlas.
+\item The LTC tables are \texttt{setup/data/tools/gl/ltc\_ggx.bin} (BSD), embedded in the module
+  with its licence notice and checked against the SHA-256 in the gamepack README.
 \item Optional, enhanced-only: \texttt{renderer\_sh} may modulate the area light by the shader's
   emissive image, normalised to its mean so the total stays the same, and by the current
   \texttt{animMap} frame. The parity check runs without modulation, which the editor does not have.
@@ -1275,6 +1476,10 @@ constant between consumers.
 \item \textbf{Emissive surfaces.} Every target draws a surface's own radiance (§\ref{sec:materials}).
   It lights other surfaces only through the bake (the full bake directly and by bounce, the
   indirect bake by bounce) and, in the preview and at runtime, through an attached light.
+\item \textbf{Sky} (revision 8). The map's sky shader, when it has
+  \texttt{qer\_pbr\_emissiveStrength}, is radiance arriving from every direction the sky covers:
+  strength $\times$ \texttt{rgbGen const} $\times$ the sky image's linear texel, in the same units
+  as emissive surfaces, projected to L0--L2 SH. It never casts. §\ref{sec:sky}.
 \item \textbf{Colour and shadows.} \texttt{\_color} is linear RGB. In the editor preview and
   \texttt{renderer\_sh}'s runtime direct light, spots and suns cast unless \texttt{\_shadows 0},
   area lights cast only with a non-zero \texttt{\_frustum}, and point lights never cast. The bake shadows every light, point lights and \texttt{\_shadows 0}
@@ -1295,7 +1500,8 @@ constant between consumers.
 \toprule
 Consumer & Current scale & Where \\
 \midrule
-\texttt{sh-renderer} & $\times 1/200$ on the glTF intensity; replaced by reading the entities (3.4) &
+\texttt{sh-renderer} & $\times 1/200$ on the glTF intensity; deleted with the glTF loader (C0, 3.4),
+  lights read from the entities &
   \texttt{sh-renderer/src/loader.cpp:18}, \texttt{kLightIntensityScale} \\
 Editor & flux in the tens of thousands, raw map units, no metre conversion; this is the model &
   \texttt{setup/data/gamepacks/pbr/README.md} \\
@@ -1306,6 +1512,53 @@ Editor & flux in the tens of thousands, raw map units, no metre conversion; this
 
 \vspace{4pt}
 One spatial unit is fixed for all consumers: raw map units, as the editor and q3map2 use.
+
+\section{Sky light (cross-cutting)}\label{sec:sky}
+
+\textbf{Decided (revision 8): the sky emits; the indirect bake stores only its visibility.} Until now no track had sky light. The point bake read
+no environment, so a ray that escaped returned zero. The editor preview has only the constant
+``Lighting ambient'' (default 0.02); it draws the sky shader with its skybox program but takes no
+light from it. sh-renderer's term (\texttt{radiance.frag:423--424}) is \texttt{u\_sky\_color}
+$\times$ sun intensity$/10$ $\times$ baked visibility, a flat colour rather than sky SH.
+\texttt{sh-baker}'s \texttt{Scene} already has an optional \texttt{Environment} (texture or
+Preetham, \texttt{SHCoeffs}, \texttt{ProjectEnvironmentToSH}; \texttt{scene.h:89--114},
+\texttt{:145--146}), which \texttt{-shbake} does not fill. The details below are decided in the
+openspec change and the PRs.
+\begin{itemize}
+\item \textbf{Source.} The map's sky shader (\texttt{surfaceparm sky}). Its radiance is
+  $\texttt{qer\_pbr\_emissiveStrength} \times \texttt{rgbGen const} \times$ the sky image in
+  linear --- the six faces of the \texttt{skyparms} farbox, or the cloud stage's image when there
+  is no farbox --- projected to L0--L2 SH. This is the emitter derivation of §\ref{sec:rev7} and the
+  radiance units of §\ref{sec:units}. A sky shader without \texttt{qer\_pbr\_emissiveStrength}
+  emits nothing, so legacy maps are unchanged. One sky per map; a map that uses more than one sky
+  shader gets a warning.
+\item \textbf{The town and the benchmark.} The town's sky is \texttt{skyparms - 512 -} with the
+  stage \texttt{map textures/town/sky} (\texttt{content/town/scripts/town.shader:320--323}), so its
+  radiance comes from the cloud stage's image, whose colour equals the fog's. The benchmark's is
+  \texttt{skyparms env/xnight2 - -}, a farbox.
+\item \textbf{Editor} (A12, openspec change; needs A1 and A6). The parser reads the sky shader's
+  emission, and the preview adds the sky's SH irradiance at the normal, times base colour and
+  occlusion. It is unshadowed: the editor has no visibility, so this overlights interiors. The
+  constant ``Lighting ambient'' stays for the darkness budget; how the two combine is decided in the
+  change.
+\item \textbf{Indirect bake and runtime} (B13, C6). The indirect bake never adds sky radiance. It
+  records only sky visibility, the fraction of a point's first rays that escape
+  (\texttt{baker.cpp:202,231}): per luxel in the side file's visibility plane (already written),
+  and per grid probe from side file v3 (B13, q3map2 only). Sky surfaces stay non-casting, so rays
+  pass through the town's low sky ceiling. \texttt{renderer\_sh} projects the sky shader to SH at
+  load (C6) and adds its irradiance at the normal times that visibility, replacing sh-renderer's
+  flat term. The sky can change, even per frame, without a rebake. Enhanced sky light is therefore
+  unbounced and its occlusion non-directional; accepted.
+\item \textbf{Full bake} (B11 \texttt{sh-baker} PR, B12 q3map2; B12 needs A12 for the shared
+  derivation). The point bake returns the environment's radiance on rays that escape, at the point
+  and after bounces, unless \texttt{indirect\_only}. \texttt{-shbake} builds the
+  \texttt{Environment} from the sky shader and passes it to the full bake only, so the stock
+  lightmap, vertex colours and grid carry direct and bounced sky light. A sky change needs a rebake
+  for the stock target only. Adding sky light to the lightmap in q3map2 after the bake was rejected:
+  it would lose the bounce.
+\item \textbf{Parity.} None for sky light: the preview's is unshadowed, the runtime's uses baked
+  visibility. 3.4's parity check runs with sky emission off, as the README procedure already does.
+\end{itemize}
 
 \section{World-building conventions for the town}
 
@@ -1348,10 +1601,11 @@ reference look is reachable.
 
 \section{Risks}
 
-\begin{tabular}{@{}p{0.34\textwidth}p{0.62\textwidth}@{}}
+\begin{longtable}{@{}p{0.34\textwidth}p{0.62\textwidth}@{}}
 \toprule
 Risk & Mitigation \\
 \midrule
+\endhead
 Stock rend2 picks up PBR data by accident &
   The contract: reserved suffixes, no rend2 keywords, and and no rend2 HDR lighting files (\texttt{lm\_*.hdr}, \texttt{vertlight.raw}, \texttt{lightgrid.raw}). The stock check runs
   the shipped pk3. \\
@@ -1383,7 +1637,14 @@ The \texttt{renderer\_sh} feature set is open-ended &
   3 is stubbed indefinitely. \texttt{opengl2} remains the fallback for anything unimplemented, so
   no gap blocks play. \\
 The \texttt{ri.*} refactor spreads through sh-renderer &
-  The one non-additive part of §3.1; done first, before feature work, so nothing is ported twice. \\
+  The one non-additive part of §3.1 (C1), after C0 has removed the glTF path; done first, before
+  feature work, so nothing is ported twice. \\
+The machine lacks GL~4.6 core &
+  \texttt{renderer\_sh} stops with \texttt{ri.Error} naming the version; \texttt{opengl1} and
+  \texttt{opengl2} keep their own context request. \\
+The preview's sky light is unshadowed and overlights interiors &
+  Accepted approximation (§\ref{sec:sky}); the runtime uses baked visibility and the full bake
+  shadows it, and 3.4's parity check runs with sky emission off. \\
 Point lights over-light occluded areas in the preview &
   Authoring convention: spots where occlusion matters. \\
 The bake shadows lights the preview does not &
@@ -1406,14 +1667,15 @@ Long straight streets defeat the PVS &
 Qt GL context lacks needed features for FBO and half-float &
   Explicit 3.3 compatibility profile in \texttt{QSurfaceFormat}; the legacy code keeps working. \\
 \bottomrule
-\end{tabular}
+\end{longtable}
 
 \section{Dependency summary}
 
-\begin{tabular}{@{}llp{0.52\textwidth}@{}}
+\begin{longtable}{@{}llp{0.52\textwidth}@{}}
 \toprule
 Item & Depends on & Note \\
 \midrule
+\endhead
 0.1 Convert bench map & --- & Unblocked; also the parity asset for everything below. \\
 0.2 First town block & 0.1 & Done (2026-11-21): \texttt{content/town}, map \texttt{town1}, generated by \texttt{tools/town/}. \\
 0.3 Measure stock fallback & 0.2, 4.3 & Zero code. Judges \texttt{sh-baker}'s lightmap on the
@@ -1424,27 +1686,41 @@ Item & Depends on & Note \\
 2.2 step 5 & 0.1 & Deletes \texttt{pbr.game}; keeps the \texttt{pbr} entity module. \\
 2.2 step 6 & 2.2 step 4, 0.4 & \texttt{light\_area}, \texttt{\_proxy} lights and their LTC preview
   (revision 7). \\
-3.1 \texttt{ri.*} refactor & --- & Decided; not additive, so it goes first. \\
-3.3 Tier 1 features & 3.1, 0.2 & Walkable town under \texttt{cl\_renderer sh}. \\
-3.3 Tier 2 features & Tier 1 & Sky and fog first; they define the town. \\
-3.4 Direct light parity & 2.2, Tier 1 & Editor and engine read lights identically; every light's
-  direct term is computed at runtime, never baked. \\
-3.5 Shadow parity & 3.4, 4.3 & Hulls loaded from the side file, validated against the town
+2.x Sky emission in the editor (A12) & 2.2 steps 1, 4 & Sky shader parsed; unshadowed sky SH in
+  the preview (§\ref{sec:sky}). \\
+3.1 sh-renderer cleanup (C0) & --- & One sh-renderer PR: the glTF and EXR path and its
+  dependencies deleted, tests on synthetic inputs. \\
+3.1 Module bring-up (C1) & C0 & Not additive, so it goes first: \texttt{ri.*}, the
+  \texttt{GLimp\_Init} context parameter, the inverted frame loop. \\
+3.3 Tier 1 features (C2) & C1, 0.2 & Walkable town under \texttt{cl\_renderer sh}, own BSP and
+  shader loader; adds the \texttt{cl\_renderer sh} stock-check run. \\
+3.3 Tier 2 sky and fog (C3a) & Tier 1 & They define the town. \\
+3.3 Tier 2 rest (C3b) & C3a & May run after 3.4. \\
+3.4 Direct light parity (C4) & Tier 1, 2.2 step 4 & Editor and engine read lights identically;
+  every light's direct term is computed at runtime, never baked; the sky term moves to C6. \\
+4.4 Side-file loader (C4b) & Tier 1, 4.3, B13 & MIT reader of side-file version~3; BSP-lightmap
+  fallback. \\
+3.5 Shadow parity (C5) & 3.4, C4b, 4.3 & Hulls from the side file, validated against the town
   block. \\
+3.6 Spot-flashlight ABI (C8) & 3.4, game code & Blocks the flashlight of Stage~1. \\
 4.2 \texttt{sh-baker} PRs & --- & Reviewed and merged one at a time. Item~1 shipped as a stack of
   seven PRs; all eight items are merged (item~8 as PR \#68). \\
 4.3 \texttt{-shbake} & 4.2, 0.4 & Runs inside \texttt{-light} on q3map2's own luxels. Two bakes
   over the same points, toggled by \texttt{-shnofull} and \texttt{-shnoindirect}: the full bake
   fills the stock lightmap, grid and vertex colours; the indirect bake fills the side file's pages
   and SH grid, beside the hull mesh. Stock check on the single pk3. \\
-4.4 SH at runtime & 4.3, Tier 1 & Indirect only: luxel SH on surfaces, the SH grid on dynamic
-  models. \\
-4.5 LTC area lights & 4.4, 2.2 step 6 & Runtime direct light from attached lights, with the
-  editor's model and tables. \\
+4.2 item 9 (B11) & 4.3 & Sky radiance in non-\texttt{indirect\_only} point bakes;
+  \texttt{sh-baker} PR. \\
+Full-bake sky (B12) & B11, A12 & The sky shader's environment in the full bake only. \\
+Grid sky visibility (B13) & 4.3 & Side file v3. \\
+4.4 SH at runtime (C6) & C4b, C3a & Indirect only: luxel SH on surfaces, the SH grid on dynamic
+  models and vertex-lit surfaces; sky SH from the sky shader times baked visibility. \\
+4.5 LTC area lights (C7) & 4.4, 2.2 step 6 & Runtime direct light from attached lights, with the
+  editor's model and tables, embedded in the module. \\
 4.6 Guiding (B7, B8) & 4.3 & Opt-in; \texttt{sh-baker} PRs first, then \texttt{-shguide}. \\
 4.6 Denoising (B9, B10) & 4.3 & Opt-in; independent of guiding, measured with it off and on. \\
 4.x Editor SH preview & 4.4 & Optional. \\
 \bottomrule
-\end{tabular}
+\end{longtable}
 
 \end{document}
