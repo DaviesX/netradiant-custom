@@ -48,6 +48,17 @@
 #include "brushmanip.h"
 #include "patchmanip.h"
 #include "filterbar.h"
+#include "brush.h"
+#include "patch.h"
+#include "tools.h"
+
+#include "ishaders.h"
+#include "itextures.h"
+#include "iimage.h"
+#include "emissivelight.h"
+
+#include <map>
+#include <set>
 
 
 struct entity_globals_t
@@ -699,6 +710,543 @@ void ToggleShowLightRadii(){
 	UpdateAllWindows();
 }
 
+// Emissive lights (openspec change emissive-area-lights, design decision 11): "Create area light from selected face",
+// "Create proxy light from selection" and "Re-derive light from emitter". The maths lives in libs/emissivelight.h.
+
+inline bool game_has_pbrLights(){
+	return string_equal( GlobalRadiant().getRequiredGameDescriptionKeyValue( "entities" ), "pbr" );
+}
+
+namespace
+{
+using emissivelight::Vec2;
+using emissivelight::Vec3;
+
+/// a command's refusal: one console line saying why; nothing is changed
+void EmissiveLight_refuse( const char* command, const char* why ){
+	globalErrorStream() << command << ": " << why << '\n';
+}
+
+/// the emissive data of one shader, as the derivation reads it
+struct EmitterShader
+{
+	bool emissive = false;         ///< IShader::hasEmissive()
+	bool allAdditive = false;      ///< every map stage adds: a two-sided billboard, k = 2
+	bool srcAlpha = false;         ///< GL_SRC_ALPHA GL_ONE: texels weighted by alpha
+	Vec3 factor = Vec3( 0, 0, 0 ); ///< qer_pbr_emissiveStrength x the emissive colour
+	std::string image;             ///< the emissive stage's image
+	Image* pixels = nullptr;       ///< loaded from disk on first use; null when missing
+	bool loaded = false;
+};
+
+/// shaders and emissive images read during one command, released at its end
+class EmitterCache
+{
+	std::map<std::string, EmitterShader> m_shaders;
+public:
+	~EmitterCache(){
+		for ( auto& [name, shader] : m_shaders )
+			if ( shader.pixels != nullptr )
+				shader.pixels->release();
+	}
+	EmitterShader& get( const char* name ){
+		auto it = m_shaders.find( name );
+		if ( it == m_shaders.end() ) {
+			EmitterShader data;
+			IShader* shader = GlobalShaderSystem().getShaderForName( name );
+			data.emissive = shader->hasEmissive();
+			data.allAdditive = shader->isAllAdditive();
+			data.srcAlpha = shader->getEmissiveSrcAlpha();
+			const Vector3& colour = shader->getEmissiveFactor();
+			data.factor = Vec3( colour[0], colour[1], colour[2] ) * double( shader->getEmissiveStrength() );
+			data.image = shader->getEmissiveName();
+			shader->DecRef();
+			it = m_shaders.emplace( name, std::move( data ) ).first;
+		}
+		return it->second;
+	}
+	/// the shader's emissive image, loaded with the textures cache's loader (independent of lighting mode)
+	const Image* image( EmitterShader& shader ){
+		if ( !shader.loaded ) {
+			shader.loaded = true;
+			shader.pixels = GlobalTexturesCache().loadImage( shader.image.c_str() );
+			if ( shader.pixels != nullptr && ( shader.pixels->getWidth() == 0 || shader.pixels->getHeight() == 0 || shader.pixels->getRGBAPixels() == nullptr ) ) {
+				shader.pixels->release();
+				shader.pixels = nullptr;
+			}
+		}
+		return shader.pixels;
+	}
+};
+
+emissivelight::ImageRGBA8 ImageRGBA8_forImage( const Image& image ){
+	emissivelight::ImageRGBA8 rgba;
+	rgba.width = int( image.getWidth() );
+	rgba.height = int( image.getHeight() );
+	rgba.pixels = image.getRGBAPixels();
+	return rgba;
+}
+
+/// the mean emissive radiance strength x colour x M over the UV polygon \p uvs
+Vec3 EmitterShader_radiance( const EmitterShader& shader, const Image& image, const std::vector<Vec2>& uvs ){
+	const Vec3 mean = emissivelight::FootprintMean( ImageRGBA8_forImage( image ), uvs, shader.srcAlpha );
+	return emissivelight::EmissiveRadiance( 1, shader.factor, mean );
+}
+
+/// a brush face's winding, texture coordinates and outward normal
+struct FacePolygon
+{
+	std::vector<Vec3> points;
+	std::vector<Vec2> uvs;
+	Vec3 normal;
+};
+
+FacePolygon FacePolygon_forFace( const Face& face ){
+	FacePolygon polygon;
+	const Winding& winding = face.getWinding();
+	for ( std::size_t i = 0; i < winding.numpoints; ++i )
+	{
+		polygon.points.push_back( winding[i].vertex );
+		polygon.uvs.push_back( Vec2( winding[i].texcoord.x(), winding[i].texcoord.y() ) );
+	}
+	polygon.normal = face.plane3().normal();
+	return polygon;
+}
+
+/// the face's fan triangles, each wound so that ( b - a ) x ( c - a ) points along the outward normal
+std::vector<std::array<Vec3, 3>> FacePolygon_triangles( const FacePolygon& polygon ){
+	std::vector<std::array<Vec3, 3>> triangles;
+	for ( std::size_t i = 1; i + 1 < polygon.points.size(); ++i )
+	{
+		std::array<Vec3, 3> t = { polygon.points[0], polygon.points[i], polygon.points[i + 1] };
+		if ( vector3_dot( vector3_cross( t[1] - t[0], t[2] - t[0] ), polygon.normal ) < 0 ) {
+			std::swap( t[1], t[2] );
+		}
+		triangles.push_back( t );
+	}
+	return triangles;
+}
+
+/// the face's affine texture mapping, through its fan triangle of largest area
+std::optional<emissivelight::AffineUV> FacePolygon_affineUV( const FacePolygon& polygon ){
+	std::size_t best = 0;
+	double bestArea = 0;
+	for ( std::size_t i = 1; i + 1 < polygon.points.size(); ++i )
+	{
+		const double area = vector3_length( vector3_cross( polygon.points[i] - polygon.points[0], polygon.points[i + 1] - polygon.points[0] ) );
+		if ( area > bestArea ) {
+			bestArea = area;
+			best = i;
+		}
+	}
+	if ( best == 0 ) {
+		return std::nullopt;
+	}
+	return emissivelight::AffineUVFromTriangle( polygon.points[0], polygon.points[best], polygon.points[best + 1],
+	                                            polygon.uvs[0], polygon.uvs[best], polygon.uvs[best + 1] );
+}
+
+/// a patch's tessellated triangles with their texture coordinates, each wound to its vertex normals
+struct PatchTriangle
+{
+	std::array<Vec3, 3> points;
+	std::vector<Vec2> uvs;
+};
+
+std::vector<PatchTriangle> Patch_triangles( const Patch& patch ){
+	std::vector<PatchTriangle> triangles;
+	const PatchTesselation& tess = patch.getTesselation();
+	const auto add = [&]( RenderIndex a, RenderIndex b, RenderIndex c ){
+		const ArbitraryMeshVertex& va = tess.m_vertices.data()[a];
+		const ArbitraryMeshVertex& vb = tess.m_vertices.data()[b];
+		const ArbitraryMeshVertex& vc = tess.m_vertices.data()[c];
+		PatchTriangle t;
+		t.points = { Vec3( vertex3f_to_vector3( va.vertex ) ), Vec3( vertex3f_to_vector3( vb.vertex ) ), Vec3( vertex3f_to_vector3( vc.vertex ) ) };
+		t.uvs = { Vec2( va.texcoord.s(), va.texcoord.t() ), Vec2( vb.texcoord.s(), vb.texcoord.t() ), Vec2( vc.texcoord.s(), vc.texcoord.t() ) };
+		const Vec3 normal = Vec3( normal3f_to_vector3( va.normal ) ) + Vec3( normal3f_to_vector3( vb.normal ) ) + Vec3( normal3f_to_vector3( vc.normal ) );
+		if ( vector3_dot( vector3_cross( t.points[1] - t.points[0], t.points[2] - t.points[0] ), normal ) < 0 ) {
+			std::swap( t.points[1], t.points[2] );
+			std::swap( t.uvs[1], t.uvs[2] );
+		}
+		triangles.push_back( std::move( t ) );
+	};
+	// quad strips: indices 2k and 2k + 1 are one column of the strip
+	for ( std::size_t s = 0; s < tess.m_numStrips; ++s )
+	{
+		const RenderIndex* strip = tess.m_indices.data() + s * tess.m_lenStrips;
+		for ( std::size_t k = 0; k + 3 < tess.m_lenStrips; k += 2 )
+		{
+			add( strip[k], strip[k + 1], strip[k + 2] );
+			add( strip[k + 2], strip[k + 1], strip[k + 3] );
+		}
+	}
+	return triangles;
+}
+
+/// one emitting surface's proxy contribution; the surface's radiance is its area-weighted mean
+struct GatherResult
+{
+	std::vector<emissivelight::ProxySurface> surfaces;
+	std::size_t candidates = 0; ///< faces and patches considered, emissive or not
+};
+
+/// "Emitter gathering for proxies": the selected brush faces, every face of each wholly selected brush and the
+/// selected patches (by their tessellation), keeping those whose shader has an emissive stage. Returns false after
+/// printing a refusal when an emissive image is missing.
+bool EmissiveLight_gatherProxySurfaces( const char* command, EmitterCache& cache, GatherResult& result ){
+	std::vector<const Face*> faces;
+	std::set<const Face*> seen;
+	g_SelectedFaceInstances.foreach( [&]( FaceInstance& instance ){
+		if ( seen.insert( &instance.getFace() ).second )
+			faces.push_back( &instance.getFace() );
+	} );
+	Scene_forEachSelectedBrush( [&]( BrushInstance& brush ){
+		Brush_forEachFace( brush, [&]( Face& face ){
+			if ( seen.insert( &face ).second )
+				faces.push_back( &face );
+		} );
+	} );
+	std::vector<const Patch*> patches;
+	Scene_forEachSelectedPatch( [&]( PatchInstance& patch ){
+		patches.push_back( &patch.getPatch() );
+	} );
+	result.candidates = faces.size() + patches.size();
+
+	for ( const Face* face : faces )
+	{
+		EmitterShader& shader = cache.get( face->GetShader() );
+		if ( !shader.emissive || !face->contributes() ) {
+			continue;
+		}
+		const Image* image = cache.image( shader );
+		if ( image == nullptr ) {
+			EmissiveLight_refuse( command, StringStream( "emissive image ", shader.image.c_str(), " not found" ) );
+			return false;
+		}
+		const FacePolygon polygon = FacePolygon_forFace( *face );
+		const Vec3 radiance = EmitterShader_radiance( shader, *image, polygon.uvs );
+		result.surfaces.push_back( emissivelight::ProxySurfaceFromTriangles( radiance, shader.allAdditive, FacePolygon_triangles( polygon ) ) );
+	}
+	for ( const Patch* patch : patches )
+	{
+		EmitterShader& shader = cache.get( patch->GetShader() );
+		if ( !shader.emissive ) {
+			continue;
+		}
+		const Image* image = cache.image( shader );
+		if ( image == nullptr ) {
+			EmissiveLight_refuse( command, StringStream( "emissive image ", shader.image.c_str(), " not found" ) );
+			return false;
+		}
+		// a patch's texture mapping is not affine: its mean is weighted by each triangle's surface area
+		const std::vector<PatchTriangle> triangles = Patch_triangles( *patch );
+		std::vector<std::array<Vec3, 3>> points;
+		Vec3 sum( 0, 0, 0 );
+		double total = 0;
+		for ( const PatchTriangle& t : triangles )
+		{
+			const double area = 0.5 * vector3_length( vector3_cross( t.points[1] - t.points[0], t.points[2] - t.points[0] ) );
+			points.push_back( t.points );
+			if ( area > 0 ) {
+				sum += EmitterShader_radiance( shader, *image, t.uvs ) * area;
+				total += area;
+			}
+		}
+		if ( total > 0 ) {
+			// the normal comes from the tessellation (sum of A_t n_t), never a normalised patch normal
+			result.surfaces.push_back( emissivelight::ProxySurfaceFromTriangles( sum / total, shader.allAdditive, points ) );
+		}
+	}
+	return true;
+}
+
+/// a key value: "%g" at six significant digits, snapped to an integer within 1e-9
+std::string EmissiveLight_formatValue( double value ){
+	const double r = std::round( value );
+	if ( std::fabs( value - r ) < 1e-9 ) {
+		value = r;
+	}
+	if ( value == 0 ) {
+		value = 0;
+	}
+	char buffer[32];
+	std::snprintf( buffer, sizeof( buffer ), "%g", value );
+	return buffer;
+}
+
+std::string EmissiveLight_formatVector( const Vec3& v ){
+	return emissivelight::FormatAngles( v );
+}
+
+void EmissiveLight_setKey( Entity& entity, const char* key, const std::string& value ){
+	entity.setKeyValue( key, value.c_str() );
+	globalOutputStream() << "  " << key << " " << value.c_str() << '\n';
+}
+
+/// creates a point entity of \p classname at the map root and makes it the only selection
+Entity& EmissiveLight_createEntity( const char* classname, scene::Instance*& created ){
+	EntityClass* entityClass = GlobalEntityClassManager().findOrInsert( classname, true );
+	NodeSmartReference node( GlobalEntityCreator().createEntity( entityClass ) );
+	Node_getTraversable( GlobalSceneGraph().root() )->insert( node );
+	scene::Path entitypath( makeReference( GlobalSceneGraph().root() ) );
+	entitypath.push( makeReference( node.get() ) );
+	created = &findInstance( entitypath );
+	return *Node_getEntity( node );
+}
+
+void EmissiveLight_selectOnly( scene::Instance& instance ){
+	GlobalSelectionSystem().setSelectedAllComponents( false );
+	GlobalSelectionSystem().setSelectedAll( false );
+	if ( GlobalSelectionSystem().Mode() == SelectionSystem::eComponent ) {
+		SelectionSystem_DefaultMode();
+		ComponentModeChanged();
+	}
+	Instance_setSelected( instance, true );
+}
+
+/// parses "x y z"; false when missing or unparsable
+bool EmissiveLight_parseVector( const char* value, Vec3& v ){
+	Vector3 f;
+	if ( !string_parse_vector3( value, f ) ) {
+		return false;
+	}
+	v = Vec3( f[0], f[1], f[2] );
+	return true;
+}
+
+/// a light's "pitch yaw roll" from `angles`, else from `angle` (a yaw; -1 up, -2 down), else 0 0 0, as q3map2 reads
+/// them (AnglesFromKeys in tools/quake3/q3map2/light_sh_model.cpp)
+Vec3 EmissiveLight_anglesFromKeys( const Entity& entity ){
+	const char* angles = entity.getKeyValue( "angles" );
+	const char* angle = entity.getKeyValue( "angle" );
+	Vec3 result( 0, 0, 0 );
+	if ( !string_empty( angles ) ) {
+		if ( !EmissiveLight_parseVector( angles, result ) ) {
+			result = Vec3( 0, 0, 0 );
+		}
+	}
+	else if ( !string_empty( angle ) ) {
+		float a;
+		if ( !string_parse_float( angle, a ) ) {
+			a = 0;
+		}
+		result = a == -1 ? Vec3( -90, 0, 0 ) : a == -2 ? Vec3( 90, 0, 0 ) : Vec3( 0, a, 0 );
+	}
+	return result;
+}
+
+double EmissiveLight_sizeKey( const Entity& entity, const char* key ){
+	float value;
+	if ( !string_parse_float( entity.getKeyValue( key ), value ) || !( value > 0 ) ) {
+		return 64;
+	}
+	return value;
+}
+
+const char* const c_areaLightFromFace = "Create area light from selected face";
+const char* const c_proxyLightFromSelection = "Create proxy light from selection";
+const char* const c_rederiveLight = "Re-derive light from emitter";
+
+} // namespace
+
+void Entity_areaLightFromFace(){
+	const char* command = c_areaLightFromFace;
+	std::vector<const Face*> faces;
+	g_SelectedFaceInstances.foreach( [&faces]( FaceInstance& instance ){ faces.push_back( &instance.getFace() ); } );
+	if ( faces.size() != 1 ) {
+		EmissiveLight_refuse( command, faces.empty() ? "no brush face is selected" : StringStream( faces.size(), " brush faces are selected; select exactly one" ).c_str() );
+		return;
+	}
+	const Face& face = *faces.front();
+	const FacePolygon polygon = FacePolygon_forFace( face );
+	const std::optional<std::array<Vec3, 4>> corners = emissivelight::RectangleCorners( polygon.points );
+	if ( !corners ) {
+		EmissiveLight_refuse( command, "face is not a rectangle" );
+		return;
+	}
+	EmitterCache cache;
+	EmitterShader& shader = cache.get( face.GetShader() );
+	if ( !shader.emissive ) {
+		EmissiveLight_refuse( command, StringStream( "shader ", face.GetShader(), " has no emissive stage" ) );
+		return;
+	}
+	const Image* image = cache.image( shader );
+	if ( image == nullptr ) {
+		EmissiveLight_refuse( command, StringStream( "emissive image ", shader.image.c_str(), " not found" ) );
+		return;
+	}
+	const std::optional<emissivelight::Split> split = emissivelight::SplitRadiance( EmitterShader_radiance( shader, *image, polygon.uvs ) );
+	if ( !split ) {
+		EmissiveLight_refuse( command, StringStream( "the emissive radiance of ", face.GetShader(), " over the face is zero" ) );
+		return;
+	}
+	const emissivelight::Rect rect = emissivelight::AreaRectFromCorners( *corners, polygon.normal );
+
+	UndoableCommand undo( "entityAreaLightFromFace" );
+	scene::Instance* instance;
+	Entity& entity = EmissiveLight_createEntity( "light_area", instance );
+	globalOutputStream() << command << ": light_area\n";
+	EmissiveLight_setKey( entity, "origin", EmissiveLight_formatVector( rect.centre ) );
+	EmissiveLight_setKey( entity, "angles", emissivelight::FormatAngles( emissivelight::AnglesFromBasis( rect.forward, rect.right ) ) );
+	EmissiveLight_setKey( entity, "width", EmissiveLight_formatValue( rect.width ) );
+	EmissiveLight_setKey( entity, "height", EmissiveLight_formatValue( rect.height ) );
+	EmissiveLight_setKey( entity, "radius", EmissiveLight_formatValue( emissivelight::AreaLightRadius( rect.width, rect.height ) ) );
+	EmissiveLight_setKey( entity, "intensity", EmissiveLight_formatValue( split->intensity ) );
+	EmissiveLight_setKey( entity, "_color", EmissiveLight_formatVector( split->colour ) );
+	EmissiveLight_selectOnly( *instance );
+}
+
+void Entity_proxyLightFromSelection(){
+	const char* command = c_proxyLightFromSelection;
+	EmitterCache cache;
+	GatherResult gathered;
+	if ( !EmissiveLight_gatherProxySurfaces( command, cache, gathered ) ) {
+		return;
+	}
+	if ( gathered.surfaces.empty() ) {
+		EmissiveLight_refuse( command, gathered.candidates == 0 ? "no brush, face or patch is selected" : "no selected surface has an emissive stage" );
+		return;
+	}
+	const emissivelight::Proxy proxy = emissivelight::DeriveProxy( gathered.surfaces );
+	const std::optional<emissivelight::Split> split = emissivelight::SplitRadiance( proxy.flux );
+	if ( !split ) {
+		EmissiveLight_refuse( command, "the emitted flux is zero" );
+		return;
+	}
+	const bool spot = proxy.kind == emissivelight::ProxyKind::Spot;
+
+	UndoableCommand undo( "entityProxyLightFromSelection" );
+	scene::Instance* instance;
+	Entity& entity = EmissiveLight_createEntity( spot ? "light_spot" : "light", instance );
+	globalOutputStream() << command << ": " << ( spot ? "light_spot" : "light" ) << " from " << gathered.surfaces.size() << " surface(s)\n";
+	EmissiveLight_setKey( entity, "origin", EmissiveLight_formatVector( proxy.origin ) );
+	if ( spot ) {
+		EmissiveLight_setKey( entity, "angles", emissivelight::FormatAngles( proxy.angles ) );
+		EmissiveLight_setKey( entity, "cone", "90" );
+		EmissiveLight_setKey( entity, "cone_inner", "89" );
+		EmissiveLight_setKey( entity, "_shadows", "0" );
+	}
+	EmissiveLight_setKey( entity, "_proxy", "1" );
+	EmissiveLight_setKey( entity, "intensity", EmissiveLight_formatValue( split->intensity ) );
+	EmissiveLight_setKey( entity, "_color", EmissiveLight_formatVector( split->colour ) );
+	EmissiveLight_selectOnly( *instance );
+}
+
+void Entity_rederiveLight(){
+	const char* command = c_rederiveLight;
+	class LightCollector : public SelectionSystem::Visitor
+	{
+	public:
+		mutable std::vector<Entity*> m_lights;
+		void visit( scene::Instance& instance ) const override {
+			Entity* entity = Node_getEntity( instance.path().top() );
+			if ( entity != 0 ) {
+				const char* classname = entity->getClassName();
+				if ( string_equal( classname, "light" ) || string_equal( classname, "light_spot" )
+				  || string_equal( classname, "light_sun" ) || string_equal( classname, "light_area" ) ) {
+					m_lights.push_back( entity );
+				}
+			}
+		}
+	} collector;
+	GlobalSelectionSystem().foreachSelected( collector );
+	if ( collector.m_lights.size() != 1 ) {
+		EmissiveLight_refuse( command, collector.m_lights.empty() ? "no light is selected" : "more than one light is selected; select exactly one" );
+		return;
+	}
+	Entity& light = *collector.m_lights.front();
+	const char* classname = light.getClassName();
+	const bool area = string_equal( classname, "light_area" );
+	// "_proxy" is read here only (the entity module keeps no copy), as q3map2 reads a boolean: the value starts with '1'
+	const bool proxy = ( string_equal( classname, "light" ) || string_equal( classname, "light_spot" ) ) && light.getKeyValue( "_proxy" )[0] == '1';
+	if ( !area && !proxy ) {
+		EmissiveLight_refuse( command, StringStream( "the selected ", classname, " is not an area light or a point or spot proxy" ) );
+		return;
+	}
+
+	EmitterCache cache;
+	std::optional<emissivelight::Split> split;
+	std::string source;
+	if ( area ) {
+		Vec3 origin( 0, 0, 0 );
+		EmissiveLight_parseVector( light.getKeyValue( "origin" ), origin );
+		const Vec3 angles = EmissiveLight_anglesFromKeys( light );
+		const double width = EmissiveLight_sizeKey( light, "width" ), height = EmissiveLight_sizeKey( light, "height" );
+		const emissivelight::AttachRect attach = emissivelight::AttachRectFromAngles( origin, angles, width, height );
+		const emissivelight::Basis basis = emissivelight::AngleVectors( angles );
+		emissivelight::Rect rect;
+		rect.centre = origin;
+		rect.forward = basis.forward;
+		rect.right = basis.right;
+		rect.up = basis.up;
+		rect.width = width;
+		rect.height = height;
+
+		// q3map2 -shbake's attachment test applied to every brush face in the map
+		std::vector<const Face*> attached;
+		Scene_ForEachBrush_ForEachFace( GlobalSceneGraph(), [&]( Face& face ){
+			if ( face.contributes() && cache.get( face.GetShader() ).emissive ) {
+				const FacePolygon polygon = FacePolygon_forFace( face );
+				if ( emissivelight::FaceAttached( attach, polygon.points, polygon.normal ) ) {
+					attached.push_back( &face );
+				}
+			}
+		} );
+		if ( attached.empty() ) {
+			EmissiveLight_refuse( command, "no emitter found: no emissive face lies on the area light's rectangle" );
+			return;
+		}
+		std::vector<emissivelight::Overlap> overlaps;
+		for ( const Face* face : attached )
+		{
+			EmitterShader& shader = cache.get( face->GetShader() );
+			const Image* image = cache.image( shader );
+			if ( image == nullptr ) {
+				EmissiveLight_refuse( command, StringStream( "emissive image ", shader.image.c_str(), " not found" ) );
+				return;
+			}
+			const FacePolygon polygon = FacePolygon_forFace( *face );
+			const emissivelight::ClippedPolygon clipped = emissivelight::ClipPolygonToRect( polygon.points, rect );
+			const std::optional<emissivelight::AffineUV> uv = FacePolygon_affineUV( polygon );
+			if ( clipped.area > 0 && uv ) {
+				std::vector<Vec2> uvs;
+				for ( const Vec3& p : clipped.points )
+					uvs.push_back( ( *uv )( p ) );
+				overlaps.push_back( { clipped.area, EmitterShader_radiance( shader, *image, uvs ) } );
+			}
+		}
+		split = emissivelight::SplitRadiance( emissivelight::OverlapWeightedRadiance( overlaps ) );
+		source = StringStream( "light_area from ", attached.size(), " attached face(s)" ).c_str();
+	}
+	else
+	{
+		GatherResult gathered;
+		if ( !EmissiveLight_gatherProxySurfaces( command, cache, gathered ) ) {
+			return;
+		}
+		if ( gathered.candidates == 0 ) {
+			EmissiveLight_refuse( command, "select the emitting surfaces together with the proxy light" );
+			return;
+		}
+		if ( gathered.surfaces.empty() ) {
+			EmissiveLight_refuse( command, "no emitter found: no selected surface has an emissive stage" );
+			return;
+		}
+		split = emissivelight::SplitRadiance( emissivelight::DeriveProxy( gathered.surfaces ).flux );
+		source = StringStream( classname, " proxy from ", gathered.surfaces.size(), " surface(s)" ).c_str();
+	}
+	if ( !split ) {
+		EmissiveLight_refuse( command, "the derived value is zero" );
+		return;
+	}
+
+	UndoableCommand undo( "entityRederiveLight" );
+	globalOutputStream() << command << ": " << source.c_str() << '\n';
+	EmissiveLight_setKey( light, "intensity", EmissiveLight_formatValue( split->intensity ) );
+	EmissiveLight_setKey( light, "_color", EmissiveLight_formatVector( split->colour ) );
+}
+
+
 inline bool game_has_killConnect(){
 	return g_pGameDescription->mGameType == "nexuiz"
 	    || g_pGameDescription->mGameType == "xonotic"
@@ -713,6 +1261,12 @@ void Entity_constructMenu( QMenu* menu ){
 	create_menu_item_with_mnemonic( menu, "&Move Primitives to Entity", "EntityMovePrimitivesToLast" );
 	create_menu_item_with_mnemonic( menu, "&Select Color...", "EntityColorSet" );
 	create_menu_item_with_mnemonic( menu, "&Normalize Color", "EntityColorNormalize" );
+	if ( game_has_pbrLights() ) {
+		menu->addSeparator();
+		create_menu_item_with_mnemonic( menu, c_areaLightFromFace, "EntityAreaLightFromFace" );
+		create_menu_item_with_mnemonic( menu, c_proxyLightFromSelection, "EntityProxyLightFromSelection" );
+		create_menu_item_with_mnemonic( menu, c_rederiveLight, "EntityRederiveLight" );
+	}
 	menu->addSeparator();
 	create_menu_item_with_mnemonic( menu, "Reload Entity Definitions", "EntityReloadDefinitions" );
 }
@@ -739,6 +1293,11 @@ void Entity_Construct(){
 	GlobalCommands_insert( "EntityUngroup", makeCallbackF( Entity_ungroup ) );
 	GlobalCommands_insert( "EntityUngroupPrimitives", makeCallbackF( Entity_ungroupSelectedPrimitives ) );
 	GlobalCommands_insert( "EntityReloadDefinitions", makeCallbackF( Entity_reloadDefinitions ) );
+	if ( game_has_pbrLights() ) {
+		GlobalCommands_insert( "EntityAreaLightFromFace", makeCallbackF( Entity_areaLightFromFace ) );
+		GlobalCommands_insert( "EntityProxyLightFromSelection", makeCallbackF( Entity_proxyLightFromSelection ) );
+		GlobalCommands_insert( "EntityRederiveLight", makeCallbackF( Entity_rederiveLight ) );
+	}
 
 	GlobalToggles_insert( "ShowLightRadiuses", makeCallbackF( ToggleShowLightRadii ), ToggleItem::AddCallbackCaller( g_show_lightradii_item ) );
 

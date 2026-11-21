@@ -344,3 +344,75 @@ textures/fixture/alphatrans
 		depthFunc equal
 	}
 }
+
+// emitters the lighting preview draws in linear HDR (emissive-area-lights 8.1): placed in a third row at y = -320
+
+// all-additive flame: adds 4 x the linear texel and occludes nothing
+textures/fixture/emitflame
+{
+	qer_editorimage textures/fixture/fx_glow
+	qer_pbr_emissiveStrength 4
+	{
+		map textures/fixture/fx_glow
+		blendFunc add
+	}
+}
+
+// all-additive glow blended GL_SRC_ALPHA GL_ONE: the texel's alpha weights it
+textures/fixture/emitsrcalpha
+{
+	qer_editorimage textures/fixture/fx_alpha
+	surfaceparm nolightmap
+	surfaceparm trans
+	{
+		map textures/fixture/fx_alpha
+		blendFunc GL_SRC_ALPHA GL_ONE
+	}
+}
+
+// nolightmap sign: opaque base fullbright plus 8 x the red glow
+textures/fixture/emitnolmsign
+{
+	qer_editorimage textures/fixture/fx_base
+	qer_pbr_emissiveStrength 8
+	surfaceparm nolightmap
+	{
+		map textures/fixture/fx_base
+	}
+	{
+		map textures/fixture/fx_glow
+		blendFunc add
+		rgbGen const ( 1 0 0 )
+	}
+}
+
+// a black rgbGen const glow has no emissive: it keeps its textured-mode state
+textures/fixture/emitblack
+{
+	qer_editorimage textures/fixture/fx_glow
+	surfaceparm nolightmap
+	surfaceparm trans
+	{
+		map textures/fixture/fx_glow
+		blendFunc add
+		rgbGen const ( 0 0 0 )
+	}
+}
+
+// blended (qer_trans) nolightmap window with a red glow: not all-additive, so it keeps its textured-mode state
+textures/fixture/emittrans
+{
+	qer_editorimage textures/fixture/fx_base
+	qer_trans 0.5
+	qer_pbr_emissiveStrength 8
+	surfaceparm nolightmap
+	surfaceparm trans
+	{
+		map textures/fixture/fx_base
+	}
+	{
+		map textures/fixture/fx_glow
+		blendFunc add
+		rgbGen const ( 1 0 0 )
+	}
+}

@@ -1,7 +1,8 @@
 # PBR overlay for Quake III Arena
 
 This pack overlays the downloaded Quake III Arena gamepack so that `Q3.game` authors PBR levels: physical light
-entities, the lighting preview's documentation, and three build entries that compile the town. Materials are ordinary
+entities (point, spot, sun and area lights, plus proxies for other emitters), the lighting preview's documentation,
+and three build entries that compile the town. Materials are ordinary
 `scripts/*.shader` files with vanilla stages plus top-level `qer_pbr_*` keywords (plan §Material authoring; the
 benchmark's `content/benchmark/scripts/bench.shader` is the worked example).
 
@@ -26,7 +27,7 @@ default for Quake 3 based games and can be turned off with the camera preference
 
 ```
 games/Q3.game                       the downloaded game file with entities="pbr"
-Q3.game/baseq3/_pbr_lights.ent      definitions of light, light_spot and light_sun (the only copy)
+Q3.game/baseq3/_pbr_lights.ent      definitions of light, light_spot, light_sun and light_area (the only copy)
 Q3.game/default_build_menu.xml      the downloaded build menu plus the three "Town" builds
 README.md                           this file (not installed)
 ```
@@ -35,9 +36,9 @@ README.md                           this file (not installed)
 `_pbr_lights.ent` sorts before the stock `entities.ent`, and the first definition of a class name wins, so its
 `light` replaces the stock q3map2 light; every other stock entity stays available.
 
-Stock ioquake3 prints `light_spot doesn't have a spawn function` (and the same for `light_sun`) once per entity when
-it loads such a map; that is harmless, since the lights are only kept in the BSP for `renderer_sh`. The stock check
-allowlists exactly those two lines.
+Stock ioquake3 prints `light_spot doesn't have a spawn function` (and the same for `light_sun` and `light_area`) once
+per entity when it loads such a map; that is harmless, since the lights are only kept in the BSP for `renderer_sh`.
+The stock check allowlists exactly those three spawn-function lines (`tools/stockcheck/allowlist.txt`).
 
 ## Build menu
 
@@ -56,6 +57,13 @@ the check gates. `-keeplights` keeps every light entity in the BSP for `renderer
 "The SH bake" below): the lightmap for stock ioquake3 and `maps/<name>/<name>.shsf` for `renderer_sh`. It needs the
 bundled q3map2 built with `SH_BAKER=1`; a plain build stops at the light stage and says how to rebuild
 (`tools/stockcheck/README.md` gives the steps).
+
+Both light stages, `-light -shbake` and q3map2's placeholder `-light` without `-shbake`, leave out the attached
+emitter lights: every `light_area`, and every `light`, `light_spot` or `light_sun` whose `_proxy` value starts with `1`
+(q3map2's reading of a boolean key, so `1` and `1.0` count and `0`, `true` or an empty value don't). The surface they
+stand in for already emits in the bake, so baking the light as well would count that light twice. Without such
+lights in the map the output is byte-identical to a build that predates them. See "Area lights and emissive proxies"
+below.
 
 The editor reads `<settings>/Q3.game/build_menu.xml` in preference to the default menu once that file exists (it is
 written when the menu is customised). If the Town builds are missing, delete that file or add them by hand.
@@ -89,6 +97,12 @@ final preset still shows blotches. A denoiser or path guiding could close the ga
 | `light` | `origin`, `_color`, `intensity` (50000), `radius` (256) | intensity = radiant flux |
 | `light_spot` | as `light` plus `angles` or `target`, `cone` (45), `cone_inner` (30), `_shadows` (1) | intensity = radiant flux, cone half-angles in degrees |
 | `light_sun` | `angles`, `_color`, `intensity` (3), `_shadows` (1) | intensity = irradiance on a surface facing the sun |
+| `light_area` | `origin` (centre), `angles` (0 0 0, roll included), `width` (64), `height` (64), `_color`, `intensity` (1), `radius` (256), `_frustum` (0) | intensity = radiance, uniform over a one-sided rectangle; `_frustum` = shadow half-angle in degrees |
+
+`light` and `light_spot` also take `_proxy` (boolean, default 0): the light stands in for an emissive surface (see
+"Area lights and emissive proxies"). The preview renders a proxy exactly as the same light without the key; only
+q3map2's light stages read it, to leave the light out. `light_sun` offers no `_proxy`: q3map2 honours the key on a
+sun too, so that every compile stage agrees, but the editor ignores it there.
 
 - Point radiant intensity: `I = flux / (4π)`.
 - Spot radiant intensity: `I = flux / (2π (1 − cos(cone)))`; narrowing the cone concentrates the same flux.
@@ -105,7 +119,223 @@ final preset still shows blotches. A denoiser or path guiding could close the ga
   which is why sensible flux values are in the tens of thousands (a 50000 light gives `E ≈ 1` at 64 units).
 
 The editor preview, sh-baker and `renderer_sh` share this model. `renderer_sh` reads these entities from the BSP
-(task C4), which `-keeplights` keeps there.
+(task C4), which `-keeplights` keeps there. sh-baker never sees `light_area` or `_proxy` lights (see the build menu
+note above); it lights from the emitting surfaces themselves.
+
+## Area lights and emissive proxies
+
+An emissive surface lights the stock lightmap through the bake, but the preview and `renderer_sh` compute direct
+light from light entities only. A flat rectangular emitter (a fire's face, a light panel) gets a `light_area` on its
+face; any other emitter gets a `_proxy` point or spot light. Both are derived from the emitter's shader by the
+commands below, and the bake ignores both.
+
+### The `light_area` model
+
+- **Shape.** A rectangle centred on `origin`, `width` along the right vector and `height` along the up vector of
+  `angles`, emitting along its forward vector. One-sided: nothing behind its plane is lit.
+- **Basis.** Quake's `AngleVectors` of `angles` = pitch yaw roll in degrees, positive pitch looking down:
+
+  ```
+  forward = (  cp·cy,              cp·sy,             −sp   )
+  right   = ( −sr·sp·cy + cr·sy,  −sr·sp·sy − cr·cy,  −sr·cp )
+  up      = (  cr·sp·cy + sr·sy,   cr·sp·sy − sr·cy,   cr·cp )
+  ```
+
+  with s and c the sine and cosine of p (pitch), y (yaw) and r (roll). right = forward × up, and the corners
+  c − hr − hu, c + hr − hu, c + hr + hu, c − hr + hu (hr = right × `width`/2, hu = up × `height`/2) wind so that
+  −(hr × hu) is forward. `angles 0 270 0` gives forward −Y, right −X and up +Z (the benchmark fireplace, facing south).
+  `angle` (yaw only, −1 up, −2 down) works as for spots; `target` is ignored. Roll turns the rectangle about its normal.
+- **Units.** `intensity` is the radiance L, uniform over the rectangle, times `_color` (normalised to its largest
+  component, as for the other lights). The flux is Φ = π × L × `width` × `height`. On the normal at a distance d large
+  against the rectangle, E ≈ L × A / d²; close to it the exact form factor applies: for the defaults (64 × 64, L = 1)
+  at 64 units E = π × 0.2395 = 0.752, not 1. A 16 × 16 light at 200 units gives 0.006386 against L·A/d² = 0.0064.
+- **Cutoff.** `radius` is measured from the centre, for culling and shading alike. The effective radius is
+  max(`radius`, half-diagonal), half-diagonal = ½√(`width`² + `height`²), so the cutoff sphere always reaches the
+  corners; a smaller `radius` is clamped up silently. A value that is not positive (`width`, `height`, `intensity`,
+  `radius`) falls back to its default.
+- **Culling.** A box lying wholly behind the plane (its support point toward the normal is not in front) is not lit.
+  A brush face is lit when any of the four corners lies strictly in front of its plane, so the emitter's own coplanar
+  face and the brush's back face stay unlit by their own light, and a face cutting the rectangle is lit. Patches and
+  models use the bounds test.
+- **Shadows.** Only with `_frustum` > 0 (see "Shadows"); `_shadows` is not read.
+- **Gizmo.** The outline and a normal arrow (32 units, or the shorter side if less) are drawn in every view, selected
+  or not. When selected, the effective-radius sphere and, with `_frustum` > 0, the shadow frustum's square pyramid out
+  to that sphere. Clicking selects through the centre marker only. The entity's bounds include the rectangle, so the
+  outline stays drawn while the marker is off-screen.
+
+`RendererLightParams` (`include/irender.h`) carries an area light as type `eArea`: `origin` the centre, `direction`
+the normal, `intensity` L, `radius` the effective radius, `right` and `up` the half-extent axes hr and hu (not
+normalised), `cosOuter` cos(`_frustum`) for the shadow path only (the half-angle clamped below 90° − 1.15°, as the
+shadow path clamps it), and `castsShadows` = `_frustum` > 0.
+
+### Area shading (linearly transformed cosines)
+
+The light pass's area branch (`u_light_type 4` in `gl/pbr_fp.glsl`) follows upstream's `webgl/shaders/ltc/ltc_quad.fs`.
+For a fragment at P with normal N, view V, base colour, metallic and perceptual roughness r (the clamped roughness of
+the point pass, [0.05, 1]), the outgoing radiance is 0 when dot(P − c, n) ≤ 0 (behind the light) or |P − c| > the
+effective radius. Otherwise
+
+```
+Lo = L × _color × ( (1 − metallic) × baseColor × FF + S × (F0 × t2.x + (1 − F0) × t2.y) ) × shadow
+F0 = mix( 0.04, baseColor, metallic )
+```
+
+- **Frame.** T1 = normalize(V − N(N·V)), T2 = N × T1; each corner, relative to P, is taken to (T1, T2, N)
+  coordinates (upstream's `LTC_Evaluate`). At exactly normal incidence, where V − N(N·V) vanishes, any tangent is
+  used (the lobe is isotropic there; an editor detail).
+- **FF**, the clipped normalised form factor: the four corners clipped to the horizon (upstream's
+  `ClipQuadToHorizon`, with constant indices), projected onto the unit sphere, and the sum of upstream's
+  `IntegrateEdge` over the clipped polygon's edges, clamped at 0. `IntegrateEdge`'s rational fit of θ/sin θ already
+  includes 1/(2π), so FF is the cosine-weighted solid angle divided by π: FF ∈ [0, 1], a receiver facing an infinite
+  emitter gets 1, and E = π × L × FF.
+- **S**, the specular integral: the same, after transforming the corners by M⁻¹ from table 1.
+- **t2**, table 2 at the same coordinates: specular is weighted by F0 × magnitude + (1 − F0) × Fresnel.
+- **Diffuse has no 1/π and no (1 − F) weight**, because the form factor already divides by π and an area light has no
+  single half-vector. This is upstream's convention, so the area pass uses Lambert diffuse where the point, spot and
+  sun passes use Disney diffuse weighted by (1 − F).
+- **Fallback.** Without the tables (below), the pass shades the diffuse term alone; FF needs no table.
+
+`renderer_sh` (task C7) implements the same formula with the same tables.
+
+### LTC tables
+
+The tables are upstream's GGX fit, unchanged:
+
+| | |
+|---|---|
+| Repository | `github.com/selfshadow/ltc_code` |
+| File | `fit/results/ltc.js` (arrays `g_ltc_1`, `g_ltc_2`), the 2017 revision of the fit: Heitz, Dupuy, Hill and Neubelt (2016), with the magnitude and Fresnel terms of Hill and Heitz (2017) and the sphere-horizon term |
+| Commit | `31e5e96b54f98f33098f8503003119ba2231a1c6` |
+| Licence | upstream's `LICENSE`: two-clause BSD with a clause asking users to cite the paper |
+| Vendored copy | `tools/ltc/` (`ltc.js`, `LICENSE`, the converter `make_ltc_bin.py`, and a README with the layout checked against upstream's source) |
+| Binary | `setup/data/tools/gl/ltc_ggx.bin`, installed as `gl/ltc_ggx.bin` |
+| SHA-256 | `c7d00f52deff4699aa75012a6383f414c9cc79ae0d3d8b6e61fba19bb42d2dd4` |
+
+Citation the licence asks for: Eric Heitz, Jonathan Dupuy, Stephen Hill and David Neubelt, "Real-Time
+Polygonal-Light Shading with Linearly Transformed Cosines", ACM Transactions on Graphics (Proceedings of ACM SIGGRAPH
+2016) 35(4), 2016. Project page: https://eheitzresearch.wordpress.com/415-2/
+
+The licence's full notice (copyright, conditions and disclaimer) followed by that citation is
+`setup/data/tools/gl/ltc_ggx.LICENSE.txt`, which installs beside the binary as `gl/ltc_ggx.LICENSE.txt`. That file is
+the notice shipped with the binary; this README is not installed.
+
+**Format** (all little-endian, 16 + 131072 = 131088 bytes):
+
+- a 16-byte header: magic `LTC1`, then width 64, height 64 and table count 2, each a `uint32`;
+- table 1, then table 2, each 64 × 64 RGBA `float32` (each value the `float32` nearest to upstream's printed decimal),
+  in upstream's entry order: entry i = a + 64·t holds roughness index a (u, the fast axis) and angle index t (v);
+- table 1: M⁻¹ normalised by its middle element, (M⁻¹₀₀, M⁻¹₀₂, M⁻¹₂₀, M⁻¹₂₂) in glm's column-major indexing, so in
+  GLSL `M⁻¹ = mat3( vec3( t1.x, 0, t1.y ), vec3( 0, 1, 0 ), vec3( t1.z, 0, t1.w ) )`;
+- table 2: (magnitude, Fresnel, 0, sphere-horizon term). The area pass clips to the horizon and does not read the
+  sphere term; it stays so the file is upstream's data unchanged.
+
+**Indexing.** u = r, the perceptual roughness (upstream fits entry a at roughness a/63 with alpha = roughness², the
+point pass's alpha = r²), and v = √(1 − N·V) with N·V clamped to [0, 1]. Both are mapped as x × 63/64 + 0.5/64, so 0
+and 1 land on texel centres.
+
+**Texture.** The editor uploads both tables as one 64 × 128 `GL_RGBA32F` texture on texture unit 7 (table 1 in rows
+0-63, table 2 in rows 64-127), linear filtering, clamp to edge, and samples table 1 at (u, v/2) and table 2 at
+(u, ½ + v/2). It is created with the PBR programs and bound once per frame in lighting mode, whatever the shadow
+preference. It needs `GL_ARB_texture_float` (or OpenGL 3.0) and 8 texture image units; without them, or if
+`gl/ltc_ggx.bin` is missing or malformed, area lights shade diffuse only and one warning naming the file is printed.
+
+`renderer_sh` reads the same binary file unchanged. Rebuild it with `python3 tools/ltc/make_ltc_bin.py`, which
+reproduces the committed file byte for byte (`--check` verifies without writing).
+
+### Deriving a light from its emitter
+
+An emitter is a shader with an emissive stage: the first additive map stage that isn't the lightmap,
+`$whiteimage` or an environment map, whose colour (`rgbGen const`, white without one) isn't black. Its mean
+radiance over a surface is
+
+```
+L̄ = qer_pbr_emissiveStrength × emissive colour × M
+```
+
+where M is the mean linear texel over the surface's UV footprint on the emissive image. The footprint is the face's
+texture coordinates (for a clipped region, its UVs through the face's affine texture mapping), fan-triangulated; each
+triangle is sampled on a barycentric grid of at least two samples per covered texel along each axis, with
+nearest-texel lookup and wrap (`clampMap` is treated as wrap), and the triangles are weighted by area. Each sample is
+the sRGB-decoded RGB; for a `blendFunc GL_SRC_ALPHA GL_ONE` stage it is multiplied by the texel's alpha, as the engine
+blends it. Patches are averaged over their tessellation's triangles, weighted by surface area. The image is loaded
+from disk, so the commands work outside lighting mode. The helpers are `libs/emissivelight.h`, tested by
+`make test-emissive-light`.
+
+A value V (radiance or flux) is written as `intensity` = its largest component and `_color` = V / `intensity`, each
+with `%g` at six significant digits.
+
+### The commands
+
+Entity menu, shown only when the game's `entities` key is `pbr`. Each is one undo step. A refusal prints one console
+line saying why and changes nothing.
+
+- **Create area light from selected face.** Needs exactly one selected brush face that is a rectangle (collinear
+  vertices within 0.1 unit removed, then 4 corners within 0.5° of 90°, opposite edges equal within 0.1 unit) and whose
+  shader has an emissive stage. forward is the face normal; `width` runs along the edge more nearly perpendicular to
+  world Z, or the longer edge on a horizontal face; up = right × forward, and if up points down both right and up are
+  flipped; `origin` is the rectangle's centre on the face plane. It writes `origin`, `angles` (solved from forward and
+  right, so re-evaluating them gives the basis back within 0.01°), `width`, `height`,
+  `radius` = max(256, 8 × ⌈2 × half-diagonal / 8⌉), `intensity` and `_color` from L̄ over the face, and selects the
+  new light; `_frustum` stays at its default. Refusals: no face or several faces selected, "face is not a rectangle",
+  "shader … has no emissive stage", "emissive image … not found", zero radiance over the face.
+- **Create proxy light from selection.** Gathers the selected brush faces, every face of each wholly selected brush
+  and the selected patches, and keeps those whose shader has an emissive stage. The flux is
+
+  ```
+  Φ = π × Σ k_f × L̄_f × A_f       k_f = 2 when every map stage of the shader is additive, else 1
+  ```
+
+  The area-weighted mean normal n̄ = Σ A_f n_f (a patch contributes Σ A_t n_t over its triangles). The origin is the
+  area-weighted centroid, moved 8 units along n̄ when |n̄| is at least 0.1 of the total area, else left at the
+  centroid. It writes `origin`, `_proxy 1`, `intensity` and `_color` from Φ; `radius` stays at its default. The kind
+  is below. Refusals: nothing selected, no selected surface emissive, a missing emissive image, zero flux.
+- **Re-derive light from emitter.** Needs exactly one selected light. It rewrites only `intensity` and `_color`.
+  - For a `light_area`, the emitters are found in the whole map with q3map2-shbake's attachment test
+    (`ShAreaRectAttached`), applied to each brush face: the shader has an emissive stage, the outward normal is within
+    1° of the light's forward vector, every vertex lies within 1 unit of the rectangle's plane, and some triangle of
+    the face's fan triangulation, projected on the plane and clipped to the rectangle, covers more than 0.001 square
+    units (per triangle, not the whole polygon's overlap). Patches are not candidates. The radiance is the
+    overlap-weighted mean L = Σ O_f L̄(f ∩ R) / Σ O_f, O_f the area of face f's overlap with the rectangle R and
+    L̄(f ∩ R) the face's radiance over that overlap alone. On a light Create made, it gives back what Create wrote.
+  - For a `light` or `light_spot` with `_proxy 1`, select its emitting surfaces with it; the flux is recomputed as in
+    Create proxy. A `light_sun` is refused whatever its `_proxy` (a flux in a sun's irradiance `intensity` would be the
+    wrong unit).
+  - Refusals: no light or several selected, a light that is neither an area light nor a point or spot proxy, no
+    attached emitter ("no emissive face lies on the area light's rectangle"), a proxy selected without its surfaces,
+    a missing emissive image, a zero result.
+
+On the benchmark, the fireplace's fire face (96 × 48, `textures/bench/fire`, strength 64, `rgbGen const ( 1 0.9 0.8 )`,
+covering `fire_e` once, whose mean linear texel is (0.287290, 0.101201, 0.026250)) gives `intensity 18.3866`,
+`_color 1 0.317035 0.0730977` and `radius 256` (2 × 53.7 rounds to 112, below 256). The map then sets `radius 768` and
+`_frustum 70` by hand; Re-derive keeps them, since it rewrites only `intensity` and `_color`.
+
+### Proxy kinds and their residual
+
+- **Hemisphere spot**, when every gathered surface is opaque (k = 1) and |n̄| is at least 0.1 of the total area: a
+  `light_spot` with `cone 90`, `cone_inner 89`, `_shadows 0` and `angles` = the pitch and yaw of n̄ (roll 0). The spot
+  model clamps both half-angles to 89.9°, so it emits into the hemisphere with I = Φ / (2π(1 − cos 89.9°)) ≈ Φ / 2π.
+  `cone_inner 89` keeps the falloff flat to 89° with a 0.9° rim (`cone_inner` equal to `cone` would make it
+  `smoothstep(e, e, x)`, which GLSL leaves undefined). `_shadows 0`, because a frustum of nearly 180° gives an
+  unusable shadow map. Its gizmo is the cone drawn to the radius sphere, here a disc of the radius through the origin.
+- **Point light** otherwise: two-sided billboards (all-additive shaders), and surfaces whose normals cancel.
+
+Both are about **2× dim on the axis**, with the right total flux. A one-sided face of radiance L and area A gives
+E = L × A / d² on its normal far away (as the stock lightmap does); the hemisphere spot gives Φ / (2πd²) = L × A / (2d²).
+A two-sided billboard (Φ = 2πLA) gives L × A / d² on either side; the point proxy gives 2πLA / (4πd²) = L × A / (2d²).
+Off the axis the spot's intensity stays flat where a Lambertian face falls as cos θ, so near grazing the proxy is
+brighter than the face. An area light has neither gap, which is why flat rectangular emitters should get a
+`light_area`.
+
+### Difference from the bake
+
+- `-shbake` and the placeholder `-light` ignore `light_area` entities and `light`, `light_spot` and `light_sun`
+  entities whose `_proxy` starts with `1` (see "Build menu"); the emitting surface bakes instead. Emissive surfaces
+  with no such light get one warning per shader (see "Warnings").
+- sh-baker's emissive surfaces (its area lights) emit from both sides (`tools/sh-baker/src/light.h`, kept two-sided for
+  billboard flames), while `light_area` is one-sided: the back of a baked emitter that isn't against a wall lights the
+  stock lightmap and not the preview. A9 judges the difference.
+- The side file holds no emissive direct light; `renderer_sh` adds it by evaluating `light_area` (C7) and `_proxy`
+  lights (ordinary point and spot lights).
 
 ## Shading
 
@@ -121,8 +351,22 @@ the stage the lightmap multiplies. Sources: `gl/pbr_vp.glsl`, `gl/pbr_fp.glsl`, 
 `gl/pbr_base_fp.glsl`.
 
 The preview lights exactly the lightmapped, non-blended shaders that are not sky, fog or `nolightmap`, whether or not
-they declare `qer_pbr_*`; a shader without PBR keywords renders as a fully rough dielectric. Every other shader
-draws with its textured-mode state, unlit.
+they declare `qer_pbr_*`; a shader without PBR keywords renders as a fully rough dielectric. Area lights are shaded as
+in "Area shading" above, with Lambert diffuse instead of Disney.
+
+Emitters the preview does not light are drawn in the HDR framebuffer with their emissive in linear light, the
+sRGB-decoded texel × `rgbGen const` × `qer_pbr_emissiveStrength` as the base pass computes it, and get no light
+passes. This covers shaders with an emissive stage that are not sky or fog and either have only additive map stages
+or declare `surfaceparm nolightmap`:
+
+- **All-additive** (a flame, a glow sprite): one pass with ambient 0, leaving only the emissive, added to the frame
+  with the stage's source factor (`GL_ONE`, or `GL_SRC_ALPHA` for a `GL_SRC_ALPHA GL_ONE` stage) and destination
+  `GL_ONE`, depth-tested without depth write, after the opaque surfaces, with the shader's cull.
+- **Opaque `nolightmap`** (no `qer_trans`, no blended base stage): drawn opaque as sRGB-decoded base colour × base
+  colour factor + emissive (the stock fullbright result in linear light), honouring the alpha test.
+- A blended shader that is not all-additive keeps its textured-mode state.
+
+Every other shader draws with its textured-mode state, unlit.
 
 The scene is rendered into an RGBA16F framebuffer and resolved to the window with
 
@@ -151,9 +395,10 @@ Known differences from the engine, kept on purpose:
 
 ## Shadows
 
-Lighting mode renders shadow maps for `light_sun` and `light_spot`. Point lights never cast: `light` ignores
-`_shadows` and its contribution is never attenuated. Spot and sun lights read `_shadows` (boolean, default 1);
-setting it to 0 makes that light shine through occluders and frees its region of the atlas. The camera preference
+Lighting mode renders shadow maps for `light_sun`, `light_spot` and `light_area`. Point lights never cast: `light`
+ignores `_shadows` and its contribution is never attenuated. Spot and sun lights read `_shadows` (boolean, default 1);
+setting it to 0 makes that light shine through occluders and frees its region of the atlas. An area light ignores
+`_shadows` and casts only when `_frustum` (half-angle in degrees, default 0) is greater than 0. The camera preference
 "Lighting shadows" (default on) disables generation and sampling for the whole scene and returns the unshadowed image.
 
 The scheme is ported from `sh-renderer` so the two renderers can be compared: the caster pass culls **back** faces
@@ -185,6 +430,8 @@ source that was read, and it may need revisiting when parity is attempted.
 | Sun atlas layout | 3 cascades of 1024² in a 2×2 grid, fourth quadrant unused | editor | GLSL 1.20 forbids a dynamic sampler index |
 | Spot tile size | 512 × 512, 16 tiles in one 2048² atlas | editor | tile size not visible in the engine source |
 | Spot frustum | fov = 2 × `cone`, near 4 map units, far = `radius` | editor | |
+| Area frustum | perspective from the rectangle's centre along its normal, square, aligned with its right and up axes (roll included, as the gizmo's pyramid); fov = 2 × `_frustum`, each half clamped below 90° − 1.15° (π/2 − 0.02); near 4 map units, which keeps the emitter's own face out; far = the effective radius max(`radius`, half-diagonal) | editor | |
+| Area shadow sampling | as a spot: one atlas tile, penumbra factor 1, N·L taken toward the rectangle's centre, except the bias: none in normalised depth; instead the receiver moves t·(1 − N·L) along its normal and t·clamp(slope, 1, 3) toward the light, where t = 2·d·tan(half-angle)/512 is one tile texel at its distance d and slope = tan of the angle between N and L; receivers beside the frustum are shadowed (spots treat them as lit), so a casting area light lights only within `_frustum`, fading out over the last 10° before it on each axis of the square frustum (1 − smoothstep(`_frustum` − 10°, `_frustum`, off-axis angle), the two axes multiplied); choose it to cover the region the light should reach | editor | |
 | Tile guard band | 1 texel, unwritten, taps clamped into it | editor | prevents bleed between atlas tiles |
 | Filtering | `GL_LINEAR` with `GL_COMPARE_R_TO_TEXTURE` / `GL_LEQUAL` | editor | free 2×2 hardware PCF per tap |
 
@@ -214,8 +461,10 @@ attached, detached or edited; the sun cascades are regenerated for those and als
 because they are fitted to its frustum. A static scene viewed from a static camera costs sampling only.
 
 If the context reports fewer than seven texture image units, or the depth-texture framebuffers cannot be created,
-lighting mode renders unshadowed and warns once in the console. More than 16 shadow-casting spot lights is not an
-error: the 16 nearest the camera get tiles, the rest render unshadowed, and a warning is printed once.
+lighting mode renders unshadowed and warns once in the console. Shadow-casting area lights share the spot atlas
+with the spots. More than 16 shadow-casting spot and area lights is not an error: the 16 nearest the camera get
+tiles, the rest render unshadowed, and a warning ("spot and area lights") is printed once. The LTC tables take texture
+unit 7, above the five material textures and the two atlases.
 
 ## Benchmark and engine parity
 
@@ -321,7 +570,8 @@ per image, brush, light or shader for the rest. None fails the compile or the st
 - per emissive shader, the number of its surfaces with no attached `light_area` or `_proxy` light. The bake lights
   from those surfaces anyway; the preview and `renderer_sh` don't. `light_area` and `_proxy` lights themselves are
   left out of the bake without a warning, since the emitting surface already bakes. The benchmark's neon sign gives
-  this warning for its 5 drawn faces;
+  this warning for its 5 drawn faces (the front, both ends, the top and the bottom), which have no light; the
+  fireplace's fire face has its `light_area` and draws none;
 - the number of points whose full-bake irradiance, or indirect-bake SH or visibility, isn't finite (stored as 0, the
   grid probe invalid), once per bake.
 

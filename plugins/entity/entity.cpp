@@ -57,7 +57,8 @@ inline scene::Node& entity_for_eclass( EntityClass* eclass ){
 	else if ( classname_equal( eclass->name(), "light" )
 	       || classname_equal( eclass->name(), "lightJunior" )
 	       || ( g_gameType == eGameTypePBR && ( classname_equal( eclass->name(), "light_spot" )
-	                                          || classname_equal( eclass->name(), "light_sun" ) ) ) ) {
+	                                          || classname_equal( eclass->name(), "light_sun" )
+	                                          || classname_equal( eclass->name(), "light_area" ) ) ) ) {
 		return New_Light( eclass );
 	}
 	if ( !eclass->fixedsize ) {

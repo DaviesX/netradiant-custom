@@ -3,9 +3,11 @@
  Physical light entities for Quake III Arena (installed into gamepacks/Q3.game/baseq3/ by the pbr gamepack).
  This file sorts before entities.ent, and the first definition of a class name wins, so its "light" replaces the
  stock q3map2 light. This is the only copy of these definitions; the units are documented in the pack's README.md.
- Light units: "intensity" is radiant flux for light and light_spot and irradiance for light_sun; distances are
- raw map units. The editor preview, sh-baker and renderer_sh read these keys; stock Quake 3 frees "light" and
- prints "doesn't have a spawn function" for light_spot and light_sun, which is harmless.
+ Four classes: light, light_spot, light_sun and light_area. Light units: "intensity" is radiant flux for light and
+ light_spot, irradiance for light_sun and radiance for light_area; distances are raw map units. The editor preview,
+ sh-baker and renderer_sh read these keys (the bake ignores light_area and lights with "_proxy 1", whose emitter
+ surfaces already bake); stock Quake 3 frees "light" and prints "doesn't have a spawn function" for light_spot,
+ light_sun and light_area, which is harmless.
 -->
 <classes>
 
@@ -16,6 +18,7 @@ Point light with physical units.
 <real key="intensity" name="Intensity" value="50000">Radiant flux (default 50000).</real>
 <real key="radius" name="Radius" value="256">Cutoff distance in map units (default 256); the light is culled beyond it.</real>
 <targetname key="targetname" name="Target Name">Name for targeting.</targetname>
+<boolean key="_proxy" name="Proxy" value="0">Stands in for an emissive surface (default 0). The editor previews it as an ordinary light; the bake leaves it out.</boolean>
 -------- NOTES --------
 Radiant intensity is intensity / (4 pi); irradiance falls off with the inverse square of the distance in map units.
 </point>
@@ -32,6 +35,7 @@ Spot light with physical units. Points along "angles", or at the entity named by
 <target key="target" name="Target">Entity to point at; takes precedence over angles.</target>
 <targetname key="targetname" name="Target Name">Name for targeting.</targetname>
 <boolean key="_shadows" name="Shadows" value="1">Whether the light casts shadows (default 1). Set 0 to light through occluders.</boolean>
+<boolean key="_proxy" name="Proxy" value="0">Stands in for an emissive surface (default 0). The editor previews it as an ordinary light; the bake leaves it out.</boolean>
 -------- NOTES --------
 Radiant intensity is intensity / (2 pi (1 - cos(cone))); inverse-square falloff in map units, culled beyond radius.
 </point>
@@ -45,6 +49,21 @@ Directional sun light. At most one is honoured: with several, the first in map o
 <boolean key="_shadows" name="Shadows" value="1">Whether the sun casts shadows (default 1). Set 0 to light through occluders.</boolean>
 -------- NOTES --------
 No cutoff: every lit surface receives the sun. The entity position only marks the sun in the editor.
+</point>
+
+<point name="light_area" color="1 0.8 0.4" box="-8 -8 -8 8 8 8">
+One-sided rectangular area light, attached to a static emissive quad. The origin is the rectangle's centre; it emits along the forward vector of "angles".
+-------- KEYS --------
+<real key="width" name="Width" value="64">Rectangle size along the right vector of angles, in map units (default 64).</real>
+<real key="height" name="Height" value="64">Rectangle size along the up vector of angles, in map units (default 64).</real>
+<angles key="angles" name="Pitch Yaw Roll" value="0 0 0">Emitting normal is the forward vector (pitch positive looks down); roll turns the rectangle about it.</angles>
+<real key="intensity" name="Intensity" value="1">Radiance, uniform over the rectangle (default 1).</real>
+<color key="_color" name="Colour" value="1 1 1">Linear RGB colour (default 1 1 1).</color>
+<real key="radius" name="Radius" value="256">Cutoff distance from the centre in map units (default 256); clamped up to the half-diagonal.</real>
+<real key="_frustum" name="Shadow Frustum" value="0">Shadow half-angle in degrees (default 0, no shadow); the light casts only when it is greater than 0.</real>
+<targetname key="targetname" name="Target Name">Name for targeting.</targetname>
+-------- NOTES --------
+One-sided: nothing behind the rectangle is lit. Its flux is pi x intensity x width x height. It casts shadows only with _frustum greater than 0 (_shadows is ignored); target is ignored. The bake ignores it, because the emitter surface's own emission already bakes. Create it with "Create area light from selected face".
 </point>
 
 </classes>

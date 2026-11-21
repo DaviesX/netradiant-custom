@@ -81,3 +81,9 @@ Matrix4 matrix4_ortho( float left, float right, float bottom, float top, float n
 /// Used for the sun's cascades (with the origin at zero, since the orthographic bounds supply the position)
 /// and for a spot light's perspective frustum.
 Matrix4 matrix4_light_view( const Vector3& direction, const Vector3& origin );
+
+/// \brief As above, with the view's up axis taken from \p up (made perpendicular to \p direction) instead of a
+/// world axis, so the light space x and y axes follow a basis the light defines. An area light passes its
+/// rectangle's up axis, which keeps its square shadow frustum aligned with the rectangle and with the pyramid
+/// the entity's gizmo draws. Falls back to the world axis rule when \p up is (nearly) parallel to \p direction.
+Matrix4 matrix4_light_view( const Vector3& direction, const Vector3& origin, const Vector3& up );

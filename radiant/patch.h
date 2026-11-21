@@ -884,6 +884,11 @@ public:
 		return m_ctrlTransformed;
 	}
 
+	/// The current tessellation (vertices with texcoords and normals, and the quad strips over them), read-only.
+	const PatchTesselation& getTesselation() const {
+		return m_tess;
+	}
+
 	void setDims( std::size_t w, std::size_t h );
 	std::size_t getWidth() const {
 		return m_width;

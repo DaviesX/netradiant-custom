@@ -1,0 +1,97 @@
+# .clang-format for netradiant-custom (clang-format 18+; tuned with 21).
+# Matches the existing code style: tabs (width 4), spaces inside parentheses
+# `f( x )`, attached braces for functions and control statements, own-line
+# braces for class/struct/union/enum/namespace, `else` on its own line, no
+# column limit, includes and comment text left as written, trailing comments
+# aligned with their neighbours. Tuned by minimising the lines clang-format
+# would change on the existing sources (a corpus plus a held-out file set).
+#
+# The existing sources are not clang-formatted, so whole-file `clang-format -i`
+# still rewrites 20-40% of an old file. Format only the lines you change:
+#   git clang-format            (staged changes)
+#   git clang-format HEAD~1     (changes since a commit)
+# New files can be formatted whole. Vendored code is excluded by
+# .clang-format-ignore; tools/sh-baker has its own .clang-format.
+#
+# Known differences clang-format cannot express: `){` without a space,
+# `for`/`while`/`switch`/`else` braces on the next line while `if` attaches,
+# `if(` without a space, `a[ i ]` in older q3map2 code, `void(const char*)`
+# in template arguments, hand-aligned columns, and `);` on its own line in
+# wrapped calls.
+BasedOnStyle: Mozilla
+Language: Cpp
+Standard: Latest
+UseTab: AlignWithSpaces
+IndentWidth: 4
+TabWidth: 4
+ContinuationIndentWidth: 4
+ColumnLimit: 0
+SortIncludes: Never
+ReflowComments: false
+SpacesInParens: Custom
+SpacesInParensOptions:
+  Other: true
+  InConditionalStatements: true
+  InEmptyParentheses: false
+  InCStyleCasts: false
+SpaceBeforeParens: ControlStatementsExceptControlMacros
+BreakBeforeBraces: Custom
+BraceWrapping:
+  AfterCaseLabel: true
+  AfterEnum: true
+  AfterClass: true
+  AfterStruct: true
+  AfterUnion: true
+  AfterFunction: false
+  AfterNamespace: true
+  AfterControlStatement: Never
+  BeforeElse: true
+  BeforeCatch: false
+  SplitEmptyFunction: false
+  SplitEmptyRecord: false
+  SplitEmptyNamespace: false
+BreakAfterReturnType: Automatic
+AllowShortFunctionsOnASingleLine: All
+AccessModifierOffset: -4
+IndentCaseLabels: false
+NamespaceIndentation: None
+PointerAlignment: Left
+DerivePointerAlignment: false
+KeepEmptyLines:
+  AtStartOfBlock: true
+  AtStartOfFile: true
+MaxEmptyLinesToKeep: 4
+AlignConsecutiveAssignments: None
+AlignConsecutiveDeclarations: None
+AlignOperands: AlignAfterOperator
+AlignAfterOpenBracket: Align
+Cpp11BracedListStyle: false
+BreakConstructorInitializers: AfterColon
+ConstructorInitializerIndentWidth: 4
+PackConstructorInitializers: BinPack
+SpaceBeforeCpp11BracedList: false
+SpaceAfterCStyleCast: true
+SpaceAfterTemplateKeyword: false
+AlignTrailingComments:
+  Kind: Always
+  OverEmptyLines: 0
+BinPackParameters: BinPack
+BinPackArguments: true
+AllowAllParametersOfDeclarationOnNextLine: true
+AllowAllArgumentsOnNextLine: true
+BreakBeforeBinaryOperators: NonAssignment
+BreakBeforeTernaryOperators: true
+AlignEscapedNewlines: DontAlign
+IndentCaseBlocks: true
+SpacesInAngles: Leave
+AllowShortIfStatementsOnASingleLine: AllIfsAndElse
+AllowShortLoopsOnASingleLine: true
+AllowShortBlocksOnASingleLine: Always
+AllowShortCaseLabelsOnASingleLine: true
+BreakTemplateDeclarations: Leave
+IndentGotoLabels: false
+BreakInheritanceList: AfterColon
+SkipMacroDefinitionBody: true
+EmptyLineBeforeAccessModifier: Leave
+EmptyLineAfterAccessModifier: Leave
+LambdaBodyIndentation: OuterScope

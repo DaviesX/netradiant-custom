@@ -75,7 +75,7 @@ A run SHALL fail when:
 
 Only shaders the map uses are parsed by the engine, so only they are checked.
 
-The allowlist SHALL start with two entries, for `light_spot doesn't have a spawn function` and `light_sun doesn't have a spawn function`: the stock game prints them once per such entity, and they are harmless because the editor's light entities are only kept in the BSP for `renderer_sh`. Further entries need a reviewed comment. A general `WARNING` entry SHALL NOT excuse a missing-image line: only an entry that spells out the missing-image message and matches the whole line does.
+The allowlist SHALL start with three entries, for `light_spot doesn't have a spawn function`, `light_sun doesn't have a spawn function` and `light_area doesn't have a spawn function`: the stock game prints them once per such entity, and they are harmless because the editor's light entities are only kept in the BSP for `renderer_sh`. Further entries need a reviewed comment. A general `WARNING` entry SHALL NOT excuse a missing-image line: only an entry that spells out the missing-image message and matches the whole line does.
 
 #### Scenario: rend2 keyword in a used shader
 - **WHEN** a shader used by the map in a scratch copy contains `stage normalMap` inside a stage
@@ -94,7 +94,7 @@ The allowlist SHALL start with two entries, for `light_spot doesn't have a spawn
 - **THEN** the run fails on the missing image
 
 #### Scenario: Light entities in the map
-- **WHEN** the benchmark's `light_spot` and `light_sun` entities make the game print their spawn-function lines
+- **WHEN** the benchmark's `light_spot`, `light_sun` and `light_area` entities make the game print their spawn-function lines
 - **THEN** the run does not fail on them
 
 #### Scenario: Unknown entity class

@@ -699,9 +699,12 @@ gives both stock shaders and the preview:
   §\ref{sec:rev7}; an LTC branch in the preview's light pass, with the GGX tables shipped beside the
   GLSL and shared with \texttt{renderer\_sh}; the \texttt{\_frustum} shadow map on the spot shadow
   path; linear-HDR drawing of emitters the preview does not light; and q3map2's placeholder
-  \texttt{-light} skipping \texttt{light\_area} and \texttt{\_proxy} lights. The benchmark's neon
-  sign gets a \texttt{light\_area}. Exit criterion: the sign lights the wall in the preview, with the
-  stock check passing (its allowlist gains the \texttt{light\_area} line).
+  \texttt{-light} skipping \texttt{light\_area} and \texttt{\_proxy} lights. The benchmark's area-light
+  case is a simple one-sided fireplace in the north interior: its fire face gets a
+  \texttt{light\_area}, whose \texttt{\_frustum} shadow falls behind the metal pillar. (The neon
+  sign was the first choice, but a one-sided light flush on its front face cannot light the wall it
+  hangs on; it stays an unattached emitter.) Exit criterion: the fireplace lights the room in the
+  preview, with the stock check passing (its allowlist gains the \texttt{light\_area} line). \emph{Done (\texttt{emissive-area-lights}).}
 \end{enumerate}
 Exit criterion: the town block renders in the editor's lighting mode under \texttt{Q3.game}, with
 screenshots from the documented views recorded. Numerical parity with
@@ -824,7 +827,7 @@ stock fallback on the same map, and the stock check still passes on the same pk3
   or \texttt{\_proxy} light, which arrives with 4.5; until then they only glow.
 \item Exit criterion: the editor lighting preview and the engine's direct-light-only render agree
   from the documented camera, within the tolerance already written down for the benchmark map.
-  4.5 extends the same check to the neon sign's \texttt{light\_area}.
+  4.5 extends the same check to the benchmark fireplace's \texttt{light\_area}.
 \end{itemize}
 
 \subsection{3.5 Shadow parity and solid hulls}
@@ -1071,8 +1074,8 @@ nor emit, and outdoor light comes from \texttt{light\_sun}.
     (§\ref{sec:units}). 0.3 judges the difference.
   \item \emph{Emissive direct light.} The side file holds only an emitter's bounce. Its direct
     light reaches \texttt{renderer\_sh} only through an attached light, so it is missing until
-    C7's LTC area lights. The benchmark's neon sign warns (5 surfaces) until A11 gives it a
-    \texttt{light\_area}.
+    C7's LTC area lights. The benchmark's neon sign has no attached light and warns for its 5
+    surfaces; A11's fireplace has a \texttt{light\_area} on its fire face and draws no warning.
   \item \emph{Convergence on L0 alone} (fixed by \texttt{sh-baker} PR \#68). The sensor stopped on
     L0's variance after its 64-sample minimum. With point lights only, light-tree sampling makes
     every sample's L0 the same, so a probe stopped at 64 samples whatever \texttt{-shsamples} said,
@@ -1165,7 +1168,7 @@ nor emit, and outdoor light comes from \texttt{light\_sun}.
   \texttt{animMap} frame. The parity check runs without modulation, which the editor does not have.
   The bake uses the first frame.
 \item Moving emissive quads come later.
-\item Exit criterion: the benchmark's neon sign lights the wall at runtime, agreeing with the editor
+\item Exit criterion: the benchmark's fireplace lights the room at runtime, agreeing with the editor
   preview within 3.4's tolerance, and the indirect bake does not count its direct light again.
 \end{itemize}
 

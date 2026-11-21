@@ -14,6 +14,8 @@ FIXTURES = [
 STOCK = ["base_floor/clangdark", "base_floor/cybergrate2", "gothic_block/blocks10"]
 EXTRA = ["skystage", "alphatrans"]  # added after the baseline: a second row at y = EXTRA_Y, so the baseline views hold
 EXTRA_Y = 320
+EMIT = ["emitflame", "emitsrcalpha", "emitnolmsign", "emitblack", "emittrans"]  # emissive-area-lights 8.1: a third row
+EMIT_Y = -320                                                                     # at y = EMIT_Y, behind the baseline cameras, so their views hold
 CUBE0 = -1024
 PITCH = 96
 FLOOR = "gothic_block/blocks10"
@@ -74,6 +76,9 @@ def main():
     for i, name in enumerate(EXTRA):
         x = CUBE0 + i * PITCH
         brushes.append(box(x - 32, EXTRA_Y - 32, 0, x + 32, EXTRA_Y + 32, 64, "fixture/" + name))
+    for i, name in enumerate(EMIT):
+        x = CUBE0 + i * PITCH
+        brushes.append(box(x - 32, EMIT_Y - 32, 0, x + 32, EMIT_Y + 32, 64, "fixture/" + name))
     # caulk-roofed room: textured walls and ceiling inside, caulk roof outside
     rx, ry = xmax + 128, -192
     wall = FLOOR
@@ -106,6 +111,8 @@ def main():
         print("%-28s camera origin \"%d -160 32\" angles \"0 90 0\"" % (name, CUBE0 + i * PITCH))
     for i, name in enumerate(EXTRA):
         print("%-28s camera origin \"%d %d 32\" angles \"0 90 0\"" % ("fixture/" + name, CUBE0 + i * PITCH, EXTRA_Y - 160))
+    for i, name in enumerate(EMIT):
+        print("%-28s camera origin \"%d %d 32\" angles \"0 90 0\"" % ("fixture/" + name, CUBE0 + i * PITCH, EMIT_Y - 160))
 
 
 if __name__ == "__main__":

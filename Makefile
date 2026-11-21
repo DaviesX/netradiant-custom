@@ -672,6 +672,18 @@ tools/quake3/q3map2/light_sh_model_test.$(EXE): \
 test-q3map2-shbake-model: tools/quake3/q3map2/light_sh_model_test.$(EXE)
 	./tools/quake3/q3map2/light_sh_model_test.$(EXE)
 
+# The emissive-light commands' pure helpers (libs/emissivelight.h, header-only),
+# run by `make test-emissive-light`. The test links light_sh_model.o to check the
+# attachment test against q3map2's ShAreaRectAttached. Kept out of $(INSTALLDIR).
+libs/emissivelight_test.$(EXE): CPPFLAGS_EXTRA := -Ilibs
+libs/emissivelight_test.$(EXE): \
+	libs/emissivelight_test.o \
+	tools/quake3/q3map2/light_sh_model.o \
+
+.PHONY: test-emissive-light
+test-emissive-light: libs/emissivelight_test.$(EXE)
+	./libs/emissivelight_test.$(EXE)
+
 libmathlib.$(A): CPPFLAGS_EXTRA := -Ilibs
 libmathlib.$(A): \
 	libs/mathlib/bbox.o \

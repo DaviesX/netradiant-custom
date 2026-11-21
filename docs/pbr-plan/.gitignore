@@ -1,0 +1,6 @@
+# latexmk build byproducts; only pbr-plan.tex and the built pbr-plan.pdf are tracked
+*.aux
+*.fdb_latexmk
+*.fls
+*.log
+*.out

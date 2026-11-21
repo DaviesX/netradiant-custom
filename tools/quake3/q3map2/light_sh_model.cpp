@@ -266,7 +266,7 @@ bool ShIsAttachedEmitterLight( const char* classname, const ShKeyLookup& key ){
 		return false;
 	}
 	// q3map2's reading of a boolean key (entity_t::read_keyvalue_, bspfile_abstract.cpp:570), the one
-	// the placeholder -light uses for the same skip (emissive-area-lights design.md:249)
+	// the placeholder -light uses for the same skip (emissive-area-lights design decision 13)
 	return Key( key, "_proxy" )[0] == '1';
 }
 

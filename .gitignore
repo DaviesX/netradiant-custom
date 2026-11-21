@@ -6,6 +6,8 @@
 /.idea/
 /.cache/
 /.clang*
+!/.clang-format
+!/.clang-format-ignore
 /compile_commands.json
 # q3map2 compile outputs in the content mods
 /content/*/maps/*.bsp
@@ -16,10 +18,15 @@
 /content/*/maps/*.autosave.map
 /content/*/maps/lm_*
 /content/*/maps/*/lm_*
+/content/*/maps/*/*.shsf
 # stock check output
 /stockcheck-out/
 /tools/quake3/q3map2/q3map2_extension_test.*
 !/tools/quake3/q3map2/q3map2_extension_test.cpp
 /tools/quake3/q3map2/light_sh_model_test.*
 !/tools/quake3/q3map2/light_sh_model_test.cpp
+/libs/emissivelight_test.*
+!/libs/emissivelight_test.cpp
 /tools/quake3/q3map2/light_sh.stamp
+# python bytecode of the stock check (imported by its tests)
+/tools/stockcheck/__pycache__/

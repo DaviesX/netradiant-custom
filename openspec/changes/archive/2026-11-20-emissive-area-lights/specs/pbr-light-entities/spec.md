@@ -39,7 +39,7 @@ The light SHALL emit along forward only. `width` SHALL lie along right and `heig
 - **THEN** the wall is lit, because the effective radius is the half-diagonal, 90.5
 
 ### Requirement: Area light shadow frustum
-A `light_area` SHALL read `_frustum` (float, half-angle in degrees, default 0). When it is greater than 0, the light SHALL be reported to the renderer as casting, with `cosOuter` = cos(`_frustum`). When it is 0 or less, the light SHALL be non-casting. `_shadows` SHALL NOT affect a `light_area`.
+A `light_area` SHALL read `_frustum` (float, half-angle in degrees, default 0). When it is greater than 0, the light SHALL be reported to the renderer as casting, with `cosOuter` = cos(min(`_frustum`, 90° − 1.15°)), the clamp the shadow frustum and the gizmo use, so values of 180° or more do not wrap. When it is 0 or less, the light SHALL be non-casting. `_shadows` SHALL NOT affect a `light_area`.
 
 #### Scenario: Frustum enables shadows
 - **WHEN** `_frustum 60` is set on a `light_area`
@@ -103,7 +103,7 @@ The entity plugin SHALL expose a game type named `pbr`, selected when a `.game` 
 - whether the light casts shadows;
 - for an area light, the rectangle's world-space half-extent axes (right × `width`/2 and up × `height`/2).
 
-For an area light, the direction SHALL be the emitting normal, the origin the centre, and the outer cosine cos(`_frustum`). Existing accessors (`colour`, `aabb`, `rotation`, `offset`, `isProjected`, `projection`) SHALL remain valid for the Doom 3 light type.
+For an area light, the direction SHALL be the emitting normal, the origin the centre, and the outer cosine cos(min(`_frustum`, 90° − 1.15°)). Existing accessors (`colour`, `aabb`, `rotation`, `offset`, `isProjected`, `projection`) SHALL remain valid for the Doom 3 light type.
 
 An area light SHALL affect a surface only if the surface's bounds lie within the effective radius of the centre and not wholly behind the rectangle's plane. The reported cutoff radius of an area light SHALL be its effective radius. A brush face SHALL receive an area light when any corner of the rectangle lies strictly in front of the face's plane.
 

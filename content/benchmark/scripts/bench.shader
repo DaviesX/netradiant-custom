@@ -114,6 +114,29 @@ textures/bench/neon
 	}
 }
 
+// fireplace: the back face of the firebox, one-sided; emissive like the neon (tools/benchmark/gen_fire.py)
+textures/bench/fire
+{
+	qer_editorimage textures/bench/fire_c
+	qer_pbr_emissiveStrength 64
+	qer_pbr_metallicFactor 0
+	qer_pbr_roughnessFactor 1
+	{
+		map $lightmap
+		rgbGen identity
+	}
+	{
+		map textures/bench/fire_c
+		blendFunc GL_DST_COLOR GL_ZERO
+		rgbGen identity
+	}
+	{
+		map textures/bench/fire_e
+		blendFunc add
+		rgbGen const ( 1 0.9 0.8 )
+	}
+}
+
 // chain-link fence: alpha-tested, both sides, casts through its alpha
 textures/bench/fence
 {

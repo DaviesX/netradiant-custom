@@ -3103,6 +3103,20 @@ inline void Face_addLight( const FaceInstance& face, const Matrix4& localToWorld
 	const Plane3& facePlane = face.getFace().plane3();
 	const Vector3& origin = light.aabb().origin;
 	Plane3 tmp( plane3_transformed( Plane3( facePlane.normal(), -facePlane.dist() ), localToWorld ) );
+	const RendererLightParams& params = light.params();
+	if ( params.type == RendererLightParams::eArea ) {
+		// an area light reaches the face when any corner of its rectangle lies strictly in front of the face plane:
+		// the emitter's own coplanar face and the brush's back face stay unlit, a face cutting the rectangle is lit
+		for ( int i = 0; i < 4; ++i )
+		{
+			const Vector3 corner = params.origin + params.right * ( i & 1 ? 1.f : -1.f ) + params.up * ( i & 2 ? 1.f : -1.f );
+			if ( !plane3_test_point( tmp, corner ) ) {
+				face.m_lights.addLight( light );
+				return;
+			}
+		}
+		return;
+	}
 	if ( !plane3_test_point( tmp, origin )
 	  || !plane3_test_point( tmp, vector3_added( origin, light.offset() ) ) ) {
 		face.m_lights.addLight( light );

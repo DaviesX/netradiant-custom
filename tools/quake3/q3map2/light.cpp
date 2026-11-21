@@ -334,6 +334,15 @@ static void CreateEntityLights(){
 			continue;
 		}
 
+		/* attached emitter lights stand in for an emissive surface whose own emission already bakes: skip
+		   light_area, and light, light_spot and light_sun with _proxy 1 (the value starts with '1'), the set
+		   -shbake leaves out (ShIsAttachedEmitterLight; emissive-area-lights design decision 13) */
+		if ( e.classname_is( "light_area" )
+		  || ( ( e.classname_is( "light" ) || e.classname_is( "light_spot" ) || e.classname_is( "light_sun" ) )
+		    && e.boolForKey( "_proxy" ) ) ) {
+			continue;
+		}
+
 		/* lights with target names (and therefore styles in RBSP) are only parsed from BSP */
 		if ( !strEmpty( e.valueForKey( "targetname" ) ) && g_game->load == LoadRBSPFile && i >= numBSPEntities ) {
 			continue;

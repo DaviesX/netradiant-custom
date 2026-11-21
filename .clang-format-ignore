@@ -1,0 +1,6 @@
+# Vendored third-party code keeps its upstream formatting (clang-format 18+ reads this file).
+# tools/sh-baker is a submodule with its own .clang-format and is formatted with it.
+libs/assimp/**
+libs/rapidjson/**
+libs/crnlib/crunch/**
+libs/webplib/tiny_webp.h
