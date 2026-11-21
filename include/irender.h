@@ -62,7 +62,7 @@ class Shader;
 
 /// \brief Physical light description handed to lighting programs.
 /// Doom 3 lights report eDoom3 and keep using the attenuation-texture path;
-/// PBR lights report point, spot or sun with physical units (see the pbr gamepack README).
+/// PBR lights report point, spot, sun or area with physical units (see the pbr gamepack README).
 struct RendererLightParams
 {
 	enum EType
@@ -71,21 +71,24 @@ struct RendererLightParams
 		ePoint,
 		eSpot,
 		eSun,
+		eArea,
 	};
 	EType type;
-	Vector3 origin;     ///< world space
-	Vector3 direction;  ///< world space, normalised, direction the light travels (spot, sun)
-	float intensity;    ///< radiant flux in watts (point, spot); irradiance in W/m^2 (sun)
-	float radius;       ///< cutoff distance in map units (point, spot)
+	Vector3 origin;     ///< world space; the rectangle's centre (area)
+	Vector3 direction;  ///< world space, normalised, direction the light travels (spot, sun); emitting normal (area)
+	float intensity;    ///< radiant flux in watts (point, spot); irradiance in W/m^2 (sun); radiance (area)
+	float radius;       ///< cutoff distance in map units (point, spot); effective radius max(radius, half-diagonal) (area)
 	float cosInner;     ///< cosine of the inner cone half-angle (spot)
-	float cosOuter;     ///< cosine of the outer cone half-angle (spot)
-	/// \brief Whether this light should occlude. Spot and sun lights report the "_shadows" key here; point lights
-	/// never cast. This is the only part of the shadow description the entity owns: the light-space matrices, the
+	float cosOuter;     ///< cosine of the outer cone half-angle (spot); cos(min(_frustum, pi/2 - 0.02)), shadow path only (area)
+	Vector3 right;      ///< world space half-extent axis, right * width / 2, not normalised (area); zero otherwise
+	Vector3 up;         ///< world space half-extent axis, up * height / 2, not normalised (area); zero otherwise
+	/// \brief Whether this light should occlude. Spot and sun lights report the "_shadows" key here, area lights
+	/// report _frustum > 0; point lights never cast. This is the only part of the shadow description the entity owns: the light-space matrices, the
 	/// atlas rectangle and the cascade splits are computed and held by the renderer, which knows about atlases.
 	bool castsShadows;
 
 	RendererLightParams() :
-		type( eDoom3 ), origin( 0, 0, 0 ), direction( 0, 0, -1 ), intensity( 0 ), radius( 0 ), cosInner( 1 ), cosOuter( 1 ), castsShadows( false ){
+		type( eDoom3 ), origin( 0, 0, 0 ), direction( 0, 0, -1 ), intensity( 0 ), radius( 0 ), cosInner( 1 ), cosOuter( 1 ), right( 0, 0, 0 ), up( 0, 0, 0 ), castsShadows( false ){
 	}
 };
 

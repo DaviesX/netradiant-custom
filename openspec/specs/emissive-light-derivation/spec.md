@@ -1,10 +1,9 @@
-# Spec Delta
+# emissive-light-derivation Specification
 
 ## Purpose
-
 Editor commands that attach lights to emissive surfaces and derive their radiance or flux from the shader: "Create area light from selected face", "Create proxy light from selection" and "Re-derive light from emitter", with the pure helpers they share.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Commands in the Entity menu
 The editor SHALL register the commands `EntityAreaLightFromFace` ("Create area light from selected face"), `EntityProxyLightFromSelection` ("Create proxy light from selection") and `EntityRederiveLight` ("Re-derive light from emitter"). They SHALL appear in the Entity menu only when the active game sets `entities="pbr"`. Each run that changes the map SHALL be one undoable step. A command that cannot run SHALL print one console line saying why and SHALL change nothing. The commands SHALL work in every camera draw mode.
@@ -72,9 +71,9 @@ With exactly one selected brush face that is a rectangle and whose shader has an
 
 `_frustum` SHALL be left unset, at its default. The command SHALL refuse when no face or several faces are selected, when the face is not a rectangle, when the shader has no emissive stage, when the emissive image cannot be loaded, or when L̄ is zero.
 
-#### Scenario: Benchmark sign
-- **WHEN** the neon sign's front face (plane y = 248, normal −Y) is selected and the command runs
-- **THEN** a `light_area` is created with `origin 0 248 120`, a forward vector of −Y, `width 192`, `height 32`, up along +Z, `radius 256` (twice the half-diagonal, 194.7, rounds up to 200), `_color 1 0.35 0.25`, and `intensity` equal to 8 × the face's footprint mean of `neon_e`
+#### Scenario: Benchmark fireplace
+- **WHEN** the fireplace's fire face (plane y = 736, normal −Y, 96 by 48, covering `fire_e` exactly once) is selected and the command runs
+- **THEN** a `light_area` is created with `origin -184 736 40`, a forward vector of −Y, `width 96`, `height 48`, up along +Z, `radius 256` (twice the half-diagonal, 107.3, rounds up to 112), and `intensity` and `_color` from `qer_pbr_emissiveStrength` × `rgbGen const ( 1 0.9 0.8 )` × the face's footprint mean of `fire_e`, which here is the mean of the whole image
 
 #### Scenario: Long emitter radius
 - **WHEN** the command runs on a 1024 by 64 emissive rectangle
@@ -134,8 +133,8 @@ On the axis at a distance d large against the emitter, the spot proxy of a one-s
 It SHALL refuse when no light, or more than one, is selected, when the selected light is neither a `light_area` nor a `light` or `light_spot` with `_proxy 1` (a `light_sun` SHALL be refused whatever its `_proxy`, because a proxy flux is not a sun's irradiance), when no emitter is found, or when the result is zero.
 
 #### Scenario: Strength changed
-- **WHEN** the sign shader's `qer_pbr_emissiveStrength` is changed from 8 to 16, the shaders are reloaded, and Re-derive runs on the sign's `light_area`
-- **THEN** its `intensity` doubles and its `_color`, `origin`, `angles`, `width`, `height` and `radius` are unchanged
+- **WHEN** the fire shader's `qer_pbr_emissiveStrength` is doubled and Re-derive runs on the fireplace's `light_area`
+- **THEN** its `intensity` doubles and its `_color`, `origin`, `angles`, `width`, `height`, `radius` and `_frustum` are unchanged
 
 #### Scenario: Created light round trip
 - **WHEN** a `light_area` is created from a face and Re-derive runs on it at once

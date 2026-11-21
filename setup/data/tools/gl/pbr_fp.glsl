@@ -15,6 +15,11 @@ Lights (see the pbr gamepack README):
          engine culls lights per tile by that radius and has no window term),
          cone falloff smoothstep(cosOuter, cosInner, cosAngle)
   sun:   irradiance = intensity, no falloff
+  area:  radiance L over a one-sided rectangle, linearly transformed cosines
+         (Heitz, Dupuy, Hill, Neubelt 2016; github.com/selfshadow/ltc_code,
+         webgl/shaders/ltc/ltc_quad.fs): Lambert form factor for diffuse with
+         no 1/pi and no (1 - F), LTC GGX for specular weighted by the table 2
+         Fresnel, zero behind the plane and beyond the radius from the centre
 The output is linear radiance; exposure and tonemapping happen in the resolve.
 */
 /// ============================================================================
@@ -37,7 +42,13 @@ uniform float		u_light_intensity;        // flux (point, spot) or irradiance (su
 uniform float		u_light_radius;           // map units
 uniform float		u_light_cos_inner;
 uniform float		u_light_cos_outer;
-uniform int			u_light_type;             // 1 point, 2 spot, 3 sun
+uniform int			u_light_type;             // 1 point, 2 spot, 3 sun, 4 area
+uniform vec3		u_light_half_right;       // object space, area: right * width / 2, not normalised
+uniform vec3		u_light_half_up;          // object space, area: up * height / 2, not normalised
+
+// LTC tables (gl/ltc_ggx.bin): table 1 (M^-1) in rows 0-63, table 2 (magnitude, Fresnel, 0, sphere) in rows 64-127
+uniform sampler2D	u_ltc_tables;
+uniform int			u_ltc_available;          // 0: the tables failed to load, area lights shade diffuse only
 
 // Shadows, ported from sh-renderer glsl/radiance.frag. Cascades and spot tiles share one atlas each and are
 // addressed by a uv scale and offset, because GLSL 1.20 forbids indexing a sampler array with a non-constant.
@@ -82,15 +93,45 @@ float computeShadow( sampler2DShadow map, mat4 toLight, vec4 uvScaleOffset, floa
                      vec3 position, vec3 normal, float NdotL )
 {
 	vec3 biased = position + normal * ( 1.0 - NdotL ) * 0.005;
+	float slope = sqrt( max( 1.0 - NdotL * NdotL, 0.0 ) ) / max( NdotL, 1e-4 );
+	if ( u_light_type == 4 ) {
+		// an area light's map is a wide perspective frustum seen at grazing angles from far away, where a bias in
+		// normalised depth grows with the square of the distance (0.003 is about 77 units at 320) and detaches the
+		// shadow from its caster. Pay the bias in map units instead, scaled to one shadow texel at the receiver.
+		vec3 fromLight = position - u_light_origin;
+		float dist = length( fromLight );
+		float cosHalf = clamp( u_light_cos_outer, 1e-4, 1.0 );
+		float tanHalf = sqrt( 1.0 - cosHalf * cosHalf ) / cosHalf;
+		float texelWorld = 2.0 * dist * tanHalf * u_shadow_texel_size / max( uvScaleOffset.x, 1e-6 );
+		biased = position + normal * texelWorld * ( 1.0 - NdotL )
+		       - fromLight / max( dist, 1e-4 ) * texelWorld * clamp( slope, 1.0, 3.0 );
+	}
 	vec4 lightPos = toLight * vec4( biased, 1.0 );
 	vec3 proj = lightPos.xyz / lightPos.w;
 	proj = proj * 0.5 + 0.5;
-	if ( proj.x < 0.0 || proj.x > 1.0 || proj.y < 0.0 || proj.y > 1.0 || proj.z < 0.0 || proj.z > 1.0 ) {
-		return 1.0;   // outside this light's map: lit
+	if ( proj.x < 0.0 || proj.x > 1.0 || proj.y < 0.0 || proj.y > 1.0 ) {
+		// beside this light's map. A spot gives no light there anyway; an area light lights its whole front
+		// hemisphere, so treating it as lit would leak past occluders the map can't see (a recessed emitter's
+		// surround), and a casting area light's _frustum bounds its light instead
+		return u_light_type == 4 ? 0.0 : 1.0;
+	}
+	if ( proj.z < 0.0 || proj.z > 1.0 ) {
+		return 1.0;   // nearer than the near plane or past the radius cutoff: lit
 	}
 
-	float slope = sqrt( 1.0 - NdotL * NdotL ) / max( NdotL, 1e-4 );
-	float bias = clamp( 0.001 * slope, 0.0, 0.003 );
+	// an area light fades out over the last 10 degrees before _frustum on each axis of its square frustum, so
+	// its light doesn't stop at a hard edge
+	float edgeFade = 1.0;
+	if ( u_light_type == 4 ) {
+		float cosHalf = clamp( u_light_cos_outer, 1e-4, 1.0 );
+		float halfAngle = acos( cosHalf );
+		float tanHalf = sqrt( 1.0 - cosHalf * cosHalf ) / cosHalf;
+		vec2 offAxis = atan( abs( proj.xy * 2.0 - 1.0 ) * tanHalf );
+		vec2 fade = 1.0 - smoothstep( vec2( max( halfAngle - 0.17453293, 0.0 ) ), vec2( halfAngle ), offAxis );
+		edgeFade = fade.x * fade.y;
+	}
+
+	float bias = u_light_type == 4 ? 0.0 : clamp( 0.001 * slope, 0.0, 0.003 );
 	if ( u_shadow_mode == 2 ) {
 		// a cascade's depth range reaches back to the world extent so that every caster is in it, which makes a
 		// bias in normalised depth hundreds of map units; pay it in map units instead. The projection is
@@ -117,7 +158,7 @@ float computeShadow( sampler2DShadow map, mat4 toLight, vec4 uvScaleOffset, floa
 	sum += shadowTap( map, coord, vec2(  0.9008985,  0.1802927 ), rotation, radius, uvScaleOffset );
 	sum += shadowTap( map, coord, vec2( -0.5298812, -0.8258384 ), rotation, radius, uvScaleOffset );
 	sum += shadowTap( map, coord, vec2(  0.3533838, -0.8351508 ), rotation, radius, uvScaleOffset );
-	return sum / 9.0;
+	return sum / 9.0 * edgeFade;
 }
 
 // Cascade selection is unrolled for the same reason: no dynamic index into a sampler or a uniform array.
@@ -190,6 +231,194 @@ float diffuseDisney( float NdotV, float NdotL, float VdotH, float roughness )
 	return lightScatter * viewScatter;
 }
 
+// ---------------------------------------------------------------------------
+// Area lights: linearly transformed cosines, after upstream's ltc_quad.fs. Arrays and matrix transposes are avoided
+// so the file stays GLSL 1.10: the polygon is five named vertices and the basis is applied with dot products.
+// ---------------------------------------------------------------------------
+
+const float LTC_LUT_SIZE = 64.0;
+const float LTC_LUT_SCALE = ( LTC_LUT_SIZE - 1.0 ) / LTC_LUT_SIZE;
+const float LTC_LUT_BIAS = 0.5 / LTC_LUT_SIZE;
+
+// upstream's IntegrateEdge: the edge's contribution to the cosine-weighted solid angle, with the 1/(2 pi) folded
+// into the rational fit of theta / sin(theta)
+float ltcIntegrateEdge( vec3 v1, vec3 v2 )
+{
+	float x = dot( v1, v2 );
+	float y = abs( x );
+
+	float a = 0.8543985 + ( 0.4965155 + 0.0145206 * y ) * y;
+	float b = 3.4175940 + ( 4.1616724 + y ) * y;
+	float v = a / b;
+
+	float theta_sintheta = ( x > 0.0 ) ? v : 0.5 * inversesqrt( max( 1.0 - x * x, 1e-7 ) ) - v;
+
+	return cross( v1, v2 ).z * theta_sintheta;
+}
+
+// upstream's ClipQuadToHorizon on five named vertices; n is the clipped vertex count
+void ltcClipQuadToHorizon( inout vec3 L0, inout vec3 L1, inout vec3 L2, inout vec3 L3, inout vec3 L4, out int n )
+{
+	int config = 0;
+	if ( L0.z > 0.0 ) config += 1;
+	if ( L1.z > 0.0 ) config += 2;
+	if ( L2.z > 0.0 ) config += 4;
+	if ( L3.z > 0.0 ) config += 8;
+
+	n = 0;
+
+	if ( config == 1 ) { // V1 clip V2 V3 V4
+		n = 3;
+		L1 = -L1.z * L0 + L0.z * L1;
+		L2 = -L3.z * L0 + L0.z * L3;
+	}
+	else if ( config == 2 ) { // V2 clip V1 V3 V4
+		n = 3;
+		L0 = -L0.z * L1 + L1.z * L0;
+		L2 = -L2.z * L1 + L1.z * L2;
+	}
+	else if ( config == 3 ) { // V1 V2 clip V3 V4
+		n = 4;
+		L2 = -L2.z * L1 + L1.z * L2;
+		L3 = -L3.z * L0 + L0.z * L3;
+	}
+	else if ( config == 4 ) { // V3 clip V1 V2 V4
+		n = 3;
+		L0 = -L3.z * L2 + L2.z * L3;
+		L1 = -L1.z * L2 + L2.z * L1;
+	}
+	else if ( config == 6 ) { // V2 V3 clip V1 V4
+		n = 4;
+		L0 = -L0.z * L1 + L1.z * L0;
+		L3 = -L3.z * L2 + L2.z * L3;
+	}
+	else if ( config == 7 ) { // V1 V2 V3 clip V4
+		n = 5;
+		L4 = -L3.z * L0 + L0.z * L3;
+		L3 = -L3.z * L2 + L2.z * L3;
+	}
+	else if ( config == 8 ) { // V4 clip V1 V2 V3
+		n = 3;
+		L0 = -L0.z * L3 + L3.z * L0;
+		L1 = -L2.z * L3 + L3.z * L2;
+		L2 = L3;
+	}
+	else if ( config == 9 ) { // V1 V4 clip V2 V3
+		n = 4;
+		L1 = -L1.z * L0 + L0.z * L1;
+		L2 = -L2.z * L3 + L3.z * L2;
+	}
+	else if ( config == 11 ) { // V1 V2 V4 clip V3
+		n = 5;
+		L4 = L3;
+		L3 = -L2.z * L3 + L3.z * L2;
+		L2 = -L2.z * L1 + L1.z * L2;
+	}
+	else if ( config == 12 ) { // V3 V4 clip V1 V2
+		n = 4;
+		L1 = -L1.z * L2 + L2.z * L1;
+		L0 = -L0.z * L3 + L3.z * L0;
+	}
+	else if ( config == 13 ) { // V1 V3 V4 clip V2
+		n = 5;
+		L4 = L3;
+		L3 = L2;
+		L2 = -L1.z * L2 + L2.z * L1;
+		L1 = -L1.z * L0 + L0.z * L1;
+	}
+	else if ( config == 14 ) { // V2 V3 V4 clip V1
+		n = 5;
+		L4 = -L0.z * L3 + L3.z * L0;
+		L0 = -L0.z * L1 + L1.z * L0;
+	}
+	else if ( config == 15 ) { // V1 V2 V3 V4
+		n = 4;
+	}
+	// configs 0, 5 and 10 clip everything (5 and 10 cannot occur for a planar convex quad)
+
+	if ( n == 3 )
+		L3 = L0;
+	if ( n == 4 )
+		L4 = L0;
+}
+
+// upstream's LTC_Evaluate, one-sided and with clipping: the corners q0..q3 relative to the shaded point, already in
+// the (T1, T2, N) frame, are transformed by Minv, clipped to the horizon, projected onto the sphere and integrated
+float ltcEvaluate( mat3 Minv, vec3 q0, vec3 q1, vec3 q2, vec3 q3 )
+{
+	vec3 L0 = Minv * q0;
+	vec3 L1 = Minv * q1;
+	vec3 L2 = Minv * q2;
+	vec3 L3 = Minv * q3;
+	vec3 L4 = L0;
+
+	int n;
+	ltcClipQuadToHorizon( L0, L1, L2, L3, L4, n );
+	if ( n == 0 ) {
+		return 0.0;
+	}
+
+	L0 = normalize( L0 );
+	L1 = normalize( L1 );
+	L2 = normalize( L2 );
+	L3 = normalize( L3 );
+	L4 = normalize( L4 );
+
+	float sum = 0.0;
+	sum += ltcIntegrateEdge( L0, L1 );
+	sum += ltcIntegrateEdge( L1, L2 );
+	sum += ltcIntegrateEdge( L2, L3 );
+	if ( n >= 4 )
+		sum += ltcIntegrateEdge( L3, L4 );
+	if ( n == 5 )
+		sum += ltcIntegrateEdge( L4, L0 );
+
+	return max( 0.0, sum );
+}
+
+// outgoing radiance from the area light, before the light colour, intensity and shadow
+vec3 areaLightBRDF( vec3 position, vec3 N, vec3 V, vec3 baseColor, float metallic, float roughness )
+{
+	// the frame of upstream's LTC_Evaluate; at normal incidence any tangent will do, the lobe is isotropic there
+	vec3 T1 = V - N * dot( V, N );
+	if ( dot( T1, T1 ) < 1e-12 ) {
+		T1 = abs( N.z ) < 0.999 ? cross( N, vec3( 0.0, 0.0, 1.0 ) ) : cross( N, vec3( 1.0, 0.0, 0.0 ) );
+	}
+	T1 = normalize( T1 );
+	vec3 T2 = cross( N, T1 );
+
+	// corners in upstream's order (InitRectPoints with dirx = right, diry = up), which emits along forward
+	vec3 c = u_light_origin - position;
+	vec3 p0 = c - u_light_half_right - u_light_half_up;
+	vec3 p1 = c + u_light_half_right - u_light_half_up;
+	vec3 p2 = c + u_light_half_right + u_light_half_up;
+	vec3 p3 = c - u_light_half_right + u_light_half_up;
+	vec3 q0 = vec3( dot( p0, T1 ), dot( p0, T2 ), dot( p0, N ) );
+	vec3 q1 = vec3( dot( p1, T1 ), dot( p1, T2 ), dot( p1, N ) );
+	vec3 q2 = vec3( dot( p2, T1 ), dot( p2, T2 ), dot( p2, N ) );
+	vec3 q3 = vec3( dot( p3, T1 ), dot( p3, T2 ), dot( p3, N ) );
+
+	// normalised form factor: cosine-weighted solid angle above the horizon / pi, so E = pi L FF
+	float formFactor = ltcEvaluate( mat3( 1.0 ), q0, q1, q2, q3 );
+	vec3 radiance = ( 1.0 - metallic ) * baseColor * formFactor;
+
+	if ( u_ltc_available != 0 ) {
+		float NdotV = clamp( dot( N, V ), 0.0, 1.0 );
+		vec2 uv = vec2( roughness, sqrt( 1.0 - NdotV ) ) * LTC_LUT_SCALE + LTC_LUT_BIAS;
+		vec4 t1 = texture2D( u_ltc_tables, vec2( uv.x, 0.5 * uv.y ) );
+		vec4 t2 = texture2D( u_ltc_tables, vec2( uv.x, 0.5 + 0.5 * uv.y ) );
+		mat3 Minv = mat3( vec3( t1.x, 0.0, t1.y ),
+		                  vec3( 0.0, 1.0, 0.0 ),
+		                  vec3( t1.z, 0.0, t1.w ) );
+		float spec = ltcEvaluate( Minv, q0, q1, q2, q3 );
+
+		vec3 F0 = mix( vec3( 0.04 ), baseColor, metallic );
+		radiance += spec * ( F0 * t2.x + ( 1.0 - F0 ) * t2.y );
+	}
+
+	return radiance;
+}
+
 void	main()
 {
 	vec4 baseSample = texture2D( u_basecolormap, var_texcoord );
@@ -204,6 +433,21 @@ void	main()
 	vec3 N = normalize( var_mat_ts2os * nTS );
 
 	vec3 V = normalize( u_view_origin - var_vertex );
+
+	if ( u_light_type == 4 ) {
+		// one-sided, with the cutoff measured from the centre
+		vec3 fromLight = var_vertex - u_light_origin;
+		if ( dot( fromLight, u_light_direction ) <= 0.0 || length( fromLight ) > u_light_radius ) {
+			gl_FragColor = vec4( 0.0, 0.0, 0.0, alpha );
+			return;
+		}
+		// the shadow map is a perspective frustum from the centre, so its NdotL is toward the centre
+		float NdotC = max( dot( N, normalize( -fromLight ) ), 0.0 );
+		float areaShadow = NdotC > 0.0 ? shadowTerm( var_vertex, N, NdotC ) : 1.0;
+		vec3 areaRadiance = areaLightBRDF( var_vertex, N, V, baseColor, metallic, roughness ) * u_light_color * u_light_intensity * areaShadow;
+		gl_FragColor = vec4( areaRadiance * alpha, alpha );
+		return;
+	}
 
 	// light vector and irradiance for this light
 	vec3 L;

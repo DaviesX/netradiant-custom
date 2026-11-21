@@ -19,7 +19,7 @@ The pack's root `README.md` SHALL document:
 ## MODIFIED Requirements
 
 ### Requirement: Shadow parameters documented in the gamepack README
-The pack's root `README.md` SHALL document the shadow scheme so it can be compared against the engine: the caster culling mode, the normal-offset and slope-scaled bias constants, the PCF kernel, the cascade count, resolution, split lambda, texel snapping and near-plane padding, the spot atlas dimensions and per-light tile size, the area light's `_frustum` projection (field of view, its clamp, near and far planes, shared tile, NdotL toward the centre, receivers outside the frustum lit), and the editor's caster rule. It SHALL state which values match `sh-renderer` and which are editor-side choices.
+The pack's root `README.md` SHALL document the shadow scheme so it can be compared against the engine: the caster culling mode, the normal-offset and slope-scaled bias constants, the PCF kernel, the cascade count, resolution, split lambda, texel snapping and near-plane padding, the spot atlas dimensions and per-light tile size, the area light's `_frustum` projection (field of view, its clamp, near and far planes, shared tile, NdotL toward the centre, receivers beside the frustum shadowed for area lights, lit for spots), and the editor's caster rule. It SHALL state which values match `sh-renderer` and which are editor-side choices.
 
 #### Scenario: Reader can reproduce the scheme
 - **WHEN** a reader follows the README's shadow section

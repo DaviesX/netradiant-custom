@@ -45,10 +45,10 @@ Matrix4 matrix4_ortho( float left, float right, float bottom, float top, float n
 	       );
 }
 
-Matrix4 matrix4_light_view( const Vector3& direction, const Vector3& origin ){
-	const Vector3 f = vector3_normalised( direction );
-	// any reference up that is not parallel to the light
-	const Vector3 reference = ( std::fabs( f.z() ) > 0.99f ) ? Vector3( 0, 1, 0 ) : Vector3( 0, 0, 1 );
+namespace
+{
+
+Matrix4 lightViewFromReference( const Vector3& f, const Vector3& origin, const Vector3& reference ){
 	const Vector3 s = vector3_normalised( vector3_cross( f, reference ) ); // right
 	const Vector3 u = vector3_cross( s, f );                               // up
 	// rows are the light space axes; view space looks along -z, so the third row is -f
@@ -58,6 +58,26 @@ Matrix4 matrix4_light_view( const Vector3& direction, const Vector3& origin ){
 	           s.z(), u.z(), -f.z(), 0,
 	           -vector3_dot( s, origin ), -vector3_dot( u, origin ), vector3_dot( f, origin ), 1
 	       );
+}
+
+/// any reference up that is not parallel to the light
+Vector3 worldReference( const Vector3& f ){
+	return ( std::fabs( f.z() ) > 0.99f ) ? Vector3( 0, 1, 0 ) : Vector3( 0, 0, 1 );
+}
+
+}
+
+Matrix4 matrix4_light_view( const Vector3& direction, const Vector3& origin ){
+	const Vector3 f = vector3_normalised( direction );
+	return lightViewFromReference( f, origin, worldReference( f ) );
+}
+
+Matrix4 matrix4_light_view( const Vector3& direction, const Vector3& origin, const Vector3& up ){
+	const Vector3 f = vector3_normalised( direction );
+	// u = s x f is up with its component along f removed, so the view's y axis is up's direction
+	const Vector3 sideways = vector3_cross( f, up );
+	const bool usable = vector3_length_squared( sideways ) > 1e-4f * vector3_length_squared( up );
+	return lightViewFromReference( f, origin, usable ? up : worldReference( f ) );
 }
 
 namespace

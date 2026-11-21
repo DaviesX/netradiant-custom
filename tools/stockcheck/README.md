@@ -94,9 +94,10 @@ entry has a comment saying why its lines are benign. Add an entry only after rea
 nothing to do with the content. A short list that fails on a benign warning is better than a broad one that hides a
 real problem.
 
-It started with two entries: `light_spot doesn't have a spawn function` and `light_sun doesn't have a spawn
-function`. The editor's spot and sun lights stay in the BSP for `renderer_sh`, the stock game has no spawn function for
-them and frees each with that line (`code/game/g_spawn.c:281`), and the map still plays. Any other classname without a
+It starts with three entries: `light_spot doesn't have a spawn function`, `light_sun doesn't have a spawn function` and
+`light_area doesn't have a spawn function`. The editor's spot, sun and area lights stay in the BSP for `renderer_sh`,
+the stock game has no spawn function for them and frees each with that line (`code/game/g_spawn.c:281`), and the map
+still plays. Any other classname without a
 spawn function fails the run.
 
 Missing images are stricter. A `WARNING` entry never excuses one, even when its pattern matches. Only an entry anchored

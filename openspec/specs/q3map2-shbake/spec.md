@@ -130,8 +130,8 @@ The stage SHALL NOT add `light_area` entities or lights with `_proxy 1` to eithe
 - **THEN** the two bakes' lightmap, light-grid and draw-vertex lumps and side files are byte-identical
 
 #### Scenario: Area light ignored silently
-- **WHEN** the benchmark with a `light_area` on the neon sign's front face is baked
-- **THEN** the bake output is byte-identical to the bake without it, and no warning names `light_area`; the warning for the sign's shader counts only its other neon faces (4: the ends, top and bottom), which the rectangle doesn't cover
+- **WHEN** the benchmark, whose fireplace's fire face carries a `light_area`, is baked with and without that `light_area`
+- **THEN** the two bakes' lightmap, light-grid and draw-vertex lumps (every lump but the entity lump) and side files are byte-identical, and no warning names `light_area`; with the `light_area`, no warning names `textures/bench/fire`, and the warning for `textures/bench/neon` counts the sign's 5 neon faces, which have no light attached
 
 #### Scenario: Unattached emitter warned
 - **WHEN** a map has three surfaces with an emissive shader and no attached light

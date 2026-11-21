@@ -25,7 +25,7 @@ An emissive surface glows on every target, but the editor cannot show it lightin
 - **Emitters the preview doesn't light are drawn in linear HDR.** This covers shaders with an emissive stage that are all-additive or `surfaceparm nolightmap`. The emissive is drawn as sRGB-decoded texel × `rgbGen const` × `qer_pbr_emissiveStrength`, as for lit emitters. A `nolightmap` base is drawn fullbright in linear light. Today they take their textured-mode state (`radiant/renderstate.cpp:3191-3229`).
 - **q3map2 placeholder `-light`** skips `light_area` entities and `light`, `light_spot` and `light_sun` entities with `_proxy 1` in `CreateEntityLights`, the same set `-shbake` already leaves out. Today every `light*` classname becomes a 300-photon point light (`tools/quake3/q3map2/light.cpp:327-335`, `:439-443`).
 - **Stock check:** the allowlist gains `^light_area doesn't have a spawn function$`.
-- **Benchmark:** the neon sign's front face gets a `light_area` created by the new command. Its other four neon faces stay unattached, as q3map2-shbake's scenario "Area light ignored silently" expects.
+- **Benchmark:** a simple one-sided fireplace in the north interior, in line with the metal pillar, is the area-light demo (user decision, 2026-11-20). A brick and concrete surround holds a recessed opening whose back face is the new emissive `textures/bench/fire`, with images from a committed generator `tools/benchmark/gen_fire.py`. The fire face gets a `light_area` created by the new command, with `radius` raised by hand so it reaches the pillar and the floor and `_frustum` set so the pillar casts a firelight shadow. A new `fireplace` view frames it. The neon sign stays as it was before this change: an unattached emitter with no light, so q3map2-shbake's warning still counts its 5 neon faces. The sign was dropped as the demo because a one-sided `light_area` flush on its front face can't light the wall it hangs on, which lies behind its plane.
 - **Docs:** the gamepack README documents the area and proxy model, its units, LTC, the one-sided versus two-sided difference from sh-baker, the derivation formulas, the proxies' on-axis residual, the `_frustum` shadow and the tables' source.
 - **Out of scope:**
   - the `-shbake` skip, the attachment test and the unattached-emitter warning, which landed with B5 (requirement "Attached emitter lights skipped" in `openspec/specs/q3map2-shbake/spec.md`);
@@ -48,7 +48,8 @@ An emissive surface glows on every target, but the editor cannot show it lightin
 - `pbr-shadow-maps`: `_frustum` shadows in the spot atlas.
 - `pbr-gamepack`: the README documents the area and proxy model, the LTC tables' source and the area shadow.
 - `stock-check`: the allowlist starts with three spawn-function entries.
-- `benchmark-map`: the neon sign carries a `light_area`.
+- `benchmark-map`: the fireplace, its `light_area` and the `fireplace` view.
+- `q3map2-shbake`: the scenario "Area light ignored silently" is pinned on the fireplace's `light_area` (no warning for the attached fire face, the neon's count stays 5).
 
 ## Impact
 
@@ -56,7 +57,7 @@ An emissive surface glows on every target, but the editor cannot show it lightin
 - `include/ishaders.h`, `plugins/shaders/shaders.cpp`:
   - `IShader::hasEmissive()`, `getEmissiveName()`, `isAllAdditive()` and `getEmissiveSrcAlpha()`;
   - `loadsLightingTextures()` also covers emitters.
-- `plugins/entity/entity.cpp`, `light.cpp`: the `light_area` class routing, `PBRLight` area keys and basis, params, culling, gizmo and bounds, the `_proxy` observer, and a spot gizmo drawn to its radius sphere so a hemisphere spot proxy's gizmo stays bounded.
+- `plugins/entity/entity.cpp`, `light.cpp`: the `light_area` class routing, `PBRLight` area keys and basis, params, culling, gizmo and bounds, and a spot gizmo drawn to its radius sphere so a hemisphere spot proxy's gizmo stays bounded. The entity module keeps no `_proxy` state: Re-derive reads the key from the entity.
 - `radiant/brush.h`: `Face_addLight` tests the rectangle's corners for area lights.
 - `radiant/renderstate.cpp`:
   - the area uniforms and type 4;
@@ -71,7 +72,7 @@ An emissive surface glows on every target, but the editor cannot show it lightin
 - `tools/quake3/q3map2/light.cpp` (`CreateEntityLights`). B5 is on `master`, and this change branches from `master` (design decision 14). The comment in `light_sh_model.cpp` that cites a stale design line number is changed to name design decision 13 (comment only).
 - `setup/data/gamepacks/pbr/`: `_pbr_lights.ent`, the `games/Q3.game` comment and `README.md`.
 - `tools/stockcheck/allowlist.txt` and `README.md`.
-- `content/benchmark/maps/bench.map` and `README.md`.
+- `content/benchmark/`: `maps/bench.map` (the fireplace brushes and its `light_area`), `maps/bench.cameras` (the `fireplace` view), `scripts/bench.shader` (`textures/bench/fire`), `textures/bench/fire_c.tga` and `fire_e.tga`, and `README.md`; the new generator `tools/benchmark/gen_fire.py`.
 - `CLAUDE.md` ground rules, and the plan's §2.2 status on completion.
 - Unaffected:
   - textured, solid and wireframe modes;

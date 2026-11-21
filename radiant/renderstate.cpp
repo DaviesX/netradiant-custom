@@ -38,6 +38,8 @@
 #include <map>
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <cstring>
 
 #include <QOpenGLContext>
 #include <QOpenGLExtraFunctions>
@@ -501,11 +503,11 @@ const std::size_t c_shadowAtlasSize = 2048;
 /// Edge of one spot light's region of the spot atlas, in texels.
 const std::size_t c_spotShadowTileSize = 512;
 const std::size_t c_spotShadowTilesPerRow = c_shadowAtlasSize / c_spotShadowTileSize;
-/// How many spot lights the atlas holds at once.
+/// How many spot and area lights the atlas holds at once.
 const std::size_t c_spotShadowTileCount = c_spotShadowTilesPerRow * c_spotShadowTilesPerRow;
 /// Near plane of a spot light's shadow frustum, in map units.
 const float c_spotShadowNear = 4.f;
-/// Five material textures plus the two atlases.
+/// Five material textures plus the two atlases. The LTC tables take unit 7 (c_ltcTextureUnit).
 const GLint c_shadowTextureUnits = 7;
 
 /// \brief What the lighting program needs in order to sample one light's shadow, for the duration of a frame.
@@ -539,6 +541,115 @@ const ShadowAssignment* ShaderCache_shadowsFor( const RendererLight& light ){
 	return ( i == g_shadowAssignments.end() ) ? 0 : &( *i ).second;
 }
 
+// ============================================================================
+// LTC tables for the area light pass (the GGX fit of github.com/selfshadow/ltc_code, see tools/ltc/README.md).
+// gl/ltc_ggx.bin holds a 16 byte header (LTC1, width 64, height 64, table count 2, little-endian uint32), then
+// both 64 x 64 RGBA float32 tables, entry a + 64 t at roughness index a and angle index t. Uploaded unchanged
+// as one 64 x 128 texture, table 1 in rows 0-63 and table 2 in rows 64-127, so the payload is the image.
+// ============================================================================
+
+const std::size_t c_ltcTableSize = 64;
+const std::size_t c_ltcTableCount = 2;
+const std::size_t c_ltcHeaderSize = 16;
+const std::size_t c_ltcPayloadSize = c_ltcTableSize * c_ltcTableSize * c_ltcTableCount * 4 * sizeof( float );
+/// Above the five material textures and the two shadow atlases.
+const GLint c_ltcTextureUnit = 7;
+const GLint c_ltcTextureUnits = c_ltcTextureUnit + 1;
+
+GLuint g_ltcTexture = 0;
+/// The tables loaded on this context; without them the area pass shades diffuse only.
+bool g_ltcAvailable = false;
+
+inline std::uint32_t ltc_readUint32LE( const unsigned char* p ){
+	return std::uint32_t( p[0] ) | ( std::uint32_t( p[1] ) << 8 ) | ( std::uint32_t( p[2] ) << 16 ) | ( std::uint32_t( p[3] ) << 24 );
+}
+
+/// \brief Reads and checks gl/ltc_ggx.bin. Returns 0 on success, or why it failed.
+const char* ltc_loadFile( const char* filename, std::vector<float>& tables ){
+	if ( !file_exists( filename ) ) {
+		return "is missing";
+	}
+	if ( file_size( filename ) != c_ltcHeaderSize + c_ltcPayloadSize ) {
+		return "is malformed (wrong size)";
+	}
+	FileInputStream file( filename );
+	if ( file.failed() ) {
+		return "cannot be opened";
+	}
+	unsigned char header[c_ltcHeaderSize];
+	if ( file.read( reinterpret_cast<StreamBase::byte_type*>( header ), c_ltcHeaderSize ) != c_ltcHeaderSize ) {
+		return "is malformed (short read)";
+	}
+	if ( header[0] != 'L' || header[1] != 'T' || header[2] != 'C' || header[3] != '1'
+	  || ltc_readUint32LE( header + 4 ) != c_ltcTableSize || ltc_readUint32LE( header + 8 ) != c_ltcTableSize
+	  || ltc_readUint32LE( header + 12 ) != c_ltcTableCount ) {
+		return "is malformed (bad header)";
+	}
+	std::vector<unsigned char> payload( c_ltcPayloadSize );
+	if ( file.read( reinterpret_cast<StreamBase::byte_type*>( payload.data() ), c_ltcPayloadSize ) != c_ltcPayloadSize ) {
+		return "is malformed (short read)";
+	}
+	tables.resize( c_ltcPayloadSize / sizeof( float ) );
+	for ( std::size_t i = 0; i < tables.size(); ++i )
+	{
+		const std::uint32_t bits = ltc_readUint32LE( payload.data() + i * sizeof( float ) );
+		std::memcpy( &tables[i], &bits, sizeof( float ) );
+	}
+	return 0;
+}
+
+/// \brief Creates the LTC texture with the PBR programs. Any failure leaves area lights diffuse only, with one
+/// warning per session; the load is retried on the next realise.
+void ShaderCache_createLightingTables(){
+	g_ltcAvailable = false;
+
+	StringOutputStream filename( 256 );
+	filename << GlobalRadiant().getAppPath() << "gl/ltc_ggx.bin";
+
+	const char* reason = 0;
+	std::vector<float> tables;
+	GLint units = 0;
+	gl().glGetIntegerv( GL_MAX_TEXTURE_IMAGE_UNITS, &units );
+	if ( units < c_ltcTextureUnits ) {
+		reason = "fewer than eight texture image units";
+	}
+	else if ( GlobalOpenGL().major_version < 3 && !QOpenGLContext::currentContext()->hasExtension( "GL_ARB_texture_float" ) ) {
+		reason = "float textures (GL_ARB_texture_float or OpenGL 3.0) are unavailable";
+	}
+	else if ( const char* fileReason = ltc_loadFile( filename.c_str(), tables ) ) {
+		reason = fileReason;
+	}
+
+	if ( reason != 0 ) {
+		static bool warned = false;
+		if ( !warned ) {
+			warned = true;
+			globalWarningStream() << "Lighting mode: " << filename.c_str() << ": " << reason << ", area lights shade diffuse only\n";
+		}
+		return;
+	}
+
+	gl().glGenTextures( 1, &g_ltcTexture );
+	gl().glBindTexture( GL_TEXTURE_2D, g_ltcTexture );
+	gl().glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR );
+	gl().glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR );
+	gl().glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE );
+	gl().glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE );
+	gl().glPixelStorei( GL_UNPACK_ALIGNMENT, 4 );
+	gl().glTexImage2D( GL_TEXTURE_2D, 0, GL_RGBA32F, GLsizei( c_ltcTableSize ), GLsizei( c_ltcTableSize * c_ltcTableCount ), 0, GL_RGBA, GL_FLOAT, tables.data() );
+	gl().glBindTexture( GL_TEXTURE_2D, 0 );
+	GlobalOpenGL_debugAssertNoErrors();
+	g_ltcAvailable = true;
+}
+
+void ShaderCache_releaseLightingTables(){
+	if ( g_ltcTexture != 0 ) {
+		gl().glDeleteTextures( 1, &g_ltcTexture );
+		g_ltcTexture = 0;
+	}
+	g_ltcAvailable = false;
+}
+
 /// \brief Shared program for the additive PBR light passes (pbr_vp/pbr_fp).
 /// Per-material factors are set by GLSLPBRMaterialProgram when a material's pass is enabled.
 class GLSLPBRProgram : public GLProgram
@@ -557,6 +668,8 @@ public:
 	GLint u_light_cos_inner;
 	GLint u_light_cos_outer;
 	GLint u_light_type;
+	GLint u_light_half_right;
+	GLint u_light_half_up;
 	GLint u_shadow_mode;
 	// the cascade uniforms are named individually rather than declared as an array, because GLSL 1.20 forbids
 	// indexing a uniform array with a non-constant in the fragment program
@@ -604,9 +717,13 @@ public:
 		u_light_cos_inner = gl().glGetUniformLocation( m_program, "u_light_cos_inner" );
 		u_light_cos_outer = gl().glGetUniformLocation( m_program, "u_light_cos_outer" );
 		u_light_type = gl().glGetUniformLocation( m_program, "u_light_type" );
+		u_light_half_right = gl().glGetUniformLocation( m_program, "u_light_half_right" );
+		u_light_half_up = gl().glGetUniformLocation( m_program, "u_light_half_up" );
 
 		gl().glUniform1i( gl().glGetUniformLocation( m_program, "u_sun_shadow_atlas" ), 5 );
 		gl().glUniform1i( gl().glGetUniformLocation( m_program, "u_spot_shadow_atlas" ), 6 );
+		gl().glUniform1i( gl().glGetUniformLocation( m_program, "u_ltc_tables" ), c_ltcTextureUnit );
+		gl().glUniform1i( gl().glGetUniformLocation( m_program, "u_ltc_available" ), g_ltcAvailable ? 1 : 0 );
 
 		u_shadow_mode = gl().glGetUniformLocation( m_program, "u_shadow_mode" );
 		u_local_to_shadow[0] = gl().glGetUniformLocation( m_program, "u_local_to_shadow0" );
@@ -693,7 +810,13 @@ public:
 		gl().glUniform1f( u_light_radius, params.radius );
 		gl().glUniform1f( u_light_cos_inner, params.cosInner );
 		gl().glUniform1f( u_light_cos_outer, params.cosOuter );
-		gl().glUniform1i( u_light_type, params.type == RendererLightParams::eSun ? 3 : params.type == RendererLightParams::eSpot ? 2 : 1 );
+		gl().glUniform1i( u_light_type, params.type == RendererLightParams::eArea ? 4 : params.type == RendererLightParams::eSun ? 3 : params.type == RendererLightParams::eSpot ? 2 : 1 );
+
+		// the rectangle's half-extent axes, not normalised: their length is the half width and half height
+		const Vector3 localHalfRight( matrix4_transformed_direction( world2local, params.right ) );
+		const Vector3 localHalfUp( matrix4_transformed_direction( world2local, params.up ) );
+		gl().glUniform3f( u_light_half_right, localHalfRight.x(), localHalfRight.y(), localHalfRight.z() );
+		gl().glUniform3f( u_light_half_up, localHalfUp.x(), localHalfUp.y(), localHalfUp.z() );
 
 		setShadowParams( localToWorld, light );
 
@@ -876,39 +999,74 @@ public:
 
 GLSLShadowProgram g_shadowGLSL;
 
+/// 1 x 1 white texture: the occlusion map of the opaque emitter pass, which has none
+GLuint g_pbrWhiteTexture = 0;
+
+void ShaderCache_createWhiteTexture(){
+	const unsigned char white[4] = { 255, 255, 255, 255 };
+	gl().glGenTextures( 1, &g_pbrWhiteTexture );
+	gl().glBindTexture( GL_TEXTURE_2D, g_pbrWhiteTexture );
+	gl().glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST );
+	gl().glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST );
+	gl().glTexImage2D( GL_TEXTURE_2D, 0, GL_RGBA8, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, white );
+	gl().glBindTexture( GL_TEXTURE_2D, 0 );
+	GlobalOpenGL_debugAssertNoErrors();
+}
+
 /// \brief Per-material front for the shared PBR programs.
 /// The render loop enables a pass's program when the pass is reached; this sets the material's factors then.
 class GLSLPBRMaterialProgram : public GLProgram
 {
-	IShader& m_material;
-	const bool m_base;
 public:
-	GLSLPBRMaterialProgram( IShader& material, bool base ) : m_material( material ), m_base( base ){
+	enum EPass
+	{
+		eLight,           ///< one additive light pass per light (pbr_fp)
+		eBase,            ///< base pass of a lit material: emissive + ambient (pbr_base_fp)
+		eAdditiveEmitter, ///< all-additive emitter: the emissive alone, ambient 0, blended onto the frame (pbr_base_fp)
+		eOpaqueEmitter,   ///< opaque nolightmap emitter: base colour fullbright + emissive, "ambient" 1 (pbr_base_fp)
+	};
+private:
+	IShader& m_material;
+	const EPass m_pass;
+public:
+	GLSLPBRMaterialProgram( IShader& material, EPass pass ) : m_material( material ), m_pass( pass ){
 	}
 	void enable() override {
-		if ( m_base ) {
-			g_pbrBaseGLSL.enable();
-			g_pbrBaseGLSL.setMaterial( m_material.getBaseColorFactor(), m_material.getEmissiveFactor(), m_material.getEmissiveStrength(), Camera_lightingAmbient() );
-		}
-		else
+		switch ( m_pass )
 		{
+		case eLight:
 			g_pbrGLSL.enable();
 			g_pbrGLSL.setMaterial( m_material.getBaseColorFactor(), m_material.getMetallicFactor(), m_material.getRoughnessFactor() );
+			break;
+		case eBase:
+			g_pbrBaseGLSL.enable();
+			g_pbrBaseGLSL.setMaterial( m_material.getBaseColorFactor(), m_material.getEmissiveFactor(), m_material.getEmissiveStrength(), Camera_lightingAmbient() );
+			break;
+		case eAdditiveEmitter:
+			// the emissive map is bound as the base colour too, so the output alpha is the emissive texel's alpha,
+			// which a GL_SRC_ALPHA GL_ONE stage blends with
+			g_pbrBaseGLSL.enable();
+			g_pbrBaseGLSL.setMaterial( Vector4( 1, 1, 1, 1 ), m_material.getEmissiveFactor(), m_material.getEmissiveStrength(), 0 );
+			break;
+		case eOpaqueEmitter:
+			g_pbrBaseGLSL.enable();
+			g_pbrBaseGLSL.setMaterial( m_material.getBaseColorFactor(), m_material.getEmissiveFactor(), m_material.getEmissiveStrength(), 1 );
+			break;
 		}
 	}
 	void disable() override {
-		if ( m_base ) {
-			g_pbrBaseGLSL.disable();
+		if ( m_pass == eLight ) {
+			g_pbrGLSL.disable();
 		}
 		else
 		{
-			g_pbrGLSL.disable();
+			g_pbrBaseGLSL.disable();
 		}
 	}
 	void setParameters( const Vector3& viewer, const Matrix4& localToWorld, const Vector3& origin, const Vector3& colour, const Matrix4& world2light ) override {
 	}
 	void setLightParams( const Vector3& viewer, const Matrix4& localToWorld, const RendererLight& light ) override {
-		if ( !m_base ) {
+		if ( m_pass == eLight ) {
 			g_pbrGLSL.setLightParams( viewer, localToWorld, light );
 		}
 	}
@@ -1586,10 +1744,12 @@ public:
 				g_bumpGLSL.create();
 				g_depthFillGLSL.create();
 				if ( ShaderCache_pbrGame() ) {
+					ShaderCache_createLightingTables(); // before the light program, which reads g_ltcAvailable
 					g_pbrGLSL.create();
 					g_pbrBaseGLSL.create();
 					g_shadowGLSL.create();
 					g_tonemapGLSL.create();
+					ShaderCache_createWhiteTexture();
 				}
 			}
 
@@ -1616,10 +1776,13 @@ public:
 				g_depthFillGLSL.destroy();
 				if ( ShaderCache_pbrGame() ) {
 					ShaderCache_releaseShadows();
+					ShaderCache_releaseLightingTables();
 					g_pbrGLSL.destroy();
 					g_pbrBaseGLSL.destroy();
 					g_shadowGLSL.destroy();
 					g_tonemapGLSL.destroy();
+					gl().glDeleteTextures( 1, &g_pbrWhiteTexture );
+					g_pbrWhiteTexture = 0;
 				}
 			}
 			if( GlobalOpenGL().contextValid )
@@ -2057,9 +2220,13 @@ void Shadow_generateSun( const ShadowCascadeCamera& camera, const RendererLight&
 void Shadow_generateSpot( const RendererLight& light, std::size_t tile ){
 	const RendererLightParams& params = light.params();
 
-	const Matrix4 view = matrix4_light_view( params.direction, params.origin );
+	// an area light's frustum is aligned with its rectangle (and with the pyramid its gizmo draws); a spot's cone
+	// is round, so any roll about its axis covers it
+	const Matrix4 view = params.type == RendererLightParams::eArea
+	                     ? matrix4_light_view( params.direction, params.origin, params.up )
+	                     : matrix4_light_view( params.direction, params.origin );
 
-	// a frustum covering twice the outer cone half-angle
+	// a frustum covering twice the outer cone half-angle; an area light's cosOuter is cos(_frustum), clamped like halfAngle below
 	const float cosOuter = std::min( std::max( params.cosOuter, -1.f ), 1.f );
 	const float halfAngle = std::min( float( acos( cosOuter ) ), float( c_half_pi ) - 0.02f );
 	const float extent = c_spotShadowNear * std::tan( halfAngle );
@@ -2079,7 +2246,7 @@ void Shadow_generateSpot( const RendererLight& light, std::size_t tile ){
 	assignment.uvScaleOffset[0] = Shadow_tileUV( x, y, size );
 }
 
-/// \brief Orders casting spot lights by distance from the camera, so the ones that matter get the tiles.
+/// \brief Orders casting spot and area lights by distance from the camera, so the ones that matter get the tiles.
 struct SpotByDistance
 {
 	Vector3 m_viewer;
@@ -2152,7 +2319,8 @@ void Shadow_generate( const ShadowCascadeCamera& camera, bool sun, bool spots ){
 				sunLight = light;
 			}
 		}
-		else if ( params.type == RendererLightParams::eSpot ) {
+		else if ( params.type == RendererLightParams::eSpot || params.type == RendererLightParams::eArea ) {
+			// area lights with _frustum > 0 share the spot atlas and its nearest-to-camera assignment
 			spotLights.push_back( light );
 		}
 	}
@@ -2182,7 +2350,7 @@ void Shadow_generate( const ShadowCascadeCamera& camera, bool sun, bool spots ){
 		if ( spotLights.size() > c_spotShadowTileCount && !g_spotShadowAtlasFullWarned ) {
 			g_spotShadowAtlasFullWarned = true;
 			globalWarningStream() << "Lighting mode: more than " << c_spotShadowTileCount
-			                      << " shadow casting spot lights; the " << ( spotLights.size() - c_spotShadowTileCount )
+			                      << " shadow casting spot and area lights; the " << ( spotLights.size() - c_spotShadowTileCount )
 			                      << " furthest from the camera render unshadowed\n";
 		}
 	}
@@ -2254,6 +2422,18 @@ void ShaderCache_updateShadows( const ShadowCascadeCamera& camera, const Matrix4
 	gl().glClientActiveTexture( GL_TEXTURE0 );
 }
 
+
+/// \brief Binds the LTC tables on their unit for the frame. Called from Cam_Draw in PBR lighting mode, whatever the
+/// shadow preference; no pass's state touches unit 7, so the binding holds for the frame.
+void ShaderCache_bindLightingTables(){
+	if ( !ShaderCache_pbrGame() || !g_ShaderCache->lightingEnabled() ) {
+		return;
+	}
+	gl().glActiveTexture( GL_TEXTURE0 + c_ltcTextureUnit );
+	gl().glBindTexture( GL_TEXTURE_2D, g_ltcTexture );
+	gl().glActiveTexture( GL_TEXTURE0 );
+	gl().glClientActiveTexture( GL_TEXTURE0 );
+}
 
 Vector3 g_DebugShaderColours[256];
 Shader* g_defaultPointLight = 0;
@@ -2462,6 +2642,7 @@ void OpenGLState_apply( const OpenGLState& self, OpenGLState& current, unsigned 
 
 		gl().glDisable( GL_TEXTURE_2D );
 		gl().glBindTexture( GL_TEXTURE_2D, 0 );
+		current.m_texture = 0; // keep the cache in step with the unbind, or the next state with the same texture skips its bind
 		gl().glDisableClientState( GL_TEXTURE_COORD_ARRAY );
 
 		GlobalOpenGL_debugAssertNoErrors();
@@ -3116,8 +3297,8 @@ void OpenGLShader::construct( const char* name ){
 			m_shader->getPreviewAlphaFunc( &alphaFunc, &alphaRef );
 			const bool masked = alphaFunc != IShader::eAlways; // preview-lit shaders are never blended
 
-			m_pbrBaseProgram = new GLSLPBRMaterialProgram( *m_shader, true );
-			m_pbrLightProgram = new GLSLPBRMaterialProgram( *m_shader, false );
+			m_pbrBaseProgram = new GLSLPBRMaterialProgram( *m_shader, GLSLPBRMaterialProgram::eBase );
+			m_pbrLightProgram = new GLSLPBRMaterialProgram( *m_shader, GLSLPBRMaterialProgram::eLight );
 
 			// base pass: emissive + ambient; also fills the depth buffer, honouring the alpha mask
 			state.m_texture = m_shader->getBaseColor()->texture_number;
@@ -3155,6 +3336,48 @@ void OpenGLShader::construct( const char* name ){
 				lightPass.m_alphafunc = IShader_alphaFuncGL( alphaFunc );
 				lightPass.m_alpharef = alphaRef;
 			}
+		}
+		else if ( g_ShaderCache->lightingEnabled() && ShaderCache_pbrGame() && m_shader->hasEmissive() && m_shader->getEmissive() != 0 && m_shader->getBaseColor() != 0
+		       && ( m_shader->getFlags() & ( QER_SKY | QER_SURFSKY | QER_FOG ) ) == 0
+		       && ( m_shader->isAllAdditive()
+		         || ( ( m_shader->getFlags() & ( QER_NOLIGHTMAP | QER_TRANS ) ) == QER_NOLIGHTMAP && m_shader->getAlphaMode() != IShader::eAlphaBlend ) ) ) { // an emitter the preview doesn't light: linear HDR, no light passes; blended shaders that aren't all-additive keep their textured-mode state
+			const unsigned int cull = ( m_shader->isDoubleSided() || ( ( m_shader->getFlags() & QER_CULL ) != 0 && m_shader->getCull() == IShader::eCullNone ) ) ? 0 : RENDER_CULLFACE;
+
+			state.m_texture1 = m_shader->getNormal()->texture_number;
+			state.m_texture2 = m_shader->getMetallicRoughness()->texture_number;
+			state.m_texture4 = m_shader->getEmissive()->texture_number;
+			state.m_state = RENDER_FILL | RENDER_TEXTURE | RENDER_DEPTHTEST | RENDER_COLOURWRITE | RENDER_SMOOTH | RENDER_PROGRAM | cull;
+			state.m_colour = Vector4( 1, 1, 1, 1 );
+
+			if ( m_shader->isAllAdditive() ) {
+				// the emissive alone (ambient 0), added after the opaque surfaces with the stage's source factor
+				m_pbrBaseProgram = new GLSLPBRMaterialProgram( *m_shader, GLSLPBRMaterialProgram::eAdditiveEmitter );
+				state.m_texture = state.m_texture4;
+				state.m_texture3 = m_shader->getOcclusion()->texture_number;
+				state.m_state |= RENDER_BLEND;
+				state.m_blend_src = m_shader->getEmissiveSrcAlpha() ? GL_SRC_ALPHA : GL_ONE;
+				state.m_blend_dst = GL_ONE;
+				state.m_depthfunc = GL_LEQUAL;
+				state.m_sort = OpenGLState::eSortTranslucent;
+			}
+			else
+			{
+				// opaque (unblended) nolightmap: srgbToLinear( base ) * baseColorFactor + emissive, the stock fullbright result in linear light
+				m_pbrBaseProgram = new GLSLPBRMaterialProgram( *m_shader, GLSLPBRMaterialProgram::eOpaqueEmitter );
+				state.m_texture = m_shader->getBaseColor()->texture_number;
+				state.m_texture3 = g_pbrWhiteTexture;
+				IShader::EAlphaFunc alphaFunc;
+				float alphaRef;
+				m_shader->getPreviewAlphaFunc( &alphaFunc, &alphaRef );
+				if ( alphaFunc != IShader::eAlways ) {
+					state.m_state |= RENDER_ALPHATEST;
+					state.m_alphafunc = IShader_alphaFuncGL( alphaFunc );
+					state.m_alpharef = alphaRef;
+				}
+				state.m_state |= RENDER_DEPTHWRITE;
+				state.m_sort = OpenGLState::eSortOpaque;
+			}
+			state.m_program = m_pbrBaseProgram;
 		}
 		else if ( g_ShaderCache->lightingEnabled() && m_shader->getBump() != 0 && m_shader->getBump()->texture_number != 0 ) { // is a bump shader
 			state.m_state = RENDER_FILL | RENDER_CULLFACE | RENDER_TEXTURE | RENDER_DEPTHTEST | RENDER_DEPTHWRITE | RENDER_COLOURWRITE | RENDER_PROGRAM;

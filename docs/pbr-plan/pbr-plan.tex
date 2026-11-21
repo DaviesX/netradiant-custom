@@ -44,7 +44,7 @@ The compiled level has three targets, in order of precedence:
   \texttt{opengl2}, at default cvars runs the same pk3 as plain lightmapped Quake~3 content:
   a lightmap baked by \texttt{sh-baker} inside q3map2 (Stage~4), base textures, vanilla shader
   stages, fog volumes. It uses \textbf{no rend2
-  features} --- no normal or specular maps, no \texttt{r\_pbr}. The one planned exception is rend2's HDR lighting files (B6), which \texttt{opengl1} ignores. This is what makes
+  features} --- no normal or specular maps, no \texttt{r\_pbr}, no HDR lighting files (B6 was dropped; see §\ref{sec:rend2facts}). This is what makes
   the level uploadable to \texttt{lvlworld.com}, and it should look as faithful to the enhanced
   target as a lightmap allows.
 \item \textbf{Enhanced.} The customised ioquake3 with \texttt{renderer\_sh} (the new sh-renderer)
@@ -310,7 +310,7 @@ Fog & Stock fog volumes (\texttt{fogparms}). & Works on every target;
   \texttt{renderer\_sh} implements the same semantics. \\
 Lightmaps & The BSP lightmap lump is always complete and is the stock target's only lighting; it
   is baked by \texttt{-shbake} (4.3), with q3map2 \texttt{-light} as the placeholder until then. No
-  \texttt{lm\_\%04d.hdr} and no deluxe maps are shipped. &
+  \texttt{lm\_\%04d.hdr}, \texttt{vertlight.raw}, \texttt{lightgrid.raw} or deluxe maps are shipped. &
   rend2 would load \texttt{maps/<name>/lm\_\%04d.hdr} at \texttt{r\_hdr 1}
   (\texttt{tr\_bsp.cpp:279--326}) and apply it in place of the lump. \\
 \bottomrule
@@ -438,7 +438,7 @@ Emissive (sRGB) & An additive stage (\texttt{blendFunc add}) carrying the emissi
 
 \section{Current state (verified)}
 
-\subsection{The engine: ioquake3, renderer modules now C++}
+\subsection{The engine: ioquake3, renderer modules now C++}\label{sec:rend2facts}
 
 \begin{itemize}
 \item The renderer is a runtime-loaded module: \texttt{code/client/cl\_main.c:3184} registers
@@ -471,7 +471,22 @@ Emissive (sRGB) & An additive stage (\texttt{blendFunc add}) carrying the emissi
   approximation, where the editor uses the exact piecewise sRGB curve.
 \item \textbf{rend2 loads external HDR lightmaps}: \texttt{maps/<name>/lm\_\%04d.hdr},
   promoting the lightmap atlas to \texttt{GL\_RGBA16} when the first one exists and \texttt{r\_hdr}
-  is on (\texttt{tr\_bsp.cpp:279--326}).
+  is on (\texttt{tr\_bsp.cpp:279--326}). That promotion only happens when \texttt{lm\_0000.hdr}
+  is a loose file in the homepath game directory: \texttt{ri.FS\_FileExists} is
+  \texttt{FS\_FileExists\_HomeData}, which searches no pk3 (\texttt{cl\_main.c:3238},
+  \texttt{files.c:642--653}). Its size check also counts the header, so only a 196608-byte file
+  with a 3-byte header passes, and the page's last texel is then read past the buffer
+  (\texttt{tr\_bsp.cpp:336--381}). \texttt{vertlight.raw} (12 bytes per draw vertex) and
+  \texttt{lightgrid.raw} (ambient and directed RGB per grid point) do load from a pk3 at
+  \texttt{r\_hdr 1}, in the BSP bytes' units (\texttt{R\_ColorShiftLightingFloats}, 2/255 at
+  defaults), and rend2 prints nothing on success.
+\item \textbf{Decided (2026-11-20): B6 is dropped.} B6 planned to write those three files from
+  the full bake, for precision on \texttt{opengl2}, the default stock renderer. A shipped pk3 can
+  never use \texttt{lm\_*.hdr}, so the lightmap, the bulk of the light, would stay in BSP bytes on
+  \texttt{opengl2} anyway; \texttt{opengl2} applies no sRGB encode, so the vertex and grid files
+  would have to carry B5's encoding as floats rather than linear light to match it; and what is left,
+  sub-byte precision for vertex-lit surfaces and the grid, isn't worth a second output path.
+  \texttt{opengl2} keeps reading the BSP bytes everywhere.
 \item \textbf{None of rend2's PBR, specular, normal-map or HDR-lightmap features are used}
   (revision 5). They are listed here because the contract must keep rend2 from picking them up by
   accident.
@@ -684,9 +699,12 @@ gives both stock shaders and the preview:
   §\ref{sec:rev7}; an LTC branch in the preview's light pass, with the GGX tables shipped beside the
   GLSL and shared with \texttt{renderer\_sh}; the \texttt{\_frustum} shadow map on the spot shadow
   path; linear-HDR drawing of emitters the preview does not light; and q3map2's placeholder
-  \texttt{-light} skipping \texttt{light\_area} and \texttt{\_proxy} lights. The benchmark's neon
-  sign gets a \texttt{light\_area}. Exit criterion: the sign lights the wall in the preview, with the
-  stock check passing (its allowlist gains the \texttt{light\_area} line).
+  \texttt{-light} skipping \texttt{light\_area} and \texttt{\_proxy} lights. The benchmark's area-light
+  case is a simple one-sided fireplace in the north interior: its fire face gets a
+  \texttt{light\_area}, whose \texttt{\_frustum} shadow falls behind the metal pillar. (The neon
+  sign was the first choice, but a one-sided light flush on its front face cannot light the wall it
+  hangs on; it stays an unattached emitter.) Exit criterion: the fireplace lights the room in the
+  preview, with the stock check passing (its allowlist gains the \texttt{light\_area} line). \emph{Done (\texttt{emissive-area-lights}).}
 \end{enumerate}
 Exit criterion: the town block renders in the editor's lighting mode under \texttt{Q3.game}, with
 screenshots from the documented views recorded. Numerical parity with
@@ -809,7 +827,7 @@ stock fallback on the same map, and the stock check still passes on the same pk3
   or \texttt{\_proxy} light, which arrives with 4.5; until then they only glow.
 \item Exit criterion: the editor lighting preview and the engine's direct-light-only render agree
   from the documented camera, within the tolerance already written down for the benchmark map.
-  4.5 extends the same check to the neon sign's \texttt{light\_area}.
+  4.5 extends the same check to the benchmark fireplace's \texttt{light\_area}.
 \end{itemize}
 
 \subsection{3.5 Shadow parity and solid hulls}
@@ -1056,8 +1074,8 @@ nor emit, and outdoor light comes from \texttt{light\_sun}.
     (§\ref{sec:units}). 0.3 judges the difference.
   \item \emph{Emissive direct light.} The side file holds only an emitter's bounce. Its direct
     light reaches \texttt{renderer\_sh} only through an attached light, so it is missing until
-    C7's LTC area lights. The benchmark's neon sign warns (5 surfaces) until A11 gives it a
-    \texttt{light\_area}.
+    C7's LTC area lights. The benchmark's neon sign has no attached light and warns for its 5
+    surfaces; A11's fireplace has a \texttt{light\_area} on its fire face and draws no warning.
   \item \emph{Convergence on L0 alone} (fixed by \texttt{sh-baker} PR \#68). The sensor stopped on
     L0's variance after its 64-sample minimum. With point lights only, light-tree sampling makes
     every sample's L0 the same, so a probe stopped at 64 samples whatever \texttt{-shsamples} said,
@@ -1150,7 +1168,7 @@ nor emit, and outdoor light comes from \texttt{light\_sun}.
   \texttt{animMap} frame. The parity check runs without modulation, which the editor does not have.
   The bake uses the first frame.
 \item Moving emissive quads come later.
-\item Exit criterion: the benchmark's neon sign lights the wall at runtime, agreeing with the editor
+\item Exit criterion: the benchmark's fireplace lights the room at runtime, agreeing with the editor
   preview within 3.4's tolerance, and the indirect bake does not count its direct light again.
 \end{itemize}
 
@@ -1214,7 +1232,7 @@ today's.
   \item Raw lightmaps are small, often $16\times16$ or less, so per-crop overhead and quality are
     measured first. Filtering at super-luxel resolution in \texttt{ShBakeWorld} is the fallback.
   \item Grid and vertex points are not crops and stay raw.
-  \item Denoising the full bake's irradiance, the stock lightmap and B6's HDR files with it, is a
+  \item Denoising the full bake's irradiance, the stock lightmap with it, is a
     separate opt-in judged by 0.3 at the draft preset.
   \item q3map2 refuses \texttt{-shdenoise} when the library lacks OIDN.
   \item Exit: Phase 11.4's measurements on q3map2's output, against the 4096-sample references of
@@ -1329,7 +1347,7 @@ reference look is reachable.
 Risk & Mitigation \\
 \midrule
 Stock rend2 picks up PBR data by accident &
-  The contract: reserved suffixes, no rend2 keywords, and no \texttt{lm\_*.hdr} until B6 allows rend2's three HDR lighting files. The stock check runs
+  The contract: reserved suffixes, no rend2 keywords, and and no rend2 HDR lighting files (\texttt{lm\_*.hdr}, \texttt{vertlight.raw}, \texttt{lightgrid.raw}). The stock check runs
   the shipped pk3. \\
 The fork's renderers drift from upstream &
   Accepted: they are machine-converted to C++ and otherwise original. Each stock-check run records

@@ -2131,6 +2131,9 @@ void CamWnd::Cam_Draw(){
 	{
 		ShaderCache_releaseShadows();
 	}
+	if ( m_Camera.draw_mode == cd_lighting && ShaderCache_pbrGame() ) {
+		ShaderCache_bindLightingTables();
+	}
 
 	const bool hdr = m_Camera.draw_mode == cd_lighting && ShaderCache_pbrGame() && HDR_begin();
 	if ( !hdr && m_hdr != 0 ) {

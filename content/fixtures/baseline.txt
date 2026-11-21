@@ -46,3 +46,10 @@ Lighting mode, shadows on, map /home/davis/q3game/q3data/benchmark/maps/bench.ma
     install/radiant.x86_64 -global-gamefile Q3.game -Q3.game-GameName benchmark -Q3.game-CameraRenderMode 4 \
     -Q3.game-fieldOfView 100 -Q3.game-CameraMSAA 8 -Q3.game-LightingShadows true <bench.map>
 These two views are fixed here; later captures reuse them rather than re-reading stockcheck-out/*/views.txt.
+
+emissive-area-lights (task 8.1), 2026-11-20: fixtures emitflame, emitsrcalpha, emitnolmsign, emitblack and emittrans
+(a qer_trans nolightmap base with an add glow, which keeps its textured-mode state), placed in a third row at y = -320,
+behind the baseline cameras, so every baseline view above is unchanged.
+Q3.game, fs_game fixtures:   Loaded 917 shader definitions, Error parsing shader lines: 0
+Q3.game, fs_game baseq3:     Loaded 889 shader definitions (unchanged)
+Q3.game, fs_game benchmark:  Loaded 906 shader definitions (unchanged)

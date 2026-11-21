@@ -868,9 +868,11 @@ public:
 	typedef MemberCaller<Doom3LightRadius, void(const char*), &Doom3LightRadius::lightCenterChanged> LightCenterChangedCaller;
 };
 
-/// \brief Keys of the PBR light entities: light (point), light_spot and light_sun.
-/// intensity is radiant flux in watts (point, spot) or irradiance in W/m^2 (sun);
+/// \brief Keys of the PBR light entities: light (point), light_spot, light_sun and light_area.
+/// intensity is radiant flux in watts (point, spot), irradiance in W/m^2 (sun) or radiance (area);
 /// radius is the cutoff distance in map units; cone and cone_inner are half-angles in degrees.
+/// light_area is a one-sided rectangle: origin is its centre, the forward vector of angles its emitting normal,
+/// width runs along the right vector and height along the up vector (Quake AngleVectors, roll included).
 class PBRLight
 {
 public:
@@ -882,7 +884,12 @@ public:
 	float m_coneInner;
 	Vector3 m_angles;
 	Vector3 m_direction; ///< direction the light travels; from angles/angle, or from target when the instance supplies one
+	Vector3 m_right;     ///< unit right vector of angles, roll included (area)
+	Vector3 m_up;        ///< unit up vector of angles, roll included (area)
 	bool m_shadows;      ///< "_shadows" key; spot and sun only, point lights never cast
+	float m_width;       ///< "width" (area), map units along m_right
+	float m_height;      ///< "height" (area), map units along m_up
+	float m_frustum;     ///< "_frustum" (area): shadow half-angle in degrees; 0 or less casts nothing
 	Callback<void()> m_changed;
 
 	PBRLight() :
@@ -894,16 +901,21 @@ public:
 		m_coneInner( 30 ),
 		m_angles( 0, 0, 0 ),
 		m_direction( 0, 0, -1 ),
-		m_shadows( true ){
+		m_right( 0, -1, 0 ),
+		m_up( 0, 0, 1 ),
+		m_shadows( true ),
+		m_width( 64 ),
+		m_height( 64 ),
+		m_frustum( 0 ){
 	}
 
 	float defaultIntensity() const {
-		return m_type == RendererLightParams::eSun ? 3.f : 50000.f;
+		return m_type == RendererLightParams::eSun ? 3.f : m_type == RendererLightParams::eArea ? 1.f : 50000.f;
 	}
 	void setType( RendererLightParams::EType type ){
 		m_type = type;
 		m_intensity = defaultIntensity();
-		m_direction = anglesDirection();
+		updateAngles();
 	}
 
 	/// Quake convention: "pitch yaw roll", positive pitch looks down.
@@ -916,13 +928,46 @@ public:
 		    static_cast<float>( -sin( pitch ) ) ) );
 	}
 
+	/// Quake AngleVectors of "pitch yaw roll": forward, right and up, with right = forward x up.
+	void anglesBasis( Vector3& forward, Vector3& right, Vector3& up ) const {
+		const double p = m_angles[0] * c_DEG2RADMULT;
+		const double y = m_angles[1] * c_DEG2RADMULT;
+		const double r = m_angles[2] * c_DEG2RADMULT;
+		const double sp = sin( p ), cp = cos( p );
+		const double sy = sin( y ), cy = cos( y );
+		const double sr = sin( r ), cr = cos( r );
+		forward = Vector3( static_cast<float>( cp * cy ), static_cast<float>( cp * sy ), static_cast<float>( -sp ) );
+		right = Vector3( static_cast<float>( -sr * sp * cy + cr * sy ),
+		                 static_cast<float>( -sr * sp * sy - cr * cy ),
+		                 static_cast<float>( -sr * cp ) );
+		up = Vector3( static_cast<float>( cr * sp * cy + sr * sy ),
+		              static_cast<float>( cr * sp * sy - sr * cy ),
+		              static_cast<float>( cr * cp ) );
+	}
+	/// Refreshes the direction from angles, and the area basis.
+	void updateAngles(){
+		m_direction = anglesDirection();
+		Vector3 forward;
+		anglesBasis( forward, m_right, m_up );
+	}
+
+	/// Half the rectangle's diagonal (area).
+	float halfDiagonal() const {
+		return 0.5f * std::sqrt( m_width * m_width + m_height * m_height );
+	}
+	/// The cutoff used for culling, shading and the shadow far plane: max(radius, half-diagonal) for an area light.
+	float effectiveRadius() const {
+		return m_type == RendererLightParams::eArea ? std::max( m_radiusTransformed, halfDiagonal() ) : m_radiusTransformed;
+	}
+
 	void changed(){
 		m_changed();
 		SceneChangeNotify();
 	}
 
+	/// An area light's radiance falls back to its default when it is not positive, as its other keys do.
 	void intensityChanged( const char* value ){
-		if ( !string_parse_float( value, m_intensity ) ) {
+		if ( !string_parse_float( value, m_intensity ) || ( m_type == RendererLightParams::eArea && m_intensity <= 0 ) ) {
 			m_intensity = defaultIntensity();
 		}
 		changed();
@@ -958,7 +1003,7 @@ public:
 		if ( !string_parse_vector3( value, m_angles ) ) {
 			m_angles = Vector3( 0, 0, 0 );
 		}
-		m_direction = anglesDirection();
+		updateAngles();
 		changed();
 	}
 	typedef MemberCaller<PBRLight, void(const char*), &PBRLight::anglesChanged> AnglesChangedCaller;
@@ -979,7 +1024,7 @@ public:
 		{
 			m_angles = Vector3( 0, angle, 0 );
 		}
-		m_direction = anglesDirection();
+		updateAngles();
 		changed();
 	}
 	typedef MemberCaller<PBRLight, void(const char*), &PBRLight::angleChanged> AngleChangedCaller;
@@ -992,15 +1037,52 @@ public:
 	}
 	typedef MemberCaller<PBRLight, void(const char*), &PBRLight::shadowsChanged> ShadowsChangedCaller;
 
-	/// Point lights are never occluded in this renderer, whatever "_shadows" says.
+	void widthChanged( const char* value ){
+		if ( !string_parse_float( value, m_width ) || m_width <= 0 ) {
+			m_width = 64;
+		}
+		changed();
+	}
+	typedef MemberCaller<PBRLight, void(const char*), &PBRLight::widthChanged> WidthChangedCaller;
+
+	void heightChanged( const char* value ){
+		if ( !string_parse_float( value, m_height ) || m_height <= 0 ) {
+			m_height = 64;
+		}
+		changed();
+	}
+	typedef MemberCaller<PBRLight, void(const char*), &PBRLight::heightChanged> HeightChangedCaller;
+
+	/// "_frustum": shadow half-angle in degrees (area); 0 or less (or unparsable) means no shadow.
+	void frustumChanged( const char* value ){
+		if ( !string_parse_float( value, m_frustum ) || m_frustum <= 0 ) {
+			m_frustum = 0;
+		}
+		changed();
+	}
+	typedef MemberCaller<PBRLight, void(const char*), &PBRLight::frustumChanged> FrustumChangedCaller;
+
+	/// Point lights are never occluded in this renderer, whatever "_shadows" says; area lights cast only with
+	/// "_frustum" > 0 and ignore "_shadows".
 	bool castsShadows() const {
+		if ( m_type == RendererLightParams::eArea ) {
+			return m_frustum > 0;
+		}
 		return m_shadows && m_type != RendererLightParams::ePoint;
 	}
 
+	/// Area: cos(_frustum), read only by the shadow path; the half-angle is clamped as the gizmo clamps it,
+	/// so a _frustum of 180 or more does not wrap round to a narrow frustum.
 	float cosOuter() const {
+		if ( m_type == RendererLightParams::eArea ) {
+			return static_cast<float>( cos( std::min( static_cast<float>( m_frustum * c_DEG2RADMULT ), static_cast<float>( c_half_pi ) - 0.02f ) ) );
+		}
 		return static_cast<float>( cos( std::min( m_cone, 89.9f ) * c_DEG2RADMULT ) );
 	}
 	float cosInner() const {
+		if ( m_type == RendererLightParams::eArea ) {
+			return 1;
+		}
 		return static_cast<float>( cos( std::min( std::min( m_coneInner, m_cone ), 89.9f ) * c_DEG2RADMULT ) );
 	}
 };
@@ -1041,8 +1123,52 @@ public:
 };
 //Shader* RenderLightRadiiFill::m_state = 0;
 Vector3 RenderLightRadiiFill::m_radiiPoints[SPHERE_FILL_POINTS] = {g_vector3_identity};
+/// \brief Draws an area light's rectangle outline and its normal arrow (32 units, or the shorter side if less).
+/// Drawn whether or not the light is selected, because the rectangle is the light's shape.
+class RenderPBRAreaRect : public OpenGLRenderable
+{
+	const PBRLight& m_light;
+	const Vector3& m_origin;
+public:
+	RenderPBRAreaRect( const PBRLight& light, const Vector3& origin ) : m_light( light ), m_origin( origin ){
+	}
+	void render( RenderStateFlags state ) const override {
+		const Vector3 right = m_light.m_right * ( m_light.m_width * 0.5f );
+		const Vector3 up = m_light.m_up * ( m_light.m_height * 0.5f );
+		const Vector3 corners[4] = {
+			m_origin - right - up,
+			m_origin + right - up,
+			m_origin + right + up,
+			m_origin - right + up,
+		};
+		gl().glBegin( GL_LINE_LOOP );
+		for ( const Vector3& corner : corners )
+		{
+			gl().glVertex3fv( vector3_to_array( corner ) );
+		}
+		gl().glEnd();
+
+		const Vector3 axis = m_light.m_direction;
+		const float length = std::min( 32.f, std::min( m_light.m_width, m_light.m_height ) );
+		const float head = length * 0.25f;
+		const Vector3 tip = m_origin + axis * length;
+		gl().glBegin( GL_LINES );
+		gl().glVertex3fv( vector3_to_array( m_origin ) );
+		gl().glVertex3fv( vector3_to_array( tip ) );
+		for ( int i = 0; i < 4; ++i )
+		{
+			const Vector3 side = ( i == 0 ? m_light.m_right : i == 1 ? -m_light.m_right : i == 2 ? m_light.m_up : -m_light.m_up ) * ( head * 0.5f );
+			gl().glVertex3fv( vector3_to_array( tip ) );
+			gl().glVertex3fv( vector3_to_array( tip - axis * head + side ) );
+		}
+		gl().glEnd();
+	}
+};
+
 /// \brief Draws the extent of a PBR light when it is selected:
-/// the cutoff sphere for a point light, the outer cone for a spot light, a direction arrow for the sun.
+/// the cutoff sphere for a point light, the outer cone for a spot light (bounded by its radius sphere),
+/// a direction arrow for the sun, and for an area light its effective-radius sphere and, with "_frustum" > 0,
+/// its shadow frustum out to the effective radius.
 class RenderPBRLightShape : public OpenGLRenderable
 {
 	const PBRLight& m_light;
@@ -1051,9 +1177,41 @@ public:
 	RenderPBRLightShape( const PBRLight& light, const Vector3& origin ) : m_light( light ), m_origin( origin ){
 	}
 	void render( RenderStateFlags state ) const override {
-		const float radius = m_light.m_radiusTransformed;
+		const float radius = m_light.effectiveRadius();
 		switch ( m_light.m_type )
 		{
+		case RendererLightParams::eArea:
+			if ( ( state & RENDER_FILL ) != 0 ) {
+				sphere_draw_fill( m_origin, radius, RenderLightRadiiFill::m_radiiPoints );
+			}
+			else
+			{
+				sphere_draw_wire( m_origin, radius, RenderLightRadiiWire::m_radiiPoints );
+			}
+			if ( m_light.m_frustum > 0 ) {
+				// the shadow map's square frustum, clamped as the shadow path clamps it; its edges end on the
+				// effective-radius sphere, so the drawing stays within the cutoff
+				const float halfAngle = std::min( static_cast<float>( m_light.m_frustum * c_DEG2RADMULT ), static_cast<float>( c_half_pi ) - 0.02f );
+				const float t = std::tan( halfAngle );
+				const Vector3 axis = m_light.m_direction;
+				Vector3 edges[4];
+				for ( int i = 0; i < 4; ++i )
+				{
+					const float sr = ( i == 0 || i == 3 ) ? -1.f : 1.f;
+					const float su = ( i < 2 ) ? -1.f : 1.f;
+					edges[i] = m_origin + vector3_normalised( axis + m_light.m_right * ( sr * t ) + m_light.m_up * ( su * t ) ) * radius;
+				}
+				gl().glBegin( GL_LINES );
+				for ( int i = 0; i < 4; ++i )
+				{
+					gl().glVertex3fv( vector3_to_array( m_origin ) );
+					gl().glVertex3fv( vector3_to_array( edges[i] ) );
+					gl().glVertex3fv( vector3_to_array( edges[i] ) );
+					gl().glVertex3fv( vector3_to_array( edges[( i + 1 ) % 4] ) );
+				}
+				gl().glEnd();
+			}
+			break;
 		case RendererLightParams::ePoint:
 			if ( ( state & RENDER_FILL ) != 0 ) {
 				sphere_draw_fill( m_origin, radius, RenderLightRadiiFill::m_radiiPoints );
@@ -1069,8 +1227,10 @@ public:
 				const Vector3 up = std::fabs( axis.z() ) < 0.9f ? Vector3( 0, 0, 1 ) : Vector3( 1, 0, 0 );
 				const Vector3 right = vector3_normalised( vector3_cross( axis, up ) );
 				const Vector3 forward = vector3_cross( right, axis );
-				const float rim = radius * static_cast<float>( tan( std::min( m_light.m_cone, 89.9f ) * c_DEG2RADMULT ) );
-				const Vector3 centre = m_origin + axis * radius;
+				// the cone drawn to the radius sphere, so a wide (hemisphere) spot stays bounded by its cutoff
+				const double theta = std::min( m_light.m_cone, 89.9f ) * c_DEG2RADMULT;
+				const float rim = radius * static_cast<float>( sin( theta ) );
+				const Vector3 centre = m_origin + axis * ( radius * static_cast<float>( cos( theta ) ) );
 				const int sides = 24;
 				Vector3 points[sides];
 				for ( int i = 0; i < sides; ++i )
@@ -1324,12 +1484,14 @@ class Light :
 	mutable RendererLightParams m_pbrParams;
 
 	AABB m_aabb_light;
+	mutable AABB m_aabb_bounds; ///< area light: m_aabb_light grown by the rectangle
 
 	RenderLightRadiiWire m_radii_wire;
 	RenderLightRadiiFill m_radii_fill;
 	RenderLightRadiiBox m_radii_box;
 	RenderLightCenter m_render_center;
 	RenderPBRLightShape m_pbr_shape;
+	RenderPBRAreaRect m_pbr_rect;
 	RenderableNamedEntity m_renderName;
 
 	Vector3 m_lightOrigin;
@@ -1398,14 +1560,26 @@ class Light :
 			const char* classname = m_entity.getEntityClass().name();
 			m_pbr.setType( classname_equal( classname, "light_spot" ) ? RendererLightParams::eSpot
 			             : classname_equal( classname, "light_sun" ) ? RendererLightParams::eSun
-			                                                          : RendererLightParams::ePoint );
+			             : classname_equal( classname, "light_area" ) ? RendererLightParams::eArea
+			                                                           : RendererLightParams::ePoint );
 			m_keyObservers.insert( "intensity", PBRLight::IntensityChangedCaller( m_pbr ) );
 			m_keyObservers.insert( "radius", PBRLight::RadiusChangedCaller( m_pbr ) );
 			m_keyObservers.insert( "cone", PBRLight::ConeChangedCaller( m_pbr ) );
 			m_keyObservers.insert( "cone_inner", PBRLight::ConeInnerChangedCaller( m_pbr ) );
-			m_keyObservers.insert( "angles", PBRLight::AnglesChangedCaller( m_pbr ) );
-			m_keyObservers.insert( "angle", PBRLight::AngleChangedCaller( m_pbr ) );
-			if ( m_pbr.m_type != RendererLightParams::ePoint ) {
+			if ( m_pbr.m_type == RendererLightParams::eArea ) {
+				// the rectangle is part of the entity's bounds
+				m_keyObservers.insert( "angles", Light::AreaAnglesChangedCaller( *this ) );
+				m_keyObservers.insert( "angle", Light::AreaAngleChangedCaller( *this ) );
+				m_keyObservers.insert( "width", Light::AreaWidthChangedCaller( *this ) );
+				m_keyObservers.insert( "height", Light::AreaHeightChangedCaller( *this ) );
+				m_keyObservers.insert( "_frustum", PBRLight::FrustumChangedCaller( m_pbr ) );
+			}
+			else
+			{
+				m_keyObservers.insert( "angles", PBRLight::AnglesChangedCaller( m_pbr ) );
+				m_keyObservers.insert( "angle", PBRLight::AngleChangedCaller( m_pbr ) );
+			}
+			if ( m_pbr.m_type == RendererLightParams::eSpot || m_pbr.m_type == RendererLightParams::eSun ) {
 				m_keyObservers.insert( "_shadows", PBRLight::ShadowsChangedCaller( m_pbr ) );
 			}
 		}
@@ -1446,6 +1620,28 @@ public:
 		updateOrigin();
 	}
 	typedef MemberCaller<Light, void(), &Light::originChanged> OriginChangedCaller;
+
+	// area light keys that move the rectangle, and with it the entity's bounds
+	void areaAnglesChanged( const char* value ){
+		m_pbr.anglesChanged( value );
+		m_boundsChanged();
+	}
+	typedef MemberCaller<Light, void(const char*), &Light::areaAnglesChanged> AreaAnglesChangedCaller;
+	void areaAngleChanged( const char* value ){
+		m_pbr.angleChanged( value );
+		m_boundsChanged();
+	}
+	typedef MemberCaller<Light, void(const char*), &Light::areaAngleChanged> AreaAngleChangedCaller;
+	void areaWidthChanged( const char* value ){
+		m_pbr.widthChanged( value );
+		m_boundsChanged();
+	}
+	typedef MemberCaller<Light, void(const char*), &Light::areaWidthChanged> AreaWidthChangedCaller;
+	void areaHeightChanged( const char* value ){
+		m_pbr.heightChanged( value );
+		m_boundsChanged();
+	}
+	typedef MemberCaller<Light, void(const char*), &Light::areaHeightChanged> AreaHeightChangedCaller;
 
 	void lightOriginChanged( const char* value ){
 		m_useLightOrigin = !string_empty( value );
@@ -1555,6 +1751,7 @@ public:
 		m_radii_box( m_aabb_light.origin ),
 		m_render_center( m_doom3Radius.m_center, m_entity.getEntityClass() ),
 		m_pbr_shape( m_pbr, m_aabb_light.origin ),
+		m_pbr_rect( m_pbr, m_aabb_light.origin ),
 		m_renderName( m_named, m_aabb_light.origin, EXCLUDE_NAME ),
 		m_useLightOrigin( false ),
 		m_useLightRotation( false ),
@@ -1580,6 +1777,7 @@ public:
 		m_radii_box( m_aabb_light.origin ),
 		m_render_center( m_doom3Radius.m_center, m_entity.getEntityClass() ),
 		m_pbr_shape( m_pbr, m_aabb_light.origin ),
+		m_pbr_rect( m_pbr, m_aabb_light.origin ),
 		m_renderName( m_named, m_aabb_light.origin, EXCLUDE_NAME ),
 		m_useLightOrigin( false ),
 		m_useLightRotation( false ),
@@ -1655,11 +1853,23 @@ public:
 	}
 
 	VolumeIntersectionValue intersectVolume( const VolumeTest& volume, const Matrix4& localToWorld ) const override {
-		return volume.TestAABB( m_aabb_light, localToWorld );
+		return volume.TestAABB( localAABB(), localToWorld );
 	}
 
 // cache
+	/// The 12-unit marker box; for an area light, grown by the rectangle so it is not culled while its centre is
+	/// off-screen. Selection still goes through the marker (light_testselect).
 	const AABB& localAABB() const override {
+		if ( g_lightType == LIGHTTYPE_PBR && m_pbr.m_type == RendererLightParams::eArea ) {
+			const Vector3 right = m_pbr.m_right * ( m_pbr.m_width * 0.5f );
+			const Vector3 up = m_pbr.m_up * ( m_pbr.m_height * 0.5f );
+			m_aabb_bounds = m_aabb_light;
+			for ( int i = 0; i < 4; ++i )
+			{
+				aabb_extend_by_point_safe( m_aabb_bounds, m_aabb_light.origin + right * ( i & 1 ? 1.f : -1.f ) + up * ( i & 2 ? 1.f : -1.f ) );
+			}
+			return m_aabb_bounds;
+		}
 		return m_aabb_light;
 	}
 
@@ -1673,9 +1883,19 @@ public:
 		renderer.SetState( m_colour.state(), Renderer::eFullMaterials );
 		renderer.addRenderable( *this, localToWorld );
 
+		if ( g_lightType == LIGHTTYPE_PBR && m_pbr.m_type == RendererLightParams::eArea ) {
+			// the rectangle and its normal arrow, selected or not, in every view
+			renderer.SetState( m_entity.getEntityClass().m_state_wire, Renderer::eFullMaterials );
+			if ( selected ) {
+				renderer.Highlight( Renderer::ePrimitive, false );
+			}
+			renderer.addRenderable( m_pbr_rect, localToWorld );
+		}
+
 		if( selected ){
 			if ( g_lightType == LIGHTTYPE_PBR ) {
-				// point: cutoff sphere (when radii display is on); spot: outer cone; sun: direction arrow
+				// point: cutoff sphere (when radii display is on); spot: outer cone; sun: direction arrow;
+				// area: effective-radius sphere and shadow frustum
 				if ( m_pbr.m_type != RendererLightParams::ePoint || g_lightRadii ) {
 					if ( renderer.getStyle() == Renderer::eFullMaterials && m_pbr.m_type != RendererLightParams::eSun ) {
 						renderer.SetState( m_colour.state_additive(), Renderer::eFullMaterials );
@@ -1879,9 +2099,17 @@ public:
 		m_pbrParams.origin = m_aabb_light.origin;
 		m_pbrParams.direction = m_pbr.m_direction;
 		m_pbrParams.intensity = m_pbr.m_intensity;
-		m_pbrParams.radius = m_pbr.m_radiusTransformed;
+		m_pbrParams.radius = m_pbr.effectiveRadius();
 		m_pbrParams.cosInner = m_pbr.cosInner();
 		m_pbrParams.cosOuter = m_pbr.cosOuter();
+		if ( m_pbr.m_type == RendererLightParams::eArea ) {
+			m_pbrParams.right = m_pbr.m_right * ( m_pbr.m_width * 0.5f );
+			m_pbrParams.up = m_pbr.m_up * ( m_pbr.m_height * 0.5f );
+		}
+		else
+		{
+			m_pbrParams.right = m_pbrParams.up = Vector3( 0, 0, 0 );
+		}
 		m_pbrParams.castsShadows = active && m_pbr.castsShadows();
 		return m_pbrParams;
 	}
@@ -1893,13 +2121,24 @@ public:
 		}
 		else
 		{
-			m_doom3AABB = AABB( m_aabb_light.origin, Vector3( m_pbr.m_radiusTransformed, m_pbr.m_radiusTransformed, m_pbr.m_radiusTransformed ) );
+			const float radius = m_pbr.effectiveRadius();
+			m_doom3AABB = AABB( m_aabb_light.origin, Vector3( radius, radius, radius ) );
 		}
 		return m_doom3AABB;
 	}
 	bool pbrTestAABB( const AABB& other ) const {
 		if ( m_pbr.m_type == RendererLightParams::eSun ) {
 			return true;
+		}
+		if ( m_pbr.m_type == RendererLightParams::eArea ) {
+			// one-sided: reject a box with no point strictly in front of the emitting plane (its support point
+			// toward the normal)
+			const Vector3& n = m_pbr.m_direction;
+			const float support = vector3_dot( n, other.origin - m_aabb_light.origin )
+			                    + std::fabs( n.x() ) * other.extents.x() + std::fabs( n.y() ) * other.extents.y() + std::fabs( n.z() ) * other.extents.z();
+			if ( support <= 0 ) {
+				return false;
+			}
 		}
 		return aabb_intersects_aabb( other, pbrAABB() );
 	}

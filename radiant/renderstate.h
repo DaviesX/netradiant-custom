@@ -56,3 +56,7 @@ void ShaderCache_updateShadows( const ShadowCascadeCamera& camera, const Matrix4
 
 /// \brief Frees the shadow atlases. Called when the camera leaves lighting mode, and on context loss.
 void ShaderCache_releaseShadows();
+
+/// \brief Binds the area lights' LTC tables (gl/ltc_ggx.bin) on texture unit 7 for the frame. Called from the camera
+/// in lighting draw mode while the PBR lighting preview is active, whatever the shadow preference. No-op otherwise.
+void ShaderCache_bindLightingTables();

@@ -152,6 +152,15 @@ public:
 	virtual float getRoughnessFactor() const = 0;
 	virtual const Vector3& getEmissiveFactor() const = 0;
 	virtual float getEmissiveStrength() const = 0;
+	// The emissive stage (the first additive map stage that isn't the lightmap, $whiteimage or an environment map):
+	// hasEmissive() is true when it exists and its colour (rgbGen const, white without one) isn't black;
+	// getEmissiveName() is its image ("" without one), available whether or not lighting is enabled;
+	// getEmissiveSrcAlpha() is true when it blends GL_SRC_ALPHA GL_ONE. isAllAdditive() is true when every map stage
+	// adds (rend2 stages ignored) and there is at least one.
+	virtual bool hasEmissive() const = 0;
+	virtual const char* getEmissiveName() const = 0;
+	virtual bool isAllAdditive() const = 0;
+	virtual bool getEmissiveSrcAlpha() const = 0;
 	virtual EAlphaMode getAlphaMode() const = 0;
 	virtual float getAlphaCutoff() const = 0;
 	virtual bool isDoubleSided() const = 0;

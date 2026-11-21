@@ -25,9 +25,9 @@ The tables SHALL be read from `setup/data/tools/gl/ltc_ggx.bin`, converted uncha
 
 This file SHALL be the single source of the tables for the editor and `renderer_sh`, which reads it unchanged. The gamepack README SHALL record its SHA-256, the upstream repository, file and commit. The upstream licence's full copyright notice, conditions and disclaimer, with the paper citation it asks for, SHALL be in `setup/data/tools/gl/ltc_ggx.LICENSE.txt`, which installs beside the binary as `gl/ltc_ggx.LICENSE.txt`.
 
-#### Scenario: Neon sign lights the wall
-- **WHEN** the benchmark is opened in lighting mode under `Q3.game` with `fs_game benchmark`, and the `sign` view is framed
-- **THEN** the wall and the ground in front of the sign show a reddish glow that is brightest near the sign, and the glow disappears when the sign's `light_area` is deleted
+#### Scenario: Fireplace lights the room
+- **WHEN** the benchmark is opened in lighting mode under `Q3.game` with `fs_game benchmark`, and the `fireplace` view is framed
+- **THEN** the floor in front of the hearth, the firebox's sides, the ceiling and the walls facing the fire show an orange glow that is brightest near the fire, the wall behind the fire's plane gets none of it, and the glow disappears when the fireplace's `light_area` is deleted
 
 #### Scenario: Nothing behind the light
 - **WHEN** a surface lies within an area light's radius, behind the rectangle's plane (on the side its normal points away from), and faces the rectangle
@@ -55,7 +55,8 @@ If float textures or eight texture image units are unavailable on the current co
 ### Requirement: Emitters the preview does not light are drawn in linear HDR
 While the preview is active, a shader with an emissive stage that the preview does not light SHALL be drawn in the preview's framebuffer with its emissive in linear light: the sRGB-decoded texel × `rgbGen const` × `qer_pbr_emissiveStrength`, as the base pass computes it for lit emitters. This applies when the shader is not sky or fog and either every map stage is additive or it declares `surfaceparm nolightmap`.
 - If every map stage is additive, the emissive SHALL be added to the frame with the stage's blend source factor (`GL_ONE`, or `GL_SRC_ALPHA` for a `GL_SRC_ALPHA GL_ONE` stage) and destination `GL_ONE`, with a depth test and no depth write, after opaque surfaces.
-- Otherwise the surface SHALL be drawn opaque as the sRGB-decoded base colour × base colour factor plus the emissive.
+- Otherwise, if the shader is not blended (no `qer_trans` and no `blendFunc blend` base stage), the surface SHALL be drawn opaque as the sRGB-decoded base colour × base colour factor plus the emissive.
+- A blended shader that is not all-additive SHALL keep its textured-mode state.
 
 Such surfaces SHALL receive no light passes. A shader whose emissive stage has `rgbGen const ( 0 0 0 )` has no emissive.
 
@@ -66,6 +67,10 @@ Such surfaces SHALL receive no light passes. A shader whose emissive stage has `
 #### Scenario: Nolightmap sign
 - **WHEN** a face uses a `surfaceparm nolightmap` shader with an opaque base stage and an additive glow stage, `rgbGen const ( 1 0 0 )` and `qer_pbr_emissiveStrength 8`
 - **THEN** it shows its base fullbright in linear light plus 8 × the red glow, and doubling the strength doubles the glow
+
+#### Scenario: Blended nolightmap window with a glow
+- **WHEN** a face uses a `surfaceparm nolightmap` shader with `qer_trans 0.5`, a base stage and an additive glow stage
+- **THEN** it is drawn as in textured mode, blended and without depth write, and it hides nothing behind it
 
 ## MODIFIED Requirements
 

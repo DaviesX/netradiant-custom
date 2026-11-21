@@ -8,14 +8,17 @@ with the `benchmark` mod) and ioquake3 (`+set fs_game benchmark`) both see it.
 Stock acceptance: **2026-10-02**, by the author, from the stock check's screenshots of all five views on `opengl1`
 and `opengl2` plus the editor's `garden` captures (run `20261002-173903`, engine commit `0135354f`). The run after the
 review's grass-placement fix and the light retune (`20261002-202801`, ceiling spot cone 70/50) passed every row.
+The `fireplace` view (change `emissive-area-lights`) was accepted on **2026-11-20**, by the author, from the stock check's
+`opengl1` and `opengl2` screenshots at the defaults (run `20261120-224348`) and with the "Town (final)" light stage
+(run `20261120-230502`), engine commit `0135354f`.
 
 ## Layout
 
 | Path | Content |
 |---|---|
-| `maps/bench.map` | 38 brushes, one patch and 19 entities: a street between two buildings under an open sky, with a small lawn of trees and grass at its east end |
+| `maps/bench.map` | 44 brushes, one patch and 20 entities: a street between two buildings under an open sky, with a small lawn of trees and grass at its east end and a fireplace in the north interior |
 | `maps/bench.cameras` | the view requests the stock check visits |
-| `scripts/bench.shader`, `scripts/shaderlist.txt` | 17 materials |
+| `scripts/bench.shader`, `scripts/shaderlist.txt` | 18 materials |
 | `textures/bench/` | base colour images, normal maps (`*_nrm`), metallic-roughness (`*_mr`) and occlusion (`*_ao`) |
 | `models/bench/` | the vegetation meshes (`tree`, `grass_clump`, `grass_patch`, OBJ with `.mtl`), used at compile time only |
 | `levelshots/bench.jpg` | the loading-screen image, cut from the stock check's `opengl1` `sign` screenshot |
@@ -28,7 +31,8 @@ review's grass-placement fix and the light retune (`20261002-202801`, ceiling sp
 | `asphalt`, `concrete` | rough dielectrics with normal maps |
 | `plaster` | rough dielectric, no maps |
 | `metal` | metal with normal and metallic-roughness maps (the patch arch, a pillar and a facade sheet) |
-| `neon` | emissive: an additive stage with `rgbGen const ( 1 0.35 0.25 )` and `qer_pbr_emissiveStrength 8` |
+| `neon` | emissive: an additive stage with `rgbGen const ( 1 0.35 0.25 )` and `qer_pbr_emissiveStrength 8`; no light attached, so `-shbake` warns about its 5 faces |
+| `fire` | emissive like the neon, `rgbGen const ( 1 0.9 0.8 )` and `qer_pbr_emissiveStrength 64`: the fireplace's one emitting face, with the benchmark's `light_area` |
 | `fence` | alpha-tested (`alphaFunc GE128`), `cull none`, casts through its alpha (`surfaceparm alphashadow`) |
 | `glass` | blended (`blendFunc blend`), unlit, casts nothing |
 | `tarp` | double-sided opaque (`cull none`) |
@@ -51,6 +55,7 @@ The editor's physical light entities, previewed under `Q3.game` through the `pbr
 | `light_spot` | `origin 0 -512 160`, `angles 90 0 0`, `cone 40`, `cone_inner 25`, `intensity 300000`, `radius 400`, `_color 0.933333 0.663249 0.479118` | downward over the free-standing pillar in the south interior, casting |
 | `light_spot` | `origin 0 96 200`, `target sign_target`, `cone 30`, `cone_inner 20`, `intensity 250000`, `radius 1100`, `_color 1 0.6 0.5`, `_shadows 1` | aimed at the neon sign, casting |
 | `light_spot` | `origin 0 512 150`, `angles 270 90 0`, `cone 70`, `cone_inner 50`, `intensity 200000`, `radius 600`, `_color 0.926665 0.8374 0.781491`, `_shadows 0` | aimed straight up to wash the north interior's ceiling; the non-casting case |
+| `light_area` | `origin -184 736 40`, `angles 0 270 0`, `width 96`, `height 48`, `radius 768`, `intensity 18.3866` (radiance), `_color 1 0.317035 0.0730977`, `_frustum 70` | the fireplace's fire face (96×48, facing south), made with "Create area light from selected face". `radius` (the command wrote 256) and `_frustum` were set by hand, so it reaches the pillar and the floor and the pillar casts a firelight shadow; "Re-derive light from emitter" reproduces `intensity` and `_color` and keeps both |
 
 `cone` and `cone_inner` are half-angles. The editor clamps both to 89.9° (`plugins/entity/light.cpp`), so keep them
 below 90. sh-baker and `renderer_sh` must clamp the same way.
@@ -63,8 +68,11 @@ were the `pbr.game` bench's:
 - the pillar spot with no `_color`;
 - the sign spot non-casting at radius 400.
 
-Stock Quake 3 frees `light_spot` and `light_sun` with a "doesn't have a spawn function" line; the stock check
-allowlists exactly those two.
+Stock Quake 3 frees `light_spot`, `light_sun` and `light_area` with a "doesn't have a spawn function" line; the stock
+check allowlists exactly those three. q3map2's placeholder `-light` and `-shbake` both leave the `light_area` out,
+because the fire face's own emission already bakes: the `-shbake` output is byte-identical with and without it, apart
+from the entity lump. `-shbake` warns once about the neon sign, whose 5 faces have no light attached; the fire face is
+attached and draws no warning.
 
 ## Conversion from the `pbr.game` bench
 
@@ -125,9 +133,33 @@ the fog. They are placeholder art for the town's vegetation (task A10), written 
   generator writes Y-up geometry with counter-clockwise front faces, explicit normals (bent outward from the canopy or
   clump centre), and `usemtl` set to the full shader name.
 
+## Fireplace
+
+A simple one-sided fireplace against the north interior's north wall, centred on the metal pillar's line (x = -184),
+is the benchmark's area-light case. It replaced the neon sign in that role (2026-11-20): a one-sided `light_area` flush
+on the sign's front face can't light the wall the sign hangs on, which lies behind its plane.
+
+- **Geometry.** Brushes 39-44, after the patch: a concrete hearth slab, brick jambs and lintel, and a concrete mantel
+  shelf around a 96×48 opening, recessed 16 units. The opening's back face (plane y = 736, facing south) is the only
+  `fire` face, scaled so `fire_e` covers it once; every hidden face is caulk.
+- **Images.** `tools/benchmark/gen_fire.py` (Python 3 with Pillow, fixed seed, `gen_foliage.py`'s TGA writer) writes
+  `fire_c.tga` (soot and embers) and `fire_e.tga` (flames, black above them), 128×64. Its outputs are committed, and
+  re-running it rewrites them unchanged. After changing `fire_e` or the shader's strength, re-run "Re-derive light from
+  emitter" on the `light_area`.
+- **Light.** The `light_area` in the light table. In the preview the fire lights the floor, the firebox's sides, the
+  ceiling and the walls facing it, nothing behind its plane, and with shadows on the pillar casts a shadow on the floor
+  behind it (`_frustum 70`). The lintel and mantel shadow the ceiling from the north wall out to about y = 645. Past
+  70° from the fire's axis a casting area light gives no light, so with shadows on the firebox's inner sides are dark.
+  The surround's front faces (plane y = 720) and the mantel front lie behind the fire's plane, so the preview leaves
+  them dark; only the bake's indirect light reaches them. The metal pillar is polished, so it shows almost no diffuse
+  firelight.
+- **"Entity in solid".** `-meta` reports `Entity 20 (light_area): Entity in solid` twice, because the light's origin
+  sits exactly on the fire face, as "Create area light from selected face" places it. Like the same line for the
+  `info_null`, this is expected and harmless.
+
 ## Views
 
-`maps/bench.cameras` requests five views:
+`maps/bench.cameras` requests six views:
 
 | View | Shows |
 |---|---|
@@ -136,11 +168,13 @@ the fog. They are placeholder art for the town's vegetation (task A10), written 
 | `arch` | the arch's sun shadow on the west wall (the one-sided patch is culled from below, so the arch itself barely shows) |
 | `street` | from the west end looking northeast: fog, sign, glass and fence in one frame |
 | `garden` | from the lawn's south-east corner looking north-west: both trees, grass, and the far canopy's shadow on the dirt in the editor preview |
+| `fireplace` | the north interior from its south-east, looking north-west: the fireplace, the metal pillar and the floor between them, with the pillar's firelight shadow in the editor preview (shadows on) |
 
 `setviewpos` pushes the player about 120 units forward before they stop, so the requested origin isn't where the
 camera ends up. The stock check records the eye position the engine reports in `views.txt`. Editor captures of a view
 use the `opengl1` line with pitch 0, for example `NETRADIANT_CAMERA_ORIGIN="-96 52 50"` and
-`NETRADIANT_CAMERA_ANGLES="0 90 0"` for `sign`.
+`NETRADIANT_CAMERA_ANGLES="0 90 0"` for `sign`, and `"60 347 50"` with `"0 149 0"` for `fireplace` (run
+`20261120-224348`).
 
 ## Stock check
 

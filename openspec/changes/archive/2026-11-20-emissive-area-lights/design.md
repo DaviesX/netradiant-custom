@@ -53,9 +53,10 @@ See `proposal.md` for the motivation and `specs/` for the required behaviour. Pl
 - Stock ioquake3 prints `<classname> doesn't have a spawn function` for each unknown class (`code/game/g_spawn.c:281`). The allowlist has the `light_spot` and `light_sun` lines (`tools/stockcheck/allowlist.txt:8-11`).
 - The stock check compiles with `-light -shbake` at its defaults, 128 samples and `-super 1` (`tools/stockcheck/stockcheck.py:32`), so it needs q3map2 built with `SH_BAKER=1` against the submodule's Release `libsh_baker.so` (`tools/stockcheck/README.md:27-38`). A plain `make` builds q3map2 with `SH_BAKER=0` and, through `light_sh.stamp` (`Makefile:599`, `:632`, `:636-648`), relinks `install/q3map2`, the stock check's default `--q3map2` (`stockcheck.py:54`), against `light_sh_stub.o`. The overlay's "Town" builds are the draft (128), pre-release (512, `-super 2`) and final (2048, `-super 2`) presets; the stock check matches "Town (draft)".
 
-**The benchmark sign**
+**The benchmark sign and fireplace**
 - Shader `textures/bench/neon` (`content/benchmark/scripts/bench.shader:94-115`): opaque, lightmapped, `qer_pbr_emissiveStrength 8`, emissive stage `neon_e` with `rgbGen const ( 1 0.35 0.25 )`.
-- Brush 24 (`content/benchmark/maps/bench.map:223-231`) is a 192 × 8 × 32 box. Its emitting face lies on plane y = 248 with normal −Y (`:228`), and its centre is (0, 248, 120). Its back face at y = 256 is flush against the brick wall and culled; its two ends, top and bottom are neon too.
+- Brush 24 (`content/benchmark/maps/bench.map:223-231`) is the neon sign, a 192 × 8 × 32 box. Its front face lies on plane y = 248 with normal −Y (`:228`), and its centre is (0, 248, 120). Its back face at y = 256 is flush against the brick wall and culled; its two ends, top and bottom are neon too. A one-sided `light_area` flush on the front face can't light the wall the sign hangs on (y = 256), which lies behind its plane, so the sign is not this change's demo (decision 15).
+- The north interior (x −496..496, y 272..752, z 0..176) holds the metal pillar, brush 23 (x −200..−168, y 400..432), and the ceiling spot. Its north wall's inner face, brush 20, is at y = 752. This change adds the fireplace there (decision 15).
 
 **Commands**
 - Selected faces are in `g_SelectedFaceInstances` (`radiant/brush.h:2561`).
@@ -128,7 +129,7 @@ So right = forward × up. `width` lies along right and `height` along up. The `a
 `RendererLightParams` gains `Vector3 right, up`: world-space half extents, not normalised. For `eArea`:
 - `origin` is the centre and `direction` the normal;
 - `radius` is the effective radius, max(`radius`, half-diagonal), where the half-diagonal is ½√(`width`² + `height`²);
-- `cosOuter` is `cos(_frustum)`, used only by the shadow path;
+- `cosOuter` is `cos(min(_frustum, π/2 − 0.02))` (the shadow path's clamp, so 180° or more does not wrap), used only by the shadow path;
 - `castsShadows` is `_frustum > 0`.
 
 **Radius.** The cutoff is measured from the centre, for culling and shading alike, so `pbrAABB()` stays the cube of the effective radius. Clamping it up to the half-diagonal means the cutoff sphere always reaches the rectangle's corners; a smaller `radius` is clamped silently, as non-positive values fall back silently. "Create area light from selected face" writes `radius` = max(256, 2 × half-diagonal rounded up to a multiple of 8), so a created light lights at least as far again as its own extent. Measuring from the closest point of the rectangle was rejected: it needs a box-to-rectangle distance in culling and a per-fragment closest-point test, and with the created radius at twice the half-diagonal the cutoff never falls next to the emitter.
@@ -198,7 +199,7 @@ The clip uses constant indices only. The transposed basis is built by hand, so t
 - near plane 4;
 - far plane `radius` (the effective radius).
 
-The near plane keeps the emitter's own face out of its map. The shader samples with penumbra 1 and an NdotL toward the rectangle's centre. Receivers outside the frustum read as lit (`pbr_fp.glsl:88-90`). That is specified rather than hidden, and the README says to choose `_frustum` to cover the lit region. The warning text changes from "spot lights" to "spot and area lights".
+The square frustum is aligned with the rectangle's right and up axes, roll included, as the gizmo's frustum pyramid is (`matrix4_light_view( direction, origin, up )` in `radiant/cascade.cpp`); a spot keeps the world-reference roll, since its cone is round. The near plane keeps the emitter's own face out of its map. The shader samples with penumbra 1 and an NdotL toward the rectangle's centre. Receivers beside the frustum (outside the map in x or y) read as shadowed for an area light, while spots keep reading them as lit (`computeShadow` in `pbr_fp.glsl`). The first version read them as lit, as spots do; with a recessed emitter that left a lit strip between the lintel's shadow and the wall, so the shadow looked detached (2026-11-20, the user chose this cheap fix over a five-face hemicube). The cost is that a casting area light gives no light past `_frustum`: the fireplace's firebox sides, at 90° to its axis, go dark. Receivers nearer than the near plane stay lit. So that the light doesn't stop at a hard square edge, an area light's shadow term is multiplied by 1 − smoothstep(`_frustum` − 10°, `_frustum`, θ) on each axis of the frustum, θ being the receiver's angle off the axis in that plane, and the two factors multiplied (user request, 2026-11-20). The spot path's bias, 0.001 × slope clamped at 0.003 in normalised depth, grows with the square of the distance in a perspective map (0.003 is about 77 units at 320 with near 4), so the fireplace's pillar shadow started far behind the pillar. An area light's bias is paid in map units instead, as the sun's is: no depth bias, the receiver moved one tile texel at its distance (t = 2·d·tan(half-angle)/512) times (1 − N·L) along its normal and times clamp(slope, 1, 3) toward the light. Spots keep their bias. The warning text changes from "spot lights" to "spot and area lights".
 
 `_shadows` is not registered for `light_area`, so `_frustum` is the only switch.
 
@@ -240,7 +241,7 @@ The commands load the emissive image on the CPU with `GlobalTexturesCache().load
   - up = right × forward, and if up points downward both right and up are flipped;
   - origin is the rectangle's centre, exactly on the face plane.
 - `angles` is solved from (forward, right) and written with `%g` at six significant digits. Re-evaluating it gives the basis back within 0.01°.
-- `radius` = max(256, 8 × ⌈2 × half-diagonal / 8⌉) (decision 5). For the sign, 2 × 97.3 rounds to 200, so `radius` is 256.
+- `radius` = max(256, 8 × ⌈2 × half-diagonal / 8⌉) (decision 5). For the fireplace's 96 × 48 fire face, 2 × 53.7 rounds to 112, so `radius` is 256 (the benchmark then raises it by hand, decision 15).
 - The command writes `origin`, `angles`, `width`, `height`, `radius`, `intensity` and `_color` and selects the new entity. `_frustum` is left at its default.
 
 **Create proxy light.**
@@ -285,23 +286,41 @@ B5 is on `master`, so this change branches from `master` and edits `light.cpp` o
 The work goes on branch `emissive-area-lights` from `master`. Every task group ends with these checks:
 - the editor and q3map2 build with `make SH_BAKER=1` against the submodule's Release `libsh_baker.so` (`tools/stockcheck/README.md:27-38`), with no new warnings. Plain `make` is not used: it relinks `install/q3map2` against the stub (Context, "q3map2 and the stock check"), and the stock check then fails at the light stage with "-shbake: this q3map2 was built without SH_BAKER=1". If a plain `make` runs, `make binaries-q3map2 SH_BAKER=1` runs again after it, before each stock check;
 - `make test-emissive-light` passes, from group 3 on;
-- `clang-format -i` has been run on the touched C++ files;
+- the C++ formatting policy of the root `.clang-format` (see its header comment) holds: `git clang-format HEAD -- <files>` formats only the changed lines of existing files, keeping the repo exceptions the header lists (`){` without a space, `for`/`while`/`switch`/`else` braces on the next line, `void(const char*)` in template arguments, hand-aligned columns), and new files (`libs/emissivelight.h`, `libs/emissivelight_test.cpp`) are formatted whole with `clang-format -i`; untouched lines of old files are never reformatted;
 - the stock check passes on a clean `git archive` copy of the benchmark. It compiles with `-light -shbake` at the defaults (128 samples, `-super 1`, as "Town (draft)"); the pre-release and final presets are not needed for the gate.
 
 Ask before pushing or opening the PR to `DaviesX/netradiant-custom`.
 
-### 15. The sign's other neon faces stay unattached
+### 15. The benchmark's area light is a fireplace
 
-The sign is a 192 × 8 × 32 neon box. Only its front face gets a `light_area`. The two ends, the top and the bottom are emissive too, but they are thin (8 units) and face away from the lit wall. Their light still reaches the stock lightmap through the bake, and q3map2-shbake's warning counts them: the scenario "Area light ignored silently" expects the `textures/bench/neon` warning to name 4 surfaces with the `light_area` present (5 without it). The back face at y = 256 is flush against the brick and culled, so it makes no draw surface. Task 11.1 checks this on the real benchmark.
+The benchmark's `light_area` demo is a simple one-sided fireplace in the north interior (user decision, 2026-11-20), not the neon sign. The sign's `light_area` sat flush on its front face (y = 248) and is one-sided, so the brick wall the sign hangs on (y = 256) lies behind its plane and got nothing; the ground got 1-3 levels of 255. The sign stays as it was before this change: brush 24 is unchanged and carries no light, so its 5 neon faces stay unattached emitters and q3map2-shbake's warning counts 5.
+
+**Geometry.** Six axis-aligned brushes on the 8-unit grid, appended after the patch so existing brush numbers stay put, against the north wall's inner face (y = 752) and centred on x = −184, the pillar's centre line:
+- hearth slab (concrete): x −272..−96, y 704..752, z 0..16;
+- jambs (brick): x −256..−232 and −136..−112, y 720..752, z 16..64;
+- lintel (brick): x −256..−112, y 720..752, z 64..96;
+- mantel shelf (concrete): x −264..−104, y 712..752, z 96..104;
+- the firebox's back (brush 44): x −232..−136, y 736..752, z 16..64, whose −Y face is the only `bench/fire` face (96 × 48, texture scale 0.75 so the 128 × 64 image covers it once). Its other faces are caulk; the firebox's sides, ceiling and floor are the jambs, the lintel and the hearth, which are not emissive.
+
+Faces against the wall, the floor or another brush are caulk.
+
+**Material.** `textures/bench/fire` follows the neon's pattern: `$lightmap`, `fire_c` multiplied, and `fire_e` added under `rgbGen const ( 1 0.9 0.8 )`, with `qer_pbr_emissiveStrength 64`. `tools/benchmark/gen_fire.py` writes both images (fixed seed, `gen_foliage.py`'s TGA conventions); `fire_e`'s mean linear texel is (0.287, 0.101, 0.026).
+
+**Light.** "Create area light from selected face" on the fire face makes `origin -184 736 40`, `angles 0 270 0`, `width 96`, `height 48`, `radius 256`, `intensity 18.3866` and `_color 1 0.317035 0.0730977`. Two keys are then set by hand, which Re-derive keeps because it rewrites only `intensity` and `_color`:
+- `radius 768`, so the light reaches the pillar (about 300 units away), the floor and the room's walls, and its hard cutoff falls where the light is already faint;
+- `_frustum 70`, so the pillar casts a firelight shadow on the floor behind it, the benchmark's case of an area-light shadow.
+
+The fire face is attached (q3map2-shbake), so `-shbake` warns about no `textures/bench/fire` surface, and its bake output is byte-identical with and without the `light_area`.
 
 Alternatives considered:
-- **Area lights on all five faces.** Rejected. Four extra lights for 8-unit slivers, and the q3map2-shbake scenario already pins the count of 4.
-- **One proxy for the whole box.** Rejected. A proxy would replace the front face's area light, and the sign is the benchmark's test of `light_area`.
+- **Keep the sign and move its `light_area` off the face, or make it face the wall.** Rejected: the light would no longer be attached to its emitter, and Re-derive would find no face.
+- **Area lights on all five neon faces.** Rejected. Four lights for 8-unit slivers, and none of them faces the wall either.
+- **A proxy for the sign.** Rejected. The benchmark needs a `light_area` with a shadow, and the fireplace gives one with an occluder in front of it.
 
 ## Risks / Trade-offs
 
 - **[The light and the face drift apart after edits]** → Re-derive repeats the derivation. q3map2-shbake's unattached-emitter warning flags an emitter whose light no longer matches. The rectangle is drawn unselected, so drift is visible.
-- **[The footprint mean is sensitive to texture alignment]** → The sign's footprint mean is 0.073 against 0.142 over the whole image. The helper uses the editor's own texture coordinates, and a fixture pins the value. The sign's texture alignment is a content choice (open question 6).
+- **[The footprint mean is sensitive to texture alignment]** → The neon sign's front face shows only the edges of its tube band: its footprint mean is 0.073 against 0.142 over the whole image. The helper uses the editor's own texture coordinates; `TestFootprintNotWholeImage` covers a footprint smaller than the image. The fireplace's fire face covers `fire_e` exactly once, so its footprint mean is the image's mean.
 - **[Float textures may be missing]** → Area lights fall back to diffuse only, with one warning. The parity check (C7) requires the full path.
 - **[Lambert diffuse in the area pass and Disney in the others]** → A documented exception. The difference is small for rough dielectrics, and C7 implements the same thing.
 - **[Proxies are dimmer than their emitters on the axis]** → A spot proxy of a flat opaque face gives LA/(2d²) on its axis against the face's (and the stock lightmap's) LA/d², about 2× dim; off the axis its intensity stays flat while a Lambertian face falls as cos θ, so near grazing it is brighter than the face. A point proxy of a two-sided billboard gives 2πLA/(4πd²) = LA/(2d²) on either side against LA/d², also about 2× dim. The flux is right in both cases. Documented in the README; A9 judges it. Area lights have no such gap, which is why flat rectangular emitters should get a `light_area`.
@@ -318,9 +337,9 @@ The change is additive. Maps without `light_area` or `_proxy` render and compile
 
 ## Open Questions
 
-1. **The LTC tables' licence.** Upstream's `LICENSE` reads as a two-clause BSD licence with an extra clause asking users to cite the 2016 paper, which would allow vendoring with the notice and the citation. Task 2.1 reads it again before anything is committed; if it does not allow vendoring, it stops and asks the user (fitting our own tables with the published method is the fallback).
+1. **The LTC tables' licence.** *Resolved by task 2.1:* the licence allows vendoring with the notice and the citation; it is in `tools/ltc/LICENSE`, the commit (`31e5e96b…`) in `tools/ltc/README.md`, and the installed notice in `setup/data/tools/gl/ltc_ggx.LICENSE.txt`. Upstream's `LICENSE` reads as a two-clause BSD licence with an extra clause asking users to cite the 2016 paper, which would allow vendoring with the notice and the citation. Task 2.1 reads it again before anything is committed; if it does not allow vendoring, it stops and asks the user (fitting our own tables with the published method is the fallback).
 2. **Rectangle tolerance.** The values are 0.5° for the corners, 0.1 unit for the edges and 0.1 unit for collinear removal. Brush vertices off the grid after rotation may need looser values; the fixtures decide.
 3. **Mean texel for `clampMap` and tiled UVs.** `clampMap` is treated as wrap (not recorded in `Quake3Stage`, `shaders.cpp:1390`). Faces with many repeats are sampled at two samples per texel per axis, which costs time on huge faces; a cap may be needed.
 4. **Whether Re-derive should find a proxy's emitters by itself,** for example with q3map2-shbake's proxy rule (the light's origin inside the surface's bounds grown by 64 units). For now the user selects them.
 5. **Whether clicking the rectangle should select the light.** Today only the centre marker selects it.
-6. **The sign's texture alignment.** The face shows only the edges of the tube band (`neon_e` rows 112-127 and 0-47). Shifting t would raise the derived radiance about three times and make the sign read better. It is a content decision for the user.
+6. **The sign's texture alignment.** The face shows only the edges of the tube band (`neon_e` rows 112-127 and 0-47). Shifting t would make the sign read better. The sign is no longer the area-light demo (decision 15), so this only affects its look and its baked light; it is a content decision for the user.

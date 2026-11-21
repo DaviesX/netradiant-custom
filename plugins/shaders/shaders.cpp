@@ -340,6 +340,8 @@ public:
 	float m_roughnessFactor;
 	Vector3 m_emissiveFactor;
 	float m_emissiveStrength;
+	bool m_emissiveSrcAlpha; ///< the emissive stage blends GL_SRC_ALPHA GL_ONE
+	bool m_allAdditive;      ///< every map stage adds, rend2 stages ignored
 	IShader::EAlphaMode m_alphaMode;
 	float m_alphaCutoff;
 	bool m_doubleSided;
@@ -360,6 +362,8 @@ public:
 		m_roughnessFactor( 1 ),
 		m_emissiveFactor( 0, 0, 0 ),
 		m_emissiveStrength( 1 ),
+		m_emissiveSrcAlpha( false ),
+		m_allAdditive( false ),
 		m_alphaMode( IShader::eAlphaOpaque ),
 		m_alphaCutoff( 0.5f ),
 		m_doubleSided( false ),
@@ -1035,6 +1039,18 @@ public:
 	float getEmissiveStrength() const override {
 		return m_template.m_emissiveStrength;
 	}
+	bool hasEmissive() const override {
+		return !m_template.m_emissive.empty() && m_template.m_emissiveFactor != Vector3( 0, 0, 0 );
+	}
+	const char* getEmissiveName() const override {
+		return m_template.m_emissive.c_str();
+	}
+	bool isAllAdditive() const override {
+		return m_template.m_allAdditive;
+	}
+	bool getEmissiveSrcAlpha() const override {
+		return m_template.m_emissiveSrcAlpha;
+	}
 	EAlphaMode getAlphaMode() const override {
 		return m_template.m_alphaMode;
 	}
@@ -1051,10 +1067,13 @@ public:
 		*func = m_template.m_previewAlphaFunc;
 		*ref = m_template.m_previewAlphaRef;
 	}
-	/// PBR textures are loaded for every PBR-classified or preview-lit shader, and for every alpha-tested one,
-	/// whose base colour the shadow caster pass samples
+	/// PBR textures are loaded for every PBR-classified or preview-lit shader, for every alpha-tested one,
+	/// whose base colour the shadow caster pass samples, and for the emitters the preview draws in linear HDR:
+	/// an emissive stage in an all-additive or nolightmap shader
 	bool loadsLightingTextures() const {
-		return m_template.m_pbr || m_template.m_previewLit || m_template.m_previewAlphaFunc != IShader::eAlways;
+		return m_template.m_pbr || m_template.m_previewLit || m_template.m_previewAlphaFunc != IShader::eAlways
+		       || ( !m_template.m_emissive.empty() && ( m_template.m_allAdditive
+		            || ( ( m_template.m_nFlags & ( QER_NOLIGHTMAP | QER_TRANS ) ) == QER_NOLIGHTMAP && m_template.m_alphaMode != IShader::eAlphaBlend ) ) );
 	}
 // get shader name
 	const char* getName() const override {
@@ -1750,9 +1769,14 @@ void ShaderTemplate::deriveQuake3( const std::vector<Quake3Stage>& stages, bool 
 		if ( stage.adds() && stage.hasMap() && !stage.isLightmap() && !stage.isWhiteImage() && !stage.m_tcGenEnvironment ) { // hasMap() excludes rend2 stages
 			m_emissive = stage.m_map.c_str();
 			m_emissiveFactor = stage.m_constColour ? stage.m_colour : Vector3( 1, 1, 1 );
+			m_emissiveSrcAlpha = stage.m_src == BLEND_SRC_ALPHA;
 			break;
 		}
 	}
+
+	// all-additive: at least one map stage, and every one adds
+	m_allAdditive = std::any_of( stages.begin(), stages.end(), []( const Quake3Stage& stage ){ return stage.hasMap(); } )
+	             && std::all_of( stages.begin(), stages.end(), []( const Quake3Stage& stage ){ return !stage.hasMap() || stage.adds(); } );
 
 	const bool lightmapped = lightmap != stages.end();
 	const bool blended = qerTrans || ( base != 0 && base->blends() );
