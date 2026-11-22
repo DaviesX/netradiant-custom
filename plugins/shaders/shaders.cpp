@@ -340,6 +340,7 @@ public:
 	float m_roughnessFactor;
 	Vector3 m_emissiveFactor;
 	float m_emissiveStrength;
+	bool m_emissiveStrengthSet; ///< qer_pbr_emissiveStrength was declared
 	bool m_emissiveSrcAlpha; ///< the emissive stage blends GL_SRC_ALPHA GL_ONE
 	bool m_allAdditive;      ///< every map stage adds, rend2 stages ignored
 	IShader::EAlphaMode m_alphaMode;
@@ -350,6 +351,10 @@ public:
 	bool m_previewLit;   ///< shaded by the lighting preview's BRDF
 	IShader::EAlphaFunc m_previewAlphaFunc; ///< alpha test of the lighting preview and the shadow caster pass
 	float m_previewAlphaRef;
+
+	// sky light data (sky-environment-light), derived from Quake 3 stages
+	CopiedString m_skyStage;                       ///< the first map stage that isn't $lightmap; empty when there is none
+	Vector3 m_skyStageColour = Vector3( 1, 1, 1 ); ///< its rgbGen const, or white
 
 	ShaderTemplate() :
 		m_refcount( 0 ),
@@ -362,6 +367,7 @@ public:
 		m_roughnessFactor( 1 ),
 		m_emissiveFactor( 0, 0, 0 ),
 		m_emissiveStrength( 1 ),
+		m_emissiveStrengthSet( false ),
 		m_emissiveSrcAlpha( false ),
 		m_allAdditive( false ),
 		m_alphaMode( IShader::eAlphaOpaque ),
@@ -369,7 +375,7 @@ public:
 		m_doubleSided( false ),
 		m_previewLit( false ),
 		m_previewAlphaFunc( IShader::eAlways ),
-		m_previewAlphaRef( 0 ){
+		m_previewAlphaRef( 0 ) {
 		m_nFlags = 0;
 		m_fTrans = 1;
 	}
@@ -1039,6 +1045,18 @@ public:
 	float getEmissiveStrength() const override {
 		return m_template.m_emissiveStrength;
 	}
+	const char* getSkyBoxName() const override {
+		return m_template.m_skyBox.c_str();
+	}
+	const char* getSkyStageName() const override {
+		return m_template.m_skyStage.c_str();
+	}
+	const Vector3& getSkyStageColour() const override {
+		return m_template.m_skyStageColour;
+	}
+	bool hasEmissiveStrength() const override {
+		return m_template.m_emissiveStrengthSet;
+	}
 	bool hasEmissive() const override {
 		return !m_template.m_emissive.empty() && m_template.m_emissiveFactor != Vector3( 0, 0, 0 );
 	}
@@ -1509,7 +1527,7 @@ bool ShaderTemplate_parsePBRKeyword( ShaderTemplate& self, const char* keyword, 
 		metallicFactorSet |= number( self.m_metallicFactor );
 	}
 	else if ( string_equal_nocase( keyword, "qer_pbr_emissiveStrength" ) ) {
-		number( self.m_emissiveStrength );
+		self.m_emissiveStrengthSet |= number( self.m_emissiveStrength );
 	}
 	else if ( string_equal_nocase( keyword, "qer_pbr_baseColorFactor" ) ) {
 		float c[3];
@@ -1770,6 +1788,15 @@ void ShaderTemplate::deriveQuake3( const std::vector<Quake3Stage>& stages, bool 
 			m_emissive = stage.m_map.c_str();
 			m_emissiveFactor = stage.m_constColour ? stage.m_colour : Vector3( 1, 1, 1 );
 			m_emissiveSrcAlpha = stage.m_src == BLEND_SRC_ALPHA;
+			break;
+		}
+	}
+
+	// sky stage: the first map stage that isn't the lightmap (rend2 stages excluded by hasMap()); further cloud stages are ignored
+	for ( const Quake3Stage& stage : stages ) {
+		if ( stage.hasMap() && !stage.isLightmap() ) {
+			m_skyStage = stage.m_map.c_str();
+			m_skyStageColour = stage.m_constColour ? stage.m_colour : Vector3( 1, 1, 1 );
 			break;
 		}
 	}

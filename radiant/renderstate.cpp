@@ -62,6 +62,7 @@
 
 #include "xywindow.h"
 #include "camwindow.h"
+#include "skyenvironment.h"
 #include "cascade.h"
 #include "renderer.h"
 #include "view.h"
@@ -853,7 +854,12 @@ public:
 
 GLSLPBRProgram g_pbrGLSL;
 
-/// \brief Shared program for the PBR base pass (emissive + ambient), pbr_base_vp/pbr_base_fp.
+/// the transpose of the camera view's rotation, column-major: turns eye-space normals back to world space. Set from the modelview
+/// passed to OpenGLShaderCache::render on every frame, whatever the shadow preference (sky-environment-light, design decision 2).
+float g_pbrEyeToWorld[9] = { 1, 0, 0, 0, 1, 0, 0, 0, 1 };
+
+/// \brief Shared program for the PBR base pass (emissive + ambient + sky), pbr_base_vp/pbr_base_fp.
+/// The base, additive-emitter and opaque-emitter passes share it, so every enable() sets the sky coefficients explicitly.
 class GLSLPBRBaseProgram : public GLProgram
 {
 public:
@@ -862,6 +868,9 @@ public:
 	GLint u_emissive_factor;
 	GLint u_emissive_strength;
 	GLint u_ambient;
+	GLint u_metallic_factor;
+	GLint u_sky_sh;
+	GLint u_eye_to_world;
 
 	GLSLPBRBaseProgram() : m_program( 0 ){
 	}
@@ -889,6 +898,9 @@ public:
 		u_emissive_factor = gl().glGetUniformLocation( m_program, "u_emissive_factor" );
 		u_emissive_strength = gl().glGetUniformLocation( m_program, "u_emissive_strength" );
 		u_ambient = gl().glGetUniformLocation( m_program, "u_ambient" );
+		u_metallic_factor = gl().glGetUniformLocation( m_program, "u_metallic_factor" );
+		u_sky_sh = gl().glGetUniformLocation( m_program, "u_sky_sh" );
+		u_eye_to_world = gl().glGetUniformLocation( m_program, "u_eye_to_world" );
 
 		gl().glUseProgram( 0 );
 
@@ -912,11 +924,15 @@ public:
 		debug_string( "disable pbr base" );
 	}
 
-	void setMaterial( const Vector4& baseColorFactor, const Vector3& emissiveFactor, float emissiveStrength, float ambient ){
+	/// \p sky is nine RGB coefficients c_i = A_l L_lm / pi (SkyEnvironment_baseCoefficients or SkyEnvironment_zeroCoefficients)
+	void setMaterial( const Vector4& baseColorFactor, const Vector3& emissiveFactor, float emissiveStrength, float ambient, float metallicFactor, const float* sky ) {
 		gl().glUniform4f( u_basecolor_factor, baseColorFactor.x(), baseColorFactor.y(), baseColorFactor.z(), baseColorFactor.w() );
 		gl().glUniform3f( u_emissive_factor, emissiveFactor.x(), emissiveFactor.y(), emissiveFactor.z() );
 		gl().glUniform1f( u_emissive_strength, emissiveStrength );
 		gl().glUniform1f( u_ambient, ambient );
+		gl().glUniform1f( u_metallic_factor, metallicFactor );
+		gl().glUniform3fv( u_sky_sh, 9, sky );
+		gl().glUniformMatrix3fv( u_eye_to_world, 1, GL_FALSE, g_pbrEyeToWorld );
 	}
 
 	void setParameters( const Vector3& viewer, const Matrix4& localToWorld, const Vector3& origin, const Vector3& colour, const Matrix4& world2light ) override {
@@ -1040,17 +1056,18 @@ public:
 			break;
 		case eBase:
 			g_pbrBaseGLSL.enable();
-			g_pbrBaseGLSL.setMaterial( m_material.getBaseColorFactor(), m_material.getEmissiveFactor(), m_material.getEmissiveStrength(), Camera_lightingAmbient() );
+			g_pbrBaseGLSL.setMaterial( m_material.getBaseColorFactor(), m_material.getEmissiveFactor(), m_material.getEmissiveStrength(), Camera_lightingAmbient(),
+			                           m_material.getMetallicFactor(), SkyEnvironment_baseCoefficients() );
 			break;
 		case eAdditiveEmitter:
 			// the emissive map is bound as the base colour too, so the output alpha is the emissive texel's alpha,
 			// which a GL_SRC_ALPHA GL_ONE stage blends with
 			g_pbrBaseGLSL.enable();
-			g_pbrBaseGLSL.setMaterial( Vector4( 1, 1, 1, 1 ), m_material.getEmissiveFactor(), m_material.getEmissiveStrength(), 0 );
+			g_pbrBaseGLSL.setMaterial( Vector4( 1, 1, 1, 1 ), m_material.getEmissiveFactor(), m_material.getEmissiveStrength(), 0, 0, SkyEnvironment_zeroCoefficients() );
 			break;
 		case eOpaqueEmitter:
 			g_pbrBaseGLSL.enable();
-			g_pbrBaseGLSL.setMaterial( m_material.getBaseColorFactor(), m_material.getEmissiveFactor(), m_material.getEmissiveStrength(), 1 );
+			g_pbrBaseGLSL.setMaterial( m_material.getBaseColorFactor(), m_material.getEmissiveFactor(), m_material.getEmissiveStrength(), 1, 0, SkyEnvironment_zeroCoefficients() );
 			break;
 		}
 	}
@@ -1624,6 +1641,12 @@ public:
 #if 0
 		//qglGetFloatv( GL_MODELVIEW_MATRIX, reinterpret_cast<float*>( &modelview ) );
 #endif
+		// the base pass's eye-to-world rotation: the transpose of the view's upper 3 x 3, column-major
+		for ( int column = 0; column < 3; ++column ) {
+			for ( int row = 0; row < 3; ++row ) {
+				g_pbrEyeToWorld[column * 3 + row] = modelview[row * 4 + column];
+			}
+		}
 
 		ASSERT_MESSAGE( realised(), "render states are not realised" );
 
@@ -3300,13 +3323,14 @@ void OpenGLShader::construct( const char* name ){
 			m_pbrBaseProgram = new GLSLPBRMaterialProgram( *m_shader, GLSLPBRMaterialProgram::eBase );
 			m_pbrLightProgram = new GLSLPBRMaterialProgram( *m_shader, GLSLPBRMaterialProgram::eLight );
 
-			// base pass: emissive + ambient; also fills the depth buffer, honouring the alpha mask
+			// base pass: emissive + ambient + sky; also fills the depth buffer, honouring the alpha mask. RENDER_LIGHTING enables the
+			// normal array for the sky term; with a program bound, the fixed-function lighting it also enables has no effect
 			state.m_texture = m_shader->getBaseColor()->texture_number;
 			state.m_texture1 = m_shader->getNormal()->texture_number;
 			state.m_texture2 = m_shader->getMetallicRoughness()->texture_number;
 			state.m_texture3 = m_shader->getOcclusion()->texture_number;
 			state.m_texture4 = m_shader->getEmissive()->texture_number;
-			state.m_state = RENDER_FILL | RENDER_TEXTURE | RENDER_DEPTHTEST | RENDER_COLOURWRITE | RENDER_SMOOTH | RENDER_PROGRAM | cull;
+			state.m_state = RENDER_FILL | RENDER_TEXTURE | RENDER_DEPTHTEST | RENDER_COLOURWRITE | RENDER_SMOOTH | RENDER_PROGRAM | RENDER_LIGHTING | cull;
 			state.m_colour = Vector4( 1, 1, 1, 1 );
 			state.m_program = m_pbrBaseProgram;
 			if ( masked ) {

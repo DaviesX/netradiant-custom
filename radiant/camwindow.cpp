@@ -26,6 +26,7 @@
 //
 
 #include "camwindow.h"
+#include "skyenvironment.h"
 
 
 #include "debugging/debugging.h"
@@ -175,6 +176,7 @@ struct camwindow_globals_private_t
 	float m_lightingExposure = 1.f;
 	float m_lightingAmbient = 0.02f;
 	bool m_lightingShadows = true;
+	bool m_lightingSky = true;
 };
 
 camwindow_globals_private_t g_camwindow_globals_private;
@@ -187,6 +189,9 @@ float Camera_lightingAmbient(){
 }
 bool Camera_lightingShadows(){
 	return g_camwindow_globals_private.m_lightingShadows;
+}
+bool Camera_lightingSky() {
+	return g_camwindow_globals_private.m_lightingSky;
 }
 
 /// Lighting draw mode exists for Doom 3 style games and while the PBR lighting preview is active.
@@ -2133,6 +2138,7 @@ void CamWnd::Cam_Draw(){
 	}
 	if ( m_Camera.draw_mode == cd_lighting && ShaderCache_pbrGame() ) {
 		ShaderCache_bindLightingTables();
+		SkyEnvironment_update();
 	}
 
 	const bool hdr = m_Camera.draw_mode == cd_lighting && ShaderCache_pbrGame() && HDR_begin();
@@ -2665,6 +2671,15 @@ void LightingShadowsImport( bool value ){
 }
 typedef FreeCaller<void(bool), LightingShadowsImport> LightingShadowsImportCaller;
 
+void LightingSkyImport( bool value ) {
+	g_camwindow_globals_private.m_lightingSky = value;
+	SkyEnvironment_setDirty();
+	if ( g_camwnd != 0 ) {
+		CamWnd_Update( *g_camwnd );
+	}
+}
+typedef FreeCaller<void( bool ), LightingSkyImport> LightingSkyImportCaller;
+
 void Camera_constructPreferences( PreferencesPage& page ){
 	page.appendSpinner( "Movement Speed", g_camwindow_globals_private.m_nMoveSpeed, 1, CAM_MAX_SPEED );
 	page.appendSpinner( "Time to Max Speed", g_camwindow_globals_private.m_time_toMaxSpeed, 0, 5000 );
@@ -2743,6 +2758,10 @@ void Camera_constructPreferences( PreferencesPage& page ){
 		                    FloatExportCallback( FloatExportCaller( g_camwindow_globals_private.m_lightingAmbient ) ),
 		                    3
 		                  );
+		page.appendCheckBox(
+			"", "Lighting sky",
+			LightingSkyImportCaller(),
+			BoolExportCaller( g_camwindow_globals_private.m_lightingSky ) );
 		page.appendCheckBox(
 		    "", "Lighting shadows",
 		    LightingShadowsImportCaller(),
@@ -2861,13 +2880,17 @@ void CamWnd_Construct(){
 	GlobalPreferenceSystem().registerPreference( "LightingExposure", FloatImportStringCaller( g_camwindow_globals_private.m_lightingExposure ), FloatExportStringCaller( g_camwindow_globals_private.m_lightingExposure ) );
 	GlobalPreferenceSystem().registerPreference( "LightingAmbient", FloatImportStringCaller( g_camwindow_globals_private.m_lightingAmbient ), FloatExportStringCaller( g_camwindow_globals_private.m_lightingAmbient ) );
 	GlobalPreferenceSystem().registerPreference( "LightingShadows", BoolImportStringCaller( g_camwindow_globals_private.m_lightingShadows ), BoolExportStringCaller( g_camwindow_globals_private.m_lightingShadows ) );
+	GlobalPreferenceSystem().registerPreference( "LightingSky", BoolImportStringCaller( g_camwindow_globals_private.m_lightingSky ), BoolExportStringCaller( g_camwindow_globals_private.m_lightingSky ) );
 	//.  HACK: always show camera from start to have at least one ogl viewport shown = ogl initialized; otherwise loading map = loading textures = crash
 //	GlobalPreferenceSystem().registerPreference( "CamVIS", makeBoolStringImportCallback( ToggleShownImportBoolCaller( g_camera_shown ) ), makeBoolStringExportCallback( ToggleShownExportBoolCaller( g_camera_shown ) ) );
 
 	CamWnd_constructStatic();
 
 	Camera_registerPreferencesPage();
+
+	SkyEnvironment_construct();
 }
 void CamWnd_Destroy(){
+	SkyEnvironment_destroy();
 	CamWnd_destroyStatic();
 }

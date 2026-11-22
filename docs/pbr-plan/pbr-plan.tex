@@ -485,9 +485,10 @@ Emissive (sRGB) & An additive stage (\texttt{blendFunc add}) carrying the emissi
   stock target shows it unchanged; \texttt{sh-baker} already bakes additive layers as area lights
   (``Bake additive SH\_material\_layers surfaces as area lights'', \texttt{843237b}), so the glow
   also reaches the lightmap once 4.3 lands; \texttt{q3map\_surfacelight} is not needed.
-\item \textbf{Sky emission} (revision 8). A sky shader (\texttt{surfaceparm sky}) with
-  \texttt{qer\_pbr\_emissiveStrength} lights the map from its image, read as radiance the same
-  way; without the keyword it emits nothing. §\ref{sec:sky}.
+\item \textbf{Sky emission} (revision 8). The map's sky shader (the one declaring \texttt{skyparms};
+  \texttt{surfaceparm sky} alone gives no sky light) with \texttt{qer\_pbr\_emissiveStrength} lights
+  the map from its sky stage's image, read as radiance the same way; without the keyword it emits
+  nothing. §\ref{sec:sky}.
 \item \textbf{Factors are enhanced-only.} The stock target never sees \texttt{qer\_pbr\_baseColorFactor};
   where the stock look matters, bake the factor into the texture instead.
 \item \textbf{Reserved suffixes.} Never name an image \texttt{<base>\_n}, \texttt{<base>\_nh} or
@@ -1525,22 +1526,29 @@ Preetham, \texttt{SHCoeffs}, \texttt{ProjectEnvironmentToSH}; \texttt{scene.h:89
 \texttt{:145--146}), which \texttt{-shbake} does not fill. The details below are decided in the
 openspec change and the PRs.
 \begin{itemize}
-\item \textbf{Source.} The map's sky shader (\texttt{surfaceparm sky}). Its radiance is
-  $\texttt{qer\_pbr\_emissiveStrength} \times \texttt{rgbGen const} \times$ the sky image in
-  linear --- the six faces of the \texttt{skyparms} farbox, or the cloud stage's image when there
-  is no farbox --- projected to L0--L2 SH. This is the emitter derivation of §\ref{sec:rev7} and the
-  radiance units of §\ref{sec:units}. A sky shader without \texttt{qer\_pbr\_emissiveStrength}
-  emits nothing, so legacy maps are unchanged. One sky per map; a map that uses more than one sky
-  shader gets a warning.
+\item \textbf{Source.} The map's sky shader: the shader that declares \texttt{skyparms}
+  (\texttt{surfaceparm sky} alone gives no sky light, having no farbox or cloud layer). Its radiance
+  is $\texttt{qer\_pbr\_emissiveStrength} \times \texttt{rgbGen const} \times$ the sky image in
+  linear --- the six faces of the \texttt{skyparms} farbox, each texel where \texttt{tr\_sky.cpp}
+  draws it, or, when there is no farbox, the mean of the sky stage's image over the upper
+  hemisphere --- projected to L0--L2 SH. The sky stage is the first map stage that is not
+  \texttt{\$lightmap}; it alone counts, and further cloud stages are ignored. This is the emitter
+  derivation of §\ref{sec:rev7} and the radiance units of §\ref{sec:units}. A sky shader without
+  \texttt{qer\_pbr\_emissiveStrength} emits nothing, so legacy maps are unchanged. One sky per map
+  (the alphabetically first); a map that uses more than one sky shader gets a warning. The
+  derivation is \texttt{libs/skylight.h}, documented in the gamepack README's ``Sky light''.
 \item \textbf{The town and the benchmark.} The town's sky is \texttt{skyparms - 512 -} with the
   stage \texttt{map textures/town/sky} (\texttt{content/town/scripts/town.shader:320--323}), so its
   radiance comes from the cloud stage's image, whose colour equals the fog's. The benchmark's is
   \texttt{skyparms env/xnight2 - -}, a farbox.
-\item \textbf{Editor} (A12, openspec change; needs A1 and A6). The parser reads the sky shader's
-  emission, and the preview adds the sky's SH irradiance at the normal, times base colour and
-  occlusion. It is unshadowed: the editor has no visibility, so this overlights interiors. The
-  constant ``Lighting ambient'' stays for the darkness budget; how the two combine is decided in the
-  change.
+\item \textbf{Editor} (A12, openspec change \texttt{sky-environment-light}; needs A1 and A6).
+  The parser exposes the sky shader's farbox, sky stage and declared strength, and the preview's
+  base pass adds $(1 - \textrm{metallic}) \times$ base colour $\times$ occlusion $\times E(n)/\pi$,
+  with $n$ the vertex normal in world space. It is unshadowed: the editor has no visibility, so this
+  overlights interiors, and the per-game preference ``Lighting sky'' (default on) turns it off. The
+  constant ``Lighting ambient'' stays as it is and adds on top. The town's sky declares
+  \texttt{qer\_pbr\_emissiveStrength 14.6}, an open-floor irradiance of half its sun's
+  \texttt{intensity 5}. \emph{Done (\texttt{sky-environment-light}).}
 \item \textbf{Indirect bake and runtime} (B13, C6). The indirect bake never adds sky radiance. It
   records only sky visibility, the fraction of a point's first rays that escape
   (\texttt{baker.cpp:202,231}): per luxel in the side file's visibility plane (already written),
@@ -1555,7 +1563,11 @@ openspec change and the PRs.
   \texttt{Environment} from the sky shader and passes it to the full bake only, so the stock
   lightmap, vertex colours and grid carry direct and bounced sky light. A sky change needs a rebake
   for the stock target only. Adding sky light to the lightmap in q3map2 after the bake was rejected:
-  it would lose the bounce.
+  it would lose the bounce. B12 includes \texttt{libs/skylight.h} rather than reimplementing it, and
+  hands \texttt{sh-baker} the radiance $L(\omega)$ (or its texels), never the SH: the truncated SH of
+  a cloud layer is negative below the horizon. It must also exclude sky shaders from
+  \texttt{-shbake}'s emissive rule, which today takes a sky's additive cloud stage plus a strength
+  for an unattached emitter.
 \item \textbf{Parity.} None for sky light: the preview's is unshadowed, the runtime's uses baked
   visibility. 3.4's parity check runs with sky emission off, as the README procedure already does.
 \end{itemize}
@@ -1686,8 +1698,8 @@ Item & Depends on & Note \\
 2.2 step 5 & 0.1 & Deletes \texttt{pbr.game}; keeps the \texttt{pbr} entity module. \\
 2.2 step 6 & 2.2 step 4, 0.4 & \texttt{light\_area}, \texttt{\_proxy} lights and their LTC preview
   (revision 7). \\
-2.x Sky emission in the editor (A12) & 2.2 steps 1, 4 & Sky shader parsed; unshadowed sky SH in
-  the preview (§\ref{sec:sky}). \\
+2.x Sky emission in the editor (A12) & 2.2 steps 1, 4 & Done: sky shader parsed; unshadowed sky SH in
+  the preview (§\ref{sec:sky}), \texttt{sky-environment-light}. \\
 3.1 sh-renderer cleanup (C0) & --- & One sh-renderer PR: the glTF and EXR path and its
   dependencies deleted, tests on synthetic inputs. \\
 3.1 Module bring-up (C1) & C0 & Not additive, so it goes first: \texttt{ri.*}, the

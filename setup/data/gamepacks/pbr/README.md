@@ -337,6 +337,126 @@ brighter than the face. An area light has neither gap, which is why flat rectang
 - The side file holds no emissive direct light; `renderer_sh` adds it by evaluating `light_area` (C7) and `_proxy`
   lights (ordinary point and spot lights).
 
+## Sky light
+
+The map's sky shader is an environment light in the same units as the light entities (openspec change
+`sky-environment-light`). The editor preview uses it now; the full bake (task B12) and `renderer_sh` (task C6) reuse
+the same derivation, which lives in `libs/skylight.h` (header-only, tested by `make test-sky-light`). This section is
+complete enough to reimplement it without reading that code.
+
+### Which shader counts
+
+The candidates are the distinct shaders that declare `skyparms` on the map's brush faces and patches, in every entity,
+hidden ones included. A shader with `surfaceparm sky` but no `skyparms` is no candidate and gives no sky light: it has
+no farbox or cloud layer to define a radiance from. The map's sky is the alphabetically first candidate by shader name,
+compared without case. With two or more candidates the console prints one warning naming all of them and the one
+used, and prints it again only when the set of candidates changes. A map with no candidate has no sky light.
+
+### Radiance
+
+The sky's radiance in direction ω is
+
+```
+L(ω) = s × C × T(ω)
+```
+
+- `s` is the shader's `qer_pbr_emissiveStrength`. It must be declared: a sky shader without the keyword, or with a
+  strength of 0 or less, emits nothing, so every legacy Quake 3 sky is unchanged.
+- `C` is the sky stage's `rgbGen const`, or white without one. The sky stage is the shader's first map stage that is
+  not `$lightmap`. Further stages (a second cloud layer, additive or blended) are ignored: two scrolling layers have no
+  fixed mean worth modelling.
+- `T(ω)` is the sky image in linear RGB: each texel decoded from sRGB with the piecewise curve, alpha ignored.
+
+**Farbox.** When `skyparms` names a farbox, `T` is the six images `<farbox>_rt`, `_bk`, `_lf`, `_ft`, `_up` and
+`_dn`, each texel in the direction where the stock renderer draws it (`tr_sky.cpp`'s `MakeSkyVec` and
+`kSkyTexOrder`). For the texel in column `i` of `W` (from the left) and row `j` of `H` (from the top), with face
+coordinates `s' = 2(i + ½)/W − 1` and `t' = 1 − 2(j + ½)/H`, the direction (normalise it) is:
+
+| Face | Axis | Direction |
+|---|---|---|
+| `_rt` | +X | `( 1, −s', t')` |
+| `_lf` | −X | `(−1, s', t')` |
+| `_bk` | +Y | `( s', 1, t')` |
+| `_ft` | −Y | `(−s', −1, t')` |
+| `_up` | +Z | `(−t', −s', 1)` |
+| `_dn` | −Z | `( t', −s', −1)` |
+
+Note that `_bk` is +Y and `_lf` is −X, not the other way round: the stock renderer draws axis `i` with face
+`kSkyTexOrder[i] = {rt, lf, bk, ft, up, dn}[i]`. Each texel weighs by the solid angle it subtends exactly: with
+`F(u, v) = atan2(u v, √(1 + u² + v²))`, the texel `[u₀, u₁] × [v₀, v₁]` in face coordinates weighs
+`F(u₁, v₁) − F(u₀, v₁) − F(u₁, v₀) + F(u₀, v₀)`; the six faces sum to 4π at any resolution, and faces of different
+sizes are each used at their own resolution. Cloud stages are ignored when there is a farbox. If any of the six images
+fails to load, the console warns once naming the farbox and the map has no sky light.
+
+**Cloud layer.** When `skyparms` names no farbox (`-`), `T(ω)` is the unweighted mean linear texel `M` of the sky
+stage's image for every ω above the horizon (z > 0) and black below. The stock renderer never draws a cloud layer's
+bottom face. The dome mapping and `tcMod`s are ignored: they don't change the mean of a sky image. If the image fails
+to load, the console warns once naming it and the map has no sky light.
+
+### Spherical harmonics and irradiance
+
+The radiance is projected onto the nine real L0–L2 spherical harmonics, in RGB, in Z-up map coordinates, ordered and
+scaled as sh-baker's `SHCoeffs`:
+
+| Index | Function |
+|---|---|
+| 0 | `0.282095` |
+| 1, 2, 3 | `0.488603 y`, `0.488603 z`, `0.488603 x` |
+| 4, 5 | `1.092548 xy`, `1.092548 yz` |
+| 6 | `0.315392 (3z² − 1)` |
+| 7, 8 | `1.092548 xz`, `0.546274 (x² − y²)` |
+
+`L_lm = ∫ L(ω) Y_lm(ω) dω`: for a farbox the sum over texels of `L × Y_lm(direction) × solid angle`; for a cloud layer
+of radiance `ℒ = s × C × M` above the horizon, analytically `L₀₀ = 0.282095 × 2π ℒ`, `L₁₀ = 0.488603 × π ℒ` and every
+other coefficient 0 (`L₂₀` integrates to 0 over the hemisphere).
+
+The sky irradiance at a unit normal `n` is
+
+```
+E(n) = Σ Â_l L_lm Y_lm(n),   Â₀ = π, Â₁ = 2π/3, Â₂ = π/4,   each channel clamped below at 0
+```
+
+For a cloud layer this is exact: `E(+Z) = πℒ`, `E` at any horizontal normal `πℒ/2`, `E(−Z) = 0`. A uniform sphere of
+radiance `L` gives `E = πL` for every normal.
+
+The SH is for irradiance only. Anything that needs the radiance in a direction (the full bake's escaping rays in B12)
+uses `L(ω)` itself, never the truncated SH radiance, which for a cloud layer is `ℒ/2 + ¾ℒz`: −ℒ/4 straight down.
+
+### In the editor preview
+
+The base pass of every lit surface adds
+
+```
+(1 − metallic) × basecolor × occlusion × E(n) / π
+```
+
+with `n` the interpolated vertex normal turned to world space (not the normal map) and metallic read from the
+metallic-roughness map's blue channel × `qer_pbr_metallicFactor`, as the light pass reads it. The `1/π` is the light
+passes' Lambert normalisation. The term is not shadowed. Emitters, unlit surfaces and the sky surface itself draw as
+before. The constant ambient stays as it is and adds on top. The preview recomputes the sky light at the next
+lighting-mode draw after a map edit, a shader reload or a preference change, never per frame.
+
+The editor has no sky visibility, so interiors are **overlit**: a sealed room's floor receives the full open-sky light.
+The camera preference "Lighting sky" (per game, default on, shown with the other lighting preferences) turns the term
+off for interior work; nothing else changes. The engine fixes this with the baked visibility (task C6).
+
+### q3map2
+
+q3map2 does not read the sky light yet; B12 gives it the derivation, for the full bake only. Until then one caveat
+holds: `-shbake`'s emissive rule takes a shader's first additive stage as its emitter and doesn't exclude sky
+shaders, so a sky with an additive cloud stage and a `qer_pbr_emissiveStrength` counts as an unattached emitter and
+gets the warning. A sky without an additive stage, like the town's, is unaffected. B12 excludes sky shaders from that
+rule.
+
+### Worked example: the town
+
+`textures/town/sky` is a cloud layer (`skyparms - 512 -`) whose stage is `textures/town/sky` with no `rgbGen const`,
+so `C = 1`. Its image is a uniform sRGB (51, 66, 59), linear `M = (0.03310, 0.05448, 0.04374)`. The open-floor
+irradiance is `E(+Z) = π s M`. The sky should be half the town sun's `intensity 5`, compared in the largest channel as
+`intensity` is the largest channel of a light's colour: `π s × 0.05448 = 2.5`, so `s = 14.6067`. The shader declares
+`qer_pbr_emissiveStrength 14.6`, which gives `E(+Z) = (1.518, 2.499, 2.006)`, 0.05% under the target. A horizontal
+surface (a facade) gets half that, and a downward-facing one none.
+
 ## Shading
 
 Metallic-roughness BRDF ported from `sh-renderer/glsl/radiance.frag` (`ComputeDirectBRDF`): GGX normal
@@ -345,7 +465,8 @@ distribution with roughness clamped to ≥ 0.05, Smith geometry with the Schlick
 `4 N·V N·L + 0.001`, Disney (Burley) diffuse weighted by `kD = (1 − F)(1 − metallic)`.
 
 One additive pass per light plus a base pass writing
-`emissive × emissive colour × qer_pbr_emissiveStrength + ambient × basecolor × occlusion`. The emissive map is the
+`emissive × emissive colour × qer_pbr_emissiveStrength + ambient × basecolor × occlusion` plus the sky term of "Sky
+light" above; ambient and sky add together. The emissive map is the
 first additive stage's image and its colour is that stage's `rgbGen const` (white without one); the base colour is
 the stage the lightmap multiplies. Sources: `gl/pbr_vp.glsl`, `gl/pbr_fp.glsl`, `gl/pbr_base_vp.glsl`,
 `gl/pbr_base_fp.glsl`.
@@ -378,7 +499,7 @@ out  = sRGB_encode( ldr )
 
 `gl/tonemap_fp.glsl`, ported from `sh-renderer/glsl/tonemap.frag` (the engine encodes sRGB through
 `GL_FRAMEBUFFER_SRGB`, same transfer function; its exposure is fixed at 1.0). Exposure and ambient are camera
-preferences ("Lighting exposure", default 1.0; "Lighting ambient", default 0.02). If the half-float framebuffer
+preferences ("Lighting exposure", default 1.0; "Lighting ambient", default 0.02; "Lighting sky", default on). If the half-float framebuffer
 cannot be created, lighting mode renders straight to the window without tonemapping and warns once in the console.
 
 Base colour and emissive are decoded from sRGB in the shader with the exact piecewise transfer function. The texture
