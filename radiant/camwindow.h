@@ -77,6 +77,7 @@ extern camwindow_globals_t g_camwindow_globals;
 /// Lighting draw mode preferences while the PBR lighting preview is active (see pbr-lighting-preview spec).
 float Camera_lightingExposure();
 float Camera_lightingAmbient();
+bool Camera_lightingSky();
 
 void CamWnd_reconstructStatic();
 

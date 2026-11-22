@@ -310,6 +310,9 @@ textures/town/dirt
 // The sky is one flat colour and the fog volume has the same colour, so a building fading into fog meets the sky
 // without a seam. tools/town/gen_textures.py paints sky.tga and refuses to run when this fogparms colour differs from
 // it. The sun is the map's light_sun.
+// The sky is also an environment light (sky light in the gamepack README): qer_pbr_emissiveStrength 14.6 makes the
+// irradiance on an open floor pi x 14.6 x sky.tga's linear green 0.05448 = 2.5, half the light_sun's intensity 5.
+// Change it with the sun. No additive stage, so q3map2 -shbake doesn't take the sky for an emitter.
 
 textures/town/sky
 {
@@ -318,6 +321,7 @@ textures/town/sky
 	surfaceparm noimpact
 	surfaceparm nolightmap
 	skyparms - 512 -
+	qer_pbr_emissiveStrength 14.6
 	{
 		map textures/town/sky
 	}

@@ -100,7 +100,7 @@ room without a light would bake fully black, which is unplayable on stock.
 | `panel` | the NW room's ceiling light | emissive: additive `panel_e`, `qer_pbr_emissiveStrength 8` |
 | `bark`, `leaves`, `grass` | the vegetation's model surfaces | as the benchmark's: `q3map_forceMeta`, lightmapped; bark solid through `q3map_clipModel` |
 | `dirt` | the lawn's ground | |
-| `sky` | the ceiling | a flat cloud layer (`skyparms - 512 -`) drawing `sky.tga`, one colour |
+| `sky` | the ceiling | a flat cloud layer (`skyparms - 512 -`) drawing `sky.tga`, one colour; `qer_pbr_emissiveStrength 14.6` makes it the sky light ("Lights") |
 | `fog` | the fog volume | `fogparms ( 0.200392 0.258824 0.231373 ) 2048`, a dark green-grey the author set on 2026-11-21 |
 | `caulk`, `clip`, `hint`, `skip`, `trigger` | tool shaders | `nodraw`; the pk3 needs no `common.shader`. `trigger` also has `surfaceparm trigger` (see "Doors teleport") |
 
@@ -125,6 +125,7 @@ The editor's physical light entities, held in `tools/town/town1_lights.json`:
 | `light_spot` × 4 | `origin` under each cover (`-448 -48 180`, `-48 448 180`, `448 48 180`, `48 -320 180`), `angles 90 0 0`, `cone 60`, `cone_inner 45`, `radius 512`, `intensity 209104`, `_color 1 0.672443 0.304987`, `_proxy 1`, `_shadows 1` | each street lamp's proxy: pointing straight down, casting, attached to the cover's emissive inside |
 | `light_area` | `origin -560 560 -168`, `angles 90 0 0`, `width 64`, `height 64`, `radius 512`, `intensity 8`, `_color 0.806952 0.871367 1`, `_frustum 70` | the NW room's ceiling panel, facing down |
 | `light` | `origin 560 560 -200`, `intensity 150000`, `radius 400`, `_color 1 0.85 0.65` | the NE room's bare point light; it has no emitter, so it bakes directly |
+| sky light | `textures/town/sky`'s `qer_pbr_emissiveStrength 14.6` | the sky as an environment light, half the sun's strength ("The sky light" below) |
 
 The SW room has no light.
 
@@ -135,6 +136,24 @@ channel becomes `intensity` and the rest `_color`, printed at six significant di
 emitter" should leave them unchanged, but that has not been run. To check: select each lamp's spot with its cover's
 five emissive faces, and the `light_area`, run the command, and save; a pull must then leave
 `town1_lights.json` unchanged. Re-derive again after any change to `lamp_e`, `panel_e` or their shaders' strength.
+
+### The sky light
+
+The sky shader lights the map as an environment light (gamepack README, "Sky light"). It is a cloud layer with no
+`rgbGen const` over the flat `sky.tga`, sRGB 51 66 59, whose linear mean is `M = (0.03310, 0.05448, 0.04374)`. An
+open floor facing up receives `E = π × s × M`. The strength is set so that the largest channel is half the sun's
+`intensity 5`: `π × s × 0.05448 = 2.5` gives `s = 14.6067`, and the shader declares `qer_pbr_emissiveStrength 14.6`,
+for `E = (1.518, 2.499, 2.006)` on an open floor. A facade gets half that, a ceiling none. `make test-sky-light` checks
+it against the committed `sky.tga` and `town1_lights.json` ("Half the sun"). Change the strength whenever the sun's
+`intensity` changes.
+
+The sky light changes nothing else: the image, the stages, `skyparms` and the fog colour are as before, so the stock
+look and the fog seam are unchanged, and since the shader has no additive stage, q3map2 `-shbake` doesn't take it for
+an emitter.
+
+The editor preview has no sky visibility, so it lights every interior as if it were open to the sky. Make interior
+preview checks (the unlit SW room being dark away from its doorway, the sealed rooms under their own lights) with the
+camera preference "Lighting sky" off.
 
 ### The lamp proxy and its residual
 

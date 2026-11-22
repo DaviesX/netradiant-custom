@@ -169,6 +169,14 @@ public:
 // alphaFunc for Quake 3 shaders, separate from qer_alphafunc (getAlphaFunc), which drives textured mode.
 	virtual bool isPreviewLit() const = 0;
 	virtual void getPreviewAlphaFunc( EAlphaFunc *func, float *ref ) const = 0;
+	// Sky light (sky-environment-light) raw data, filled by the Quake 3 parser whether or not lighting is enabled.
+	// getSkyBoxName() is the skyparms farbox path, "" for "-" or no skyparms (QER_SKY tells whether skyparms was declared);
+	// getSkyStageName() is the first map stage that isn't $lightmap ("" without one) and getSkyStageColour() its rgbGen const
+	// or white; hasEmissiveStrength() is true when qer_pbr_emissiveStrength was declared.
+	virtual const char* getSkyBoxName() const = 0;
+	virtual const char* getSkyStageName() const = 0;
+	virtual const Vector3& getSkyStageColour() const = 0;
+	virtual bool hasEmissiveStrength() const = 0;
 };
 
 typedef Callback<void(const char*)> ShaderNameCallback;

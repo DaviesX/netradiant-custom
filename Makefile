@@ -684,6 +684,17 @@ libs/emissivelight_test.$(EXE): \
 test-emissive-light: libs/emissivelight_test.$(EXE)
 	./libs/emissivelight_test.$(EXE)
 
+# The sky light helpers (libs/skylight.h, header-only), run by
+# `make test-sky-light`. The test reads the town's sky image and sun from the
+# source tree. Kept out of $(INSTALLDIR).
+libs/skylight_test.$(EXE): CPPFLAGS_EXTRA := -Ilibs -DSKYLIGHT_TEST_ROOT='"$(CURDIR)"'
+libs/skylight_test.$(EXE): \
+	libs/skylight_test.o \
+
+.PHONY: test-sky-light
+test-sky-light: libs/skylight_test.$(EXE)
+	./libs/skylight_test.$(EXE)
+
 libmathlib.$(A): CPPFLAGS_EXTRA := -Ilibs
 libmathlib.$(A): \
 	libs/mathlib/bbox.o \
@@ -1021,6 +1032,7 @@ $(INSTALLDIR)/radiant.$(EXE): \
 	radiant/selection_mtor_uv.o \
 	radiant/select.o \
 	radiant/server.o \
+	radiant/skyenvironment.o \
 	radiant/sockets.o \
 	radiant/stacktrace.o \
 	radiant/surfacedialog.o \
