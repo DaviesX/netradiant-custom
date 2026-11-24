@@ -42,8 +42,12 @@ public:
 };
 void ShaderCache_setResolveHook( RenderResolveHook* hook );
 
-/// Draws a full-screen quad through the tonemap program, sampling \p hdrTexture. GL state is preserved.
-void ShaderCache_drawTonemap( unsigned int hdrTexture, float exposure );
+/// \brief Tells the lighting-mode sky whether the camera's HDR target is bound this frame (false: the fallback draws to the window).
+void ShaderCache_setHDRTargetBound( bool bound );
+
+/// Draws a full-screen quad through the tonemap program, sampling \p hdrTexture, and writes \p depthTexture's depth into the bound
+/// target (depth test GL_ALWAYS). \p skyDepthTexture marks the sky pixels the fog leaves alone. GL state is preserved.
+void ShaderCache_drawTonemap( unsigned int hdrTexture, unsigned int depthTexture, unsigned int skyDepthTexture, float exposure );
 
 struct ShadowCascadeCamera;
 class Matrix4;

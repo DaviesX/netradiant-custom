@@ -701,9 +701,16 @@ pool of light, no discernible skyline.
 
 \begin{itemize}
 \item \textbf{Fog is the primary aesthetic, not a VIS trick.} Tune fog volume density and colour
-  against the sky, with the far plane at fog opacity distance. Decide in \texttt{renderer\_sh}
-  whether fog composites before or after the tonemap --- the reference look depends on which --- and
-  keep the stock fallback's \texttt{fogparms} reading close to it.
+  against the sky, with the far plane at fog opacity distance. Decided (A13, openspec change
+  \texttt{fog-preview}): fog composites \emph{after} the tonemap, in display space, as opengl1
+  blends its fog pass onto 8-bit pixels, so the \texttt{fogparms} colour the author picks is the
+  colour on screen and ``fog colour equals sky colour'' holds; opengl1 is the reference for exact
+  colours, and the sky shows its own image bytes. The editor's lighting mode renders it this way, so
+  fog is tuned where the light is. opengl2 fogs before its own auto-exposure tonemap, so across the
+  stock renderers it is the seam that carries over, not the exact colours. The model (which brushes
+  are volumes and in what order, membership, the fog surface, the fog amount and the known
+  differences from stock) is the gamepack README's ``Fog'', which \texttt{renderer\_sh} follows in
+  C3a.
 \item \textbf{Carried flashlight.} A player-attached dynamic spot light, shadow-casting, is the
   defining mechanic. It needs the game-code decision of §\ref{sec:open}. In \texttt{renderer\_sh}
   it is a shadowed spot using the editor's spot atlas scheme, added to the scene through the ABI of
@@ -933,8 +940,9 @@ rest) needs C3a and may run after C4.
   not a light entity: its light is the sky SH times baked visibility, in C6 (§\ref{sec:sky}).
 \item \textbf{Fog volumes} (C3a), with the stock \texttt{fogparms} semantics so the same map reads
   the same on both targets, from the BSP fog lump, including a camera inside a volume with no fog
-  surface (\texttt{content/town/README.md:58}), and the fog/tonemap order of Stage~1. The primary
-  aesthetic of Stage 1; the town does not read without them.
+  surface (\texttt{content/town/README.md:58}), composited after the tonemap in display space as
+  decided in Stage~1 (A13), with the model of the gamepack README's ``Fog'' and the sky at its own
+  image bytes. The primary aesthetic of Stage 1; the town does not read without them.
 \item Multi-stage shader runtime (C3b for what C2 leaves): \texttt{deformVertexes} and
   \texttt{alphaGen} (\texttt{tr\_shade\_calc}, 825 LOC, plus part of \texttt{tr\_shader}, 3898).
   The layer runtime already exists in sh-renderer (PRs \#15--\#18, designed in
@@ -1700,13 +1708,15 @@ Item & Depends on & Note \\
   (revision 7). \\
 2.x Sky emission in the editor (A12) & 2.2 steps 1, 4 & Done: sky shader parsed; unshadowed sky SH in
   the preview (§\ref{sec:sky}), \texttt{sky-environment-light}. \\
+2.x Fog in the editor (A13) & 2.2 steps 1, 4 & Done: fog volumes in lighting mode, composited after
+  the tonemap; the sky at its own bytes; settles C3a's fog/tonemap order, \texttt{fog-preview}. \\
 3.1 sh-renderer cleanup (C0) & --- & One sh-renderer PR: the glTF and EXR path and its
   dependencies deleted, tests on synthetic inputs. \\
 3.1 Module bring-up (C1) & C0 & Not additive, so it goes first: \texttt{ri.*}, the
   \texttt{GLimp\_Init} context parameter, the inverted frame loop. \\
 3.3 Tier 1 features (C2) & C1, 0.2 & Walkable town under \texttt{cl\_renderer sh}, own BSP and
   shader loader; adds the \texttt{cl\_renderer sh} stock-check run. \\
-3.3 Tier 2 sky and fog (C3a) & Tier 1 & They define the town. \\
+3.3 Tier 2 sky and fog (C3a) & Tier 1 & They define the town; fog after the tonemap (A13). \\
 3.3 Tier 2 rest (C3b) & C3a & May run after 3.4. \\
 3.4 Direct light parity (C4) & Tier 1, 2.2 step 4 & Editor and engine read lights identically;
   every light's direct term is computed at runtime, never baked; the sky term moves to C6. \\

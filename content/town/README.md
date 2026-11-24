@@ -259,8 +259,17 @@ meets the sky.
 |---|---|---|---|
 | `opengl1` | 51 66 59 | 48 62 55 | 4 |
 | `opengl2` | 60 80 71 | 57 75 66 | 5 |
+| editor lighting mode, "Lighting fog" on | 51 66 59 | 49 63 56 | 3 |
+| editor lighting mode, "Lighting fog" off | 51 66 59 | 25 17 11 | 49 |
 
-Both are within the limit of 8 per channel. With the opacity distance at 2048 this is the only sightline long enough
+The stock renderers and the editor with "Lighting fog" on are within the limit of 8 per channel; the fog-off row only
+shows what the fog contributes. The editor rows (openspec change `fog-preview`, task 6.1) come from
+lighting-mode captures of the `street` view (eye −783 0 50, field of view 90, 1126×650, shadows on, ambient 0) at
+the image's horizontal centre: the sky three rows above the far facade's top edge (row 261) and the facade two rows
+below it. The captures hide the tool brushes (`town/hint`, `town/skip` and the `town/trigger` doors), which the editor
+draws translucent across the whole view and whose names the editor's hint filter doesn't match, and the entity boxes.
+The editor's sky shows `sky.tga`'s own bytes and the fog is composited after the tonemap, as opengl1 does it, so the
+editor matches opengl1 rather than opengl2. With the opacity distance at 2048 this is the only sightline long enough
 to test the seam; the end facade of a single arm, at most 1184 units from the crossroads, stands out from the sky by
 about 20 per channel.
 

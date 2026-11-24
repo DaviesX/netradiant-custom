@@ -432,7 +432,8 @@ The base pass of every lit surface adds
 
 with `n` the interpolated vertex normal turned to world space (not the normal map) and metallic read from the
 metallic-roughness map's blue channel × `qer_pbr_metallicFactor`, as the light pass reads it. The `1/π` is the light
-passes' Lambert normalisation. The term is not shadowed. Emitters, unlit surfaces and the sky surface itself draw as
+passes' Lambert normalisation. The term is not shadowed. Emitters, unlit surfaces and the sky surface itself (which
+shows its own bytes, "Shading" below) don't receive it and draw as
 before. The constant ambient stays as it is and adds on top. The preview recomputes the sky light at the next
 lighting-mode draw after a map edit, a shader reload or a preference change, never per frame.
 
@@ -456,6 +457,155 @@ irradiance is `E(+Z) = π s M`. The sky should be half the town sun's `intensity
 `intensity` is the largest channel of a light's colour: `π s × 0.05448 = 2.5`, so `s = 14.6067`. The shader declares
 `qer_pbr_emissiveStrength 14.6`, which gives `E(+Z) = (1.518, 2.499, 2.006)`, 0.05% under the target. A horizontal
 surface (a facade) gets half that, and a downward-facing one none.
+
+## Fog
+
+The editor's lighting mode renders the map's fog volumes as the stock renderers do, with opengl1 as the reference for
+exact colours (openspec change `fog-preview`). `renderer_sh` (task C3a) implements the same model. The pure helpers
+are in `libs/fogvolume.h` (header-only, tested by `make test-fog-volume`). This section is complete enough to
+reimplement the model without reading that code.
+
+### Which brushes are fog volumes
+
+A fog volume is a brush, in any entity, hidden ones included, whose **content shader** declares
+`fogparms ( r g b ) d`. The content shader is chosen as q3map2's `SetBrushContents` (`map.cpp`) chooses it:
+
+1. Start with the first side's shader.
+2. Walk the other sides in order. A liquid side (`surfaceparm water`, `slime` or `lava`) replaces a content shader
+   that is not liquid. Otherwise a fog side (`surfaceparm fog`) replaces a content shader that is neither liquid nor
+   fog.
+
+So a fog face wins over solid and non-solid faces, and a liquid face wins over a fog face: a brush with a water face
+whose shader has no `fogparms` is no fog volume, while a water shader that declares `fogparms` makes one. The colour is
+`(r, g, b)` with each channel clamped to [0, 1]; the distance `d` is raised to 1 when it is smaller, as `tr_bsp.cpp`
+does. A `fogparms` line without three colour numbers and a distance makes no volume and prints one warning. Global
+fog (`fog` or `_fog` on worldspawn) is not a fog volume and is not rendered.
+
+**Order.** Volumes are ordered as q3map2 orders the brushes it makes fogs from (`FinishBrush` and
+`MoveBrushesToWorld` in `map.cpp`, walked by `CreateMapFogs` in `fog.cpp`). A brush is *translucent* when any side's
+shader declares one of `trans`, `trigger`, `playerclip`, `monsterclip`, `alphashadow`, `lightfilter`, `nodrop`,
+`botclip`, `clusterportal`, `donotenter`, `areaportal`, `origin`, `water`, `slime` or `lava` (q3map2's
+`C_TRANSLUCENT`), and *opaque* otherwise. The order is:
+
+1. the opaque brushes of `func_group` entities, later groups first, each group's in map order;
+2. worldspawn's opaque brushes, in reverse map order;
+3. worldspawn's translucent brushes, in map order;
+4. the translucent brushes of `func_group` entities, in group order, each group's in map order;
+5. every other brush entity in entity order: its opaque brushes in reverse map order, then its translucent ones in map
+   order.
+
+**Membership.** A point belongs to a volume when it lies at most `ε = 1 + depth / 512` map units outside every plane
+of the brush, where `depth` is the point's distance along the view axis. The tolerance absorbs the error of
+reconstructing positions from a 24-bit depth buffer, so a floor lying in the plane of a fog face (the benchmark's
+street) is fogged evenly. When a point lies in several volumes, the **last** in the order above wins, as q3map2's
+later fogs overwrite earlier ones.
+
+**Limits.** A brush with more than 32 planes is no volume (one warning naming it and its plane count, repeated only
+after it has dropped back under the limit). At most 8 volumes are honoured, the first 8 in the order; with more, one
+warning names the number found, repeated only when the number changes.
+
+### The fog surface
+
+A volume's fog surface is one of its sides. Its plane bounds the fogged part of the view ray when the camera is
+outside the volume.
+
+- When the content shader declares a non-zero `q3map_fogDir ( x y z )` and some side's outward normal has a negative
+  dot product with it, the surface is the first side, in the order −X, +X, −Y, +Y, −Z, +Z and then the other sides,
+  with the most negative dot product (q3map2 `fog.cpp`, which walks its sides in that order after its axial swap).
+- Otherwise it is the first side, in the order +Z, −Z, +Y, −Y, +X, −X and then the other sides, whose shader is not
+  `surfaceparm nodraw` (q3map2 `writebsp.cpp`).
+- With no such side there is no fog surface.
+
+Differences from q3map2: q3map2 also skips sides with no visible part after compiling (`visibleHull`), which needs a
+compiled BSP, and orders non-axial sides as its axial swap leaves them, where the editor uses map order. Where q3map2
+would skip the editor's side as hidden, or orders non-axial sides differently, the two differ, and it shows only with
+the camera outside the volume. The town's volume has every side hidden inside the hull, so it has no fog surface in
+stock and a +Z surface in the editor; the camera never leaves it in the street.
+
+### Fog amount
+
+For a point `p` in a volume of distance `d`, seen from the eye `e` looking along the unit forward vector `v`:
+
+```
+depth = (p − e) · v
+f     = sqrt( clamp( depth × fraction / d, 0, 1 ) )      // f = 0 when depth ≤ 0
+```
+
+Let `t(x)` be the distance of a point `x` below the fog surface's plane, positive on the volume's side
+(`t(x) = dist − n · x` for the surface side's outward plane `n · x = dist`).
+
+- No fog surface: `fraction = 1`, wherever the eye is.
+- A fog surface with the eye inside, `t(e) ≥ 0`: `fraction = 1` when `t(p) ≥ −ε` (the membership tolerance), else 0.
+- A fog surface with the eye outside, `t(e) < 0`: `fraction = 0` when `t(p) < 1`, else `t(p) / (t(p) − t(e))`, the
+  share of the view ray below the plane.
+
+This is the model of `RB_CalcFogTexCoords` (`renderergl1/tr_shade_calc.cpp`: s = depth / (8 d) + 1/512, t from the
+surface plane) and `R_FogFactor` (`renderergl1/tr_image.cpp`: `sqrt(min(8 (s − 1/512) × fraction, 1))` through a
+256-entry table), and of rend2's `CalcFog` (`renderergl2/glsl/generic_vp.glsl`), in rend2's analytic form evaluated
+per pixel.
+
+### Composite: in display space, after the tonemap
+
+The fog is applied to the finished image, after the tonemap curve and the sRGB encode, as opengl1 blends its fog pass
+(`GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA` of `fogparms` × `identityLight`, which is 1 at default cvars) onto 8-bit
+pixels:
+
+```
+out = (1 − f) × pixel + f × C,      C = 255 × colour       (8-bit display values)
+```
+
+Each pixel uses the nearest surface that writes depth. Exposure and the tonemap never touch the fog colour, so the
+`fogparms` colour the author picks is exactly the colour on screen, and "fog colour equals sky colour" holds in the
+preview. Not fogged: pixels where nothing writing depth was drawn, and pixels whose nearest depth-writing surface is a
+sky (a shader declaring `skyparms`), including where glass or a glow was drawn over the sky. Fogging in linear light
+before the tonemap was rejected: the curve would bend the fog colour away from what the author set. opengl2 at
+default cvars fogs inside its HDR framebuffer and then applies its own auto-exposure tonemap (the town's sky reads
+60 80 71 there against 51 66 59 on opengl1), so across the stock renderers it is the seam that carries over, not the
+exact colours.
+
+The composite is exact for opaque surfaces and for additive stages over an opaque base: opengl1's fog pass over the
+composite gives `(base + add)(1 − f) + f C`.
+
+**Preference.** The camera preference "Lighting fog" (per game, default on, shown with the other lighting preferences)
+turns the fog off and changes nothing else: fog faces stay undrawn and the sky keeps its own colour. With it off, the
+lighting view of a map whose fog brushes carry the fog shader on every face (the town, the benchmark) equals the same
+view with those brushes deleted. The preview rebuilds the volumes at the next lighting-mode draw after a map edit, a
+shader reload or a preference change, never per frame. Without the off-screen target (the fallback above) there is no
+fog.
+
+### Known differences from stock
+
+- **Assignment.** The stock renderers fog per draw surface, as q3map2 assigns it: brush faces are chopped at the fog
+  brush; patches are cut only at its ±Z planes; world triangle and meta surfaces (models) are fogged whole by the last
+  volume they touch; brush-model surfaces are fogged whole by the volume with the largest bounding-box overlap;
+  surfaces flush with a fog side and facing out of the volume are not fogged; `q3map_noFog` surfaces never are. The
+  editor fogs per pixel.
+- **Translucent and all-additive surfaces** take the fog of whatever lies behind them; stock fogs them by their own
+  vertices.
+- **The sky.** Stock fogs a cloud layer that lies in a volume at its cloud box's distance; the editor never fogs the
+  sky. That is invisible when the fog colour equals the sky colour.
+- **Fog faces.** Stock draws a volume's visible faces as fog-only surfaces, which fog what lies beyond them as seen
+  from outside. The editor draws no fog faces in lighting mode.
+- **Interpolation.** The stock renderers evaluate s and the eye-outside t per vertex and interpolate them across each
+  triangle; that difference depends on the geometry and is not measured. opengl1 also reads a 256 × 32 fog image with
+  linear filtering, clamped at its edge, which caps `depth / d` at 8 before the eye-outside fraction applies and
+  filters the fraction over 32 rows. Measured at single points inside volumes (`make test-fog-volume`), the editor's
+  f is within **0.047** of opengl1's wherever f ≥ 0.1 with no fog surface or with the eye inside (largest near
+  f = 0.1, where the image's first texels linearise the square root); with the eye outside a surfaced volume the two
+  differ by up to **0.32**. rend2's analytic `CalcFog` agrees within 1e-6.
+- **Malformed `fogparms`.** q3map2 and stock still make a volume from it; the editor makes none and warns.
+
+### Worked example: the town
+
+`textures/town/fog` declares `fogparms ( 0.200392 0.258824 0.231373 ) 2048` and `surfaceparm fog`, `trans`,
+`nonsolid`. Its one brush covers the street level from z = −8 to 264 (x and y ±1032); every face carries the fog
+shader, so it is the content shader, and the brush is translucent through `trans`. It is the map's only volume. The
+fog colour is `C = 255 × (0.200392, 0.258824, 0.231373) = (51.1, 66.0, 59.0)`, the sky image's 51 66 59.
+
+From the `street` view (eye −783 0 50, looking along +X), the eye is inside the volume, so `fraction = 1`. The far
+facade at x = 1024 lies at `depth = 1807`, so `f = sqrt(1807 / 2048) = 0.9393`: a facade pixel of tonemapped value P
+becomes `0.0607 P + 0.9393 C`, which for any P in 0..255 lies within 16 of C, and within 8 for P within 130 of C. The
+sealed rooms lie below z = −8, more than ε outside the bottom face, so they are never fogged.
 
 ## Shading
 
@@ -487,20 +637,42 @@ or declare `surfaceparm nolightmap`:
   colour factor + emissive (the stock fullbright result in linear light), honouring the alpha test.
 - A blended shader that is not all-additive keeps its textured-mode state.
 
+Two rules come before all of these (openspec change `fog-preview`):
+
+- **Sky.** A shader declaring `skyparms` is drawn unlit, without the camera headlight, in its usual place (sort
+  `eSortFullbright`), so glass and glows still blend over it. Its pixels show the sky image's own bytes at any
+  exposure: the 8-bit texel × the sky stage's `rgbGen const` (white for a farbox), sRGB-decoded, multiplied by the
+  tonemap's `Uncharted2( 11.2 )`, put through the inverse of the Hable curve and divided by exposure, so that the
+  resolve maps it back exactly. A cloud layer samples its sky stage's image (the first map stage that is not
+  `$lightmap`) at the face's texture coordinates; a farbox samples its cubemap along the view direction. The sky also
+  writes its own fragment depth to a second attachment, which the resolve uses to leave sky pixels unfogged.
+  `surfaceparm sky` without `skyparms` is no sky and draws like any other unlit shader. Sources:
+  `gl/sky_lit_vp.glsl`, `gl/sky_lit_fp.glsl`.
+- **Fog faces.** A face whose shader declares `fogparms` is not drawn in lighting mode; its selection highlight still
+  is. The fog itself comes from the resolve ("Fog" above).
+
 Every other shader draws with its textured-mode state, unlit.
 
-The scene is rendered into an RGBA16F framebuffer and resolved to the window with
+The scene is rendered into an off-screen target (an RGBA16F colour attachment, an R32F sky-depth attachment and a
+24-bit depth texture) and resolved to the window with
 
 ```
 curr = Uncharted2( hdr × exposure )      // Hable: A=0.15 B=0.50 C=0.10 D=0.20 E=0.02 F=0.30
 ldr  = curr / Uncharted2( 11.2 )         // white point W = 11.2
 out  = sRGB_encode( ldr )
+out  = (1 − f) × out + f × fogparms colour   // "Fog" above; skipped for sky pixels and without fog volumes
 ```
+
+The resolve also writes the scene's depth into the window target, so overlays drawn afterwards (selection, grid,
+text) are occluded at any window multisampling.
 
 `gl/tonemap_fp.glsl`, ported from `sh-renderer/glsl/tonemap.frag` (the engine encodes sRGB through
 `GL_FRAMEBUFFER_SRGB`, same transfer function; its exposure is fixed at 1.0). Exposure and ambient are camera
-preferences ("Lighting exposure", default 1.0; "Lighting ambient", default 0.02; "Lighting sky", default on). If the half-float framebuffer
-cannot be created, lighting mode renders straight to the window without tonemapping and warns once in the console.
+preferences ("Lighting exposure", default 1.0; "Lighting ambient", default 0.02; "Lighting sky", default on;
+"Lighting fog", default on). If the off-screen target cannot be created (framebuffer objects, any of its three
+attachment formats or two draw buffers unavailable, or the framebuffer incomplete), lighting mode renders straight to
+the window without tonemapping and fog, the sky draws at its own colour (texel × `rgbGen const`), and the console
+warns once.
 
 Base colour and emissive are decoded from sRGB in the shader with the exact piecewise transfer function. The texture
 gamma preference is never applied to a texture loaded for lighting mode; textured mode keeps it.
@@ -613,18 +785,20 @@ Procedure:
    ```
    NETRADIANT_CAMERA_SCREENSHOT=sign.png NETRADIANT_CAMERA_ORIGIN="-96 52 50" NETRADIANT_CAMERA_ANGLES="0 90 0" \
      install/radiant.x86_64 -global-gamefile Q3.game -Q3.game-GameName benchmark -Q3.game-CameraRenderMode 4 \
-     -Q3.game-fieldOfView 90 -Q3.game-LightingShadows false -Q3.game-LightingAmbient 0 \
+     -Q3.game-fieldOfView 90 -Q3.game-LightingShadows false -Q3.game-LightingAmbient 0 -Q3.game-LightingFog false \
      <enginepath>/benchmark/maps/bench.map
    ```
 
    (`CameraRenderMode 4` is lighting mode.) The entity boxes are drawn in the capture; disable them with the entity
-   filters, or keep the camera outside them.
+   filters, or keep the camera outside them. "Lighting fog" is off because the documented view lies inside the
+   benchmark's fog box and `renderer_sh`'s direct-light path has no fog.
 2. Engine: compile with a Town build (or the stock check), load the map in `renderer_sh` with
    `+set fs_game benchmark +devmap bench` and the direct-light-only path (no shadow maps, no SH indirect, no SSAO, no
    sky emission), same resolution, and take a screenshot from the same view.
 3. Compare in linear light after decoding sRGB. Pass criterion: mean absolute error over all pixels ≤ 2/255 and no
-   8×8 block with a mean absolute error above 6/255, ignoring the outermost 8 pixel border and any pixel where the
-   editor draws overlays (entity boxes, light shapes).
+   8×8 block with a mean absolute error above 6/255, ignoring the outermost 8 pixel border, any pixel where the
+   editor draws overlays (entity boxes, light shapes), and the sky's pixels: the editor's sky shows its own bytes,
+   and `renderer_sh` has no matching sky until task C3a.
 
 Differences that are expected and must stay inside the tolerance: mip selection and anisotropy, MSAA of the window
 target (the HDR target is single-sampled), and the editor's per-face light culling window versus the engine's.
