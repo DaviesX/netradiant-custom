@@ -936,7 +936,10 @@ rest) needs C3a and may run after C4.
 \begin{itemize}
 \item \textbf{Sky} (C3a; \texttt{tr\_sky}, 859 LOC). Highest priority of this tier for this project
   specifically: the low sky ceiling is the town's defining structural element. The
-  \texttt{skyparms} farbox and cloud layer replace sh-renderer's analytic sky. The sky is drawn,
+  \texttt{skyparms} farbox and cloud layer replace sh-renderer's analytic sky, drawn as
+  \texttt{tr\_sky} draws them: by view direction alone, the farbox around the camera and every stage
+  a cloud layer projected onto a sphere centred \texttt{cloudheight} below the eye, never through
+  the sky face's UVs (the model is recorded in A14, which brings the editor preview to it). The sky is drawn,
   not a light entity: its light is the sky SH times baked visibility, in C6 (§\ref{sec:sky}).
 \item \textbf{Fog volumes} (C3a), with the stock \texttt{fogparms} semantics so the same map reads
   the same on both targets, from the BSP fog lump, including a camera inside a volume with no fog
@@ -1710,6 +1713,9 @@ Item & Depends on & Note \\
   the preview (§\ref{sec:sky}), \texttt{sky-environment-light}. \\
 2.x Fog in the editor (A13) & 2.2 steps 1, 4 & Done: fog volumes in lighting mode, composited after
   the tonemap; the sky at its own bytes; settles C3a's fog/tonemap order, \texttt{fog-preview}. \\
+2.x Sky drawing in the editor (A14) & A13 & Not scheduled: the preview's cloud layer samples the sky
+  face's UVs; stock draws the sky by view direction (\texttt{tr\_sky}'s cloud dome). Appearance
+  only; the model is recorded for C3a. \\
 3.1 sh-renderer cleanup (C0) & --- & One sh-renderer PR: the glTF and EXR path and its
   dependencies deleted, tests on synthetic inputs. \\
 3.1 Module bring-up (C1) & C0 & Not additive, so it goes first: \texttt{ri.*}, the
