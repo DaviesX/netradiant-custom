@@ -40,6 +40,7 @@
 #include <cstdlib>
 #include <map>
 #include <list>
+#include <string>
 #include <vector>
 
 #include "ifilesystem.h"
@@ -355,6 +356,13 @@ public:
 	// sky light data (sky-environment-light), derived from Quake 3 stages
 	CopiedString m_skyStage;                       ///< the first map stage that isn't $lightmap; empty when there is none
 	Vector3 m_skyStageColour = Vector3( 1, 1, 1 ); ///< its rgbGen const, or white
+
+	// fog volume data (fog-preview)
+	bool m_fogParms = false;                     ///< a well-formed fogparms was declared
+	Vector3 m_fogColour = Vector3( 0, 0, 0 );    ///< fogparms colour, unclamped
+	float m_fogDistance = 0;                     ///< fogparms distance, unclamped
+	Vector3 m_fogDirection = Vector3( 0, 0, 0 ); ///< q3map_fogDir, zero when not declared
+	unsigned int m_q3ContentClasses = 0;         ///< IShader::Q3CONTENT_*
 
 	ShaderTemplate() :
 		m_refcount( 0 ),
@@ -925,6 +933,7 @@ class CShader final : public IShader
 
 	qtexture_t* m_pTexture;
 	qtexture_t* m_pSkyBox;
+	qtexture_t* m_pSkyImage;
 	qtexture_t* m_notfound;
 	qtexture_t* m_pDiffuse;
 	float m_heightmapScale;
@@ -954,6 +963,7 @@ public:
 		m_bInUse( false ){
 		m_pTexture = 0;
 		m_pSkyBox = 0;
+		m_pSkyImage = 0;
 		m_pDiffuse = 0;
 		m_pBump = 0;
 		m_pSpecular = 0;
@@ -1000,6 +1010,17 @@ public:
 			m_pSkyBox = GlobalTexturesCache().capture( LoadImageCallback( 0, GlobalTexturesCache().defaultLoader().m_func, true ), m_template.m_skyBox.c_str() );
 
 		return m_pSkyBox;
+	}
+	qtexture_t* getSkyImage() override {
+		if ( m_pSkyImage == nullptr ) {
+			if ( !m_template.m_skyBox.empty() ) {
+				m_pSkyImage = GlobalTexturesCache().capture( LoadImageCallback( 0, GlobalTexturesCache().defaultLoader().m_func, true, true ), m_template.m_skyBox.c_str() );
+			}
+			else if ( !m_template.m_skyStage.empty() ) {
+				m_pSkyImage = GlobalTexturesCache().capture( pbrTextureLoader(), m_template.m_skyStage.c_str() );
+			}
+		}
+		return m_pSkyImage;
 	}
 	qtexture_t* getDiffuse() const override {
 		return m_pDiffuse;
@@ -1053,6 +1074,21 @@ public:
 	}
 	const Vector3& getSkyStageColour() const override {
 		return m_template.m_skyStageColour;
+	}
+	bool hasFogParms() const override {
+		return m_template.m_fogParms;
+	}
+	const Vector3& getFogColour() const override {
+		return m_template.m_fogColour;
+	}
+	float getFogDistance() const override {
+		return m_template.m_fogDistance;
+	}
+	const Vector3& getFogDirection() const override {
+		return m_template.m_fogDirection;
+	}
+	unsigned int getQ3ContentClasses() const override {
+		return m_template.m_q3ContentClasses;
 	}
 	bool hasEmissiveStrength() const override {
 		return m_template.m_emissiveStrengthSet;
@@ -1159,6 +1195,10 @@ public:
 
 		if ( m_pSkyBox != 0 ) {
 			GlobalTexturesCache().release( m_pSkyBox );
+		}
+		if ( m_pSkyImage != 0 ) {
+			GlobalTexturesCache().release( m_pSkyImage );
+			m_pSkyImage = 0;
 		}
 
 		unrealiseLighting();
@@ -1395,6 +1435,88 @@ struct Quake3Stage
 };
 
 void PBR_readLineArguments( Tokeniser& tokeniser, std::size_t line, std::vector<CopiedString>& args );
+
+/// \brief Reads exactly \p count numbers from a line such as "( r g b ) d" or "( x y z )": parentheses are required around the
+/// first three, and nothing else may follow. Returns false for a malformed line.
+bool Quake3_parseParenthesisedNumbers( const std::vector<CopiedString>& args, float* values, std::size_t count ) {
+	std::string line;
+	for ( const CopiedString& arg : args ) {
+		line += ' ';
+		line += arg.c_str();
+	}
+	// the tokeniser may or may not split parentheses from numbers: separate them
+	std::string spaced;
+	for ( char c : line ) {
+		if ( c == '(' || c == ')' ) {
+			spaced += ' ', spaced += c, spaced += ' ';
+		}
+		else {
+			spaced += c;
+		}
+	}
+	std::vector<std::string> tokens;
+	{
+		std::size_t i = 0;
+		while ( i < spaced.size() ) {
+			while ( i < spaced.size() && spaced[i] == ' ' ) {
+				++i;
+			}
+			const std::size_t start = i;
+			while ( i < spaced.size() && spaced[i] != ' ' ) {
+				++i;
+			}
+			if ( i > start ) {
+				tokens.push_back( spaced.substr( start, i - start ) );
+			}
+		}
+	}
+	// expected: ( n n n ) [n]
+	if ( tokens.size() != count + 2 || tokens[0] != "(" || tokens[4] != ")" ) {
+		return false;
+	}
+	std::size_t n = 0;
+	for ( std::size_t i = 1; i < tokens.size(); ++i ) {
+		if ( i == 4 ) {
+			continue;
+		}
+		if ( !string_parse_float( tokens[i].c_str(), values[n] ) ) {
+			return false;
+		}
+		++n;
+	}
+	return n == count;
+}
+
+/// \brief The q3map2 content classes a Quake 3 surfaceparm sets (games.cpp, Quake 3 table): liquid, fog and C_TRANSLUCENT.
+unsigned int Quake3_surfaceparmContentClasses( const char* surfaceparm ) {
+	unsigned int classes = 0;
+	if ( string_equal_nocase( surfaceparm, "water" ) || string_equal_nocase( surfaceparm, "slime" ) || string_equal_nocase( surfaceparm, "lava" ) ) {
+		classes |= IShader::Q3CONTENT_LIQUID | IShader::Q3CONTENT_TRANSLUCENT;
+	}
+	if ( string_equal_nocase( surfaceparm, "fog" ) ) {
+		classes |= IShader::Q3CONTENT_FOG;
+	}
+	const char* const translucent[] = {
+		"trans",
+		"trigger",
+		"playerclip",
+		"monsterclip",
+		"alphashadow",
+		"lightfilter",
+		"nodrop",
+		"botclip",
+		"clusterportal",
+		"donotenter",
+		"areaportal",
+		"origin",
+	};
+	for ( const char* name : translucent ) {
+		if ( string_equal_nocase( surfaceparm, name ) ) {
+			classes |= IShader::Q3CONTENT_TRANSLUCENT;
+		}
+	}
+	return classes;
+}
 
 /// rend2 stage keywords: renderergl1 rejects a shader using any of them
 const char* const c_rend2StageKeywords[] = {
@@ -1656,6 +1778,28 @@ bool ShaderTemplate::parseQuake3( Tokeniser& tokeniser ){
 
 				RETURN_FALSE_IF_FAIL( Tokeniser_getFloat( tokeniser, m_AlphaRef ) );
 			}
+			else if ( string_equal_nocase( token, "fogparms" ) || string_equal_nocase( token, "q3map_fogDir" ) ) {
+				const bool fogParms = string_equal_nocase( token, "fogparms" );
+				args.clear();
+				PBR_readLineArguments( tokeniser, tokeniser.getLine(), args );
+				float values[4];
+				const std::size_t wanted = fogParms ? 4 : 3;
+				if ( Quake3_parseParenthesisedNumbers( args, values, wanted ) ) {
+					if ( fogParms ) {
+						m_fogParms = true;
+						m_fogColour = Vector3( values[0], values[1], values[2] );
+						m_fogDistance = values[3];
+					}
+					else {
+						m_fogDirection = Vector3( values[0], values[1], values[2] );
+					}
+				}
+				else if ( fogParms ) {
+					m_fogParms = false;
+					globalWarningStream() << "WARNING: shader " << getName() << ": malformed fogparms (expected ( r g b ) distance); "
+										  << "the editor makes no fog volume from it\n";
+				}
+			}
 			else if ( string_equal_nocase( token, "skyparms" ) ) {
 				const char* sky = tokeniser.getToken();
 
@@ -1703,6 +1847,7 @@ bool ShaderTemplate::parseQuake3( Tokeniser& tokeniser ){
 					return false;
 				}
 
+				m_q3ContentClasses |= Quake3_surfaceparmContentClasses( surfaceparm );
 				if ( string_equal_nocase( surfaceparm, "fog" ) ) {
 					m_nFlags |= QER_FOG;
 					m_nFlags |= QER_TRANS;

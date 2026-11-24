@@ -177,6 +177,24 @@ public:
 	virtual const char* getSkyStageName() const = 0;
 	virtual const Vector3& getSkyStageColour() const = 0;
 	virtual bool hasEmissiveStrength() const = 0;
+	// Fog volumes (fog-preview), filled by the Quake 3 parser whether or not lighting is enabled. hasFogParms() is true when a
+	// well-formed fogparms ( r g b ) d was declared; getFogColour() and getFogDistance() are its values, unclamped.
+	// getFogDirection() is q3map_fogDir, ( 0 0 0 ) when not declared. getQ3ContentClasses() is the q3map2 content classes of
+	// the shader's surfaceparms (Q3CONTENT_*).
+	enum
+	{
+		Q3CONTENT_LIQUID = 1 << 0,      ///< surfaceparm water, slime or lava
+		Q3CONTENT_FOG = 1 << 1,         ///< surfaceparm fog
+		Q3CONTENT_TRANSLUCENT = 1 << 2, ///< any surfaceparm q3map2 marks C_TRANSLUCENT
+	};
+	virtual bool hasFogParms() const = 0;
+	virtual const Vector3& getFogColour() const = 0;
+	virtual float getFogDistance() const = 0;
+	virtual const Vector3& getFogDirection() const = 0;
+	virtual unsigned int getQ3ContentClasses() const = 0;
+	// The lighting-mode sky image (fog-preview), loaded on first use with its texels untouched by the texture gamma preference:
+	// the skyparms farbox as a cubemap when getSkyBoxName() is not empty, otherwise the sky stage's image. 0 without either.
+	virtual qtexture_t* getSkyImage() = 0;
 };
 
 typedef Callback<void(const char*)> ShaderNameCallback;

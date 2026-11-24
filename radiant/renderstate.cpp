@@ -62,6 +62,7 @@
 
 #include "xywindow.h"
 #include "camwindow.h"
+#include "fogvolumes.h"
 #include "skyenvironment.h"
 #include "cascade.h"
 #include "renderer.h"
@@ -161,7 +162,7 @@ void printProgramLog( GLuint program ){
 	globalErrorStream() << StringRange( log.begin(), log_length ) << '\n';
 }
 
-void createShader( GLuint program, const char* filename, GLenum type ){
+void createShader( GLuint program, const char* filename, GLenum type, const char* prefix = nullptr ) {
 	GLuint shader = gl().glCreateShader( type );
 	GlobalOpenGL_debugAssertNoErrors();
 
@@ -173,9 +174,10 @@ void createShader( GLuint program, const char* filename, GLenum type ){
 		Array<GLchar> buffer( size );
 		size = file.read( reinterpret_cast<StreamBase::byte_type*>( buffer.data() ), size );
 
-		const GLchar* string = buffer.data();
-		GLint length = GLint( size );
-		gl().glShaderSource( shader, 1, &string, &length );
+		// an optional prefix (#define lines) goes before the file, which then must not start with #version
+		const GLchar* strings[2] = { prefix != nullptr ? prefix : "", buffer.data() };
+		GLint lengths[2] = { prefix != nullptr ? GLint( strlen( prefix ) ) : 0, GLint( size ) };
+		gl().glShaderSource( shader, 2, strings, lengths );
 	}
 
 	// compile shader
@@ -451,6 +453,103 @@ public:
 };
 
 GLSLSkyboxProgram g_skyboxGLSL;
+
+
+/// \brief Whether lighting mode draws into the camera's HDR target this frame (false: the fallback draws to the window).
+bool g_hdrTargetBound = false;
+
+void ShaderCache_setHDRTargetBound( bool bound ) {
+	g_hdrTargetBound = bound;
+}
+
+/// \brief Lighting-mode sky (fog-preview design decision 3), sky_lit_vp/sky_lit_fp: variant 0 samples a cloud layer's sky stage
+/// image, variant 1 a farbox cubemap. Unlit; writes the inverse tonemap to attachment 0 and its depth to the sky attachment.
+class GLSLSkyLitProgram
+{
+public:
+	struct Variant
+	{
+		GLuint program = 0;
+		GLint u_view_origin = -1;
+		GLint u_colour = -1;
+		GLint u_exposure = -1;
+		GLint u_hdr = -1;
+	};
+	Variant m_variants[2];
+
+	void create() {
+		for ( int farbox = 0; farbox < 2; ++farbox ) {
+			Variant& v = m_variants[farbox];
+			v.program = gl().glCreateProgram();
+			{
+				StringOutputStream filename( 256 );
+				const char* prefix = farbox ? "#define FARBOX\n" : "";
+				createShader( v.program, filename( GlobalRadiant().getAppPath(), "gl/sky_lit_vp.glsl" ), GL_VERTEX_SHADER, prefix );
+				createShader( v.program, filename( GlobalRadiant().getAppPath(), "gl/sky_lit_fp.glsl" ), GL_FRAGMENT_SHADER, prefix );
+			}
+			GLSLProgram_link( v.program );
+			GLSLProgram_validate( v.program );
+			gl().glUseProgram( v.program );
+			gl().glUniform1i( gl().glGetUniformLocation( v.program, "u_image" ), 0 );
+			v.u_view_origin = gl().glGetUniformLocation( v.program, "u_view_origin" );
+			v.u_colour = gl().glGetUniformLocation( v.program, "u_colour" );
+			v.u_exposure = gl().glGetUniformLocation( v.program, "u_exposure" );
+			v.u_hdr = gl().glGetUniformLocation( v.program, "u_hdr" );
+			gl().glUseProgram( 0 );
+		}
+		GlobalOpenGL_debugAssertNoErrors();
+	}
+	void destroy() {
+		for ( Variant& v : m_variants ) {
+			gl().glDeleteProgram( v.program );
+			v = Variant();
+		}
+	}
+	bool created() const {
+		return m_variants[0].program != 0;
+	}
+};
+
+GLSLSkyLitProgram g_skyLitGLSL;
+
+/// \brief One sky shader's use of g_skyLitGLSL: its variant and rgbGen const. While the HDR target is bound it draws to both
+/// attachments, and returns to attachment 0 alone when disabled.
+class GLSLSkyLitMaterialProgram final : public GLProgram
+{
+	const bool m_farbox;
+	const Vector3 m_colour;
+	bool m_drawBuffers = false;
+public:
+	GLSLSkyLitMaterialProgram( bool farbox, const Vector3& colour ) : m_farbox( farbox ), m_colour( colour ) {
+	}
+	void enable() override {
+		const GLSLSkyLitProgram::Variant& v = g_skyLitGLSL.m_variants[m_farbox ? 1 : 0];
+		gl().glUseProgram( v.program );
+		gl().glUniform3f( v.u_colour, m_colour[0], m_colour[1], m_colour[2] );
+		gl().glUniform1f( v.u_exposure, Camera_lightingExposure() );
+		gl().glUniform1f( v.u_hdr, g_hdrTargetBound ? 1.f : 0.f );
+		m_drawBuffers = g_hdrTargetBound;
+		if ( m_drawBuffers ) {
+			const GLenum buffers[2] = { GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1 };
+			gl().glDrawBuffers( 2, buffers );
+		}
+		GlobalOpenGL_debugAssertNoErrors();
+		debug_string( "enable sky_lit" );
+	}
+	void disable() override {
+		if ( m_drawBuffers ) {
+			gl().glDrawBuffer( GL_COLOR_ATTACHMENT0 );
+			m_drawBuffers = false;
+		}
+		gl().glUseProgram( 0 );
+		GlobalOpenGL_debugAssertNoErrors();
+		debug_string( "disable sky_lit" );
+	}
+	void setParameters( const Vector3& viewer, const Matrix4& localToWorld, const Vector3& origin, const Vector3& colour, const Matrix4& world2light ) override {
+		const GLSLSkyLitProgram::Variant& v = g_skyLitGLSL.m_variants[m_farbox ? 1 : 0];
+		gl().glUniform3f( v.u_view_origin, viewer.x(), viewer.y(), viewer.z() );
+	}
+};
 
 
 // The PBR lighting preview: a per-game camera preference ("PBR lighting preview") of type="q3" games.
@@ -1089,12 +1188,26 @@ public:
 	}
 };
 
-/// \brief HDR resolve: exposure, Uncharted 2 (Hable) tonemap, sRGB encode (tonemap_vp/tonemap_fp).
+/// \brief The camera's view for the resolve's fog, taken in OpenGLShaderCache::render (the resolve runs inside that call).
+struct FogView
+{
+	Matrix4 clipToWorld = g_matrix4_identity;
+	Vector3 eye = Vector3( 0, 0, 0 );
+	Vector3 forward = Vector3( 1, 0, 0 );
+};
+FogView g_fogView;
+
+/// \brief HDR resolve: exposure, Uncharted 2 (Hable) tonemap, sRGB encode, fog in display space (tonemap_vp/tonemap_fp).
 class GLSLTonemapProgram
 {
 public:
 	GLuint m_program;
 	GLint u_exposure;
+	GLint u_volume_count;
+	GLint u_clip_to_world;
+	GLint u_eye;
+	GLint u_forward;
+	GLuint m_volumeTexture = 0;
 
 	GLSLTonemapProgram() : m_program( 0 ){
 	}
@@ -1112,7 +1225,14 @@ public:
 
 		gl().glUseProgram( m_program );
 		gl().glUniform1i( gl().glGetUniformLocation( m_program, "u_hdr" ), 0 );
+		gl().glUniform1i( gl().glGetUniformLocation( m_program, "u_depth" ), 1 );
+		gl().glUniform1i( gl().glGetUniformLocation( m_program, "u_sky_depth" ), 2 );
+		gl().glUniform1i( gl().glGetUniformLocation( m_program, "u_volumes" ), 3 );
 		u_exposure = gl().glGetUniformLocation( m_program, "u_exposure" );
+		u_volume_count = gl().glGetUniformLocation( m_program, "u_volume_count" );
+		u_clip_to_world = gl().glGetUniformLocation( m_program, "u_clip_to_world" );
+		u_eye = gl().glGetUniformLocation( m_program, "u_eye" );
+		u_forward = gl().glGetUniformLocation( m_program, "u_forward" );
 		gl().glUseProgram( 0 );
 
 		GlobalOpenGL_debugAssertNoErrors();
@@ -1121,18 +1241,47 @@ public:
 	void destroy(){
 		gl().glDeleteProgram( m_program );
 		m_program = 0;
+		if ( m_volumeTexture != 0 ) {
+			gl().glDeleteTextures( 1, &m_volumeTexture );
+			m_volumeTexture = 0;
+		}
 	}
 
 	bool created() const {
 		return m_program != 0;
 	}
 
+	/// Uploads the fog volumes with this frame's eye term on texture unit 3; returns how many the resolve fogs (0 skips the fog).
+	int uploadVolumes() {
+		const std::vector<fogvolume::Volume>& volumes = FogVolumes_volumes();
+		const int count = Camera_lightingFog() ? int( std::min<std::size_t>( volumes.size(), fogvolume::c_maxVolumes ) ) : 0;
+		if ( count == 0 ) {
+			return 0;
+		}
+		const std::vector<float> texels = fogvolume::PackVolumes( volumes, fogvolume::V3( g_fogView.eye[0], g_fogView.eye[1], g_fogView.eye[2] ) );
+		gl().glActiveTexture( GL_TEXTURE3 );
+		if ( m_volumeTexture == 0 ) {
+			gl().glGenTextures( 1, &m_volumeTexture );
+			gl().glBindTexture( GL_TEXTURE_2D, m_volumeTexture );
+			gl().glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST );
+			gl().glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST );
+			gl().glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE );
+			gl().glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE );
+		}
+		gl().glBindTexture( GL_TEXTURE_2D, m_volumeTexture );
+		gl().glTexImage2D( GL_TEXTURE_2D, 0, GL_RGBA32F, fogvolume::c_texWidth, fogvolume::c_maxVolumes, 0, GL_RGBA, GL_FLOAT, texels.data() );
+		gl().glActiveTexture( GL_TEXTURE0 );
+		return count;
+	}
+
 	/// Draws the full-screen quad; all touched GL state is restored afterwards, the program is left unbound.
-	void draw( GLuint hdrTexture, float exposure ){
+	void draw( GLuint hdrTexture, GLuint depthTexture, GLuint skyDepthTexture, float exposure ) {
 		gl().glPushAttrib( GL_ENABLE_BIT | GL_DEPTH_BUFFER_BIT | GL_COLOR_BUFFER_BIT | GL_TEXTURE_BIT | GL_POLYGON_BIT | GL_CURRENT_BIT );
 
-		gl().glDisable( GL_DEPTH_TEST );
-		gl().glDepthMask( GL_FALSE );
+		// the pass writes the scene's depth into the window target, whatever its multisampling, in place of a blit
+		gl().glEnable( GL_DEPTH_TEST );
+		gl().glDepthFunc( GL_ALWAYS );
+		gl().glDepthMask( GL_TRUE );
 		gl().glDisable( GL_BLEND );
 		gl().glDisable( GL_ALPHA_TEST );
 		gl().glDisable( GL_CULL_FACE );
@@ -1142,14 +1291,26 @@ public:
 		gl().glPolygonMode( GL_FRONT_AND_BACK, GL_FILL );
 		gl().glColorMask( GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE );
 
+		gl().glActiveTexture( GL_TEXTURE2 );
+		gl().glBindTexture( GL_TEXTURE_2D, skyDepthTexture );
+		gl().glActiveTexture( GL_TEXTURE1 );
+		gl().glBindTexture( GL_TEXTURE_2D, depthTexture );
 		gl().glActiveTexture( GL_TEXTURE0 );
 		gl().glClientActiveTexture( GL_TEXTURE0 );
 		gl().glBindTexture( GL_TEXTURE_2D, hdrTexture );
 		gl().glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST );
 		gl().glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST );
 
+		const int volumes = uploadVolumes();
+
 		gl().glUseProgram( m_program );
 		gl().glUniform1f( u_exposure, exposure );
+		gl().glUniform1f( u_volume_count, float( volumes ) );
+		if ( volumes != 0 ) {
+			gl().glUniformMatrix4fv( u_clip_to_world, 1, GL_FALSE, reinterpret_cast<const float*>( &g_fogView.clipToWorld ) );
+			gl().glUniform3f( u_eye, g_fogView.eye[0], g_fogView.eye[1], g_fogView.eye[2] );
+			gl().glUniform3f( u_forward, g_fogView.forward[0], g_fogView.forward[1], g_fogView.forward[2] );
+		}
 
 		gl().glBegin( GL_QUADS );
 		gl().glVertex3f( -1, -1, 0 );
@@ -1159,6 +1320,14 @@ public:
 		gl().glEnd();
 
 		gl().glUseProgram( 0 );
+
+		gl().glActiveTexture( GL_TEXTURE3 );
+		gl().glBindTexture( GL_TEXTURE_2D, 0 );
+		gl().glActiveTexture( GL_TEXTURE2 );
+		gl().glBindTexture( GL_TEXTURE_2D, 0 );
+		gl().glActiveTexture( GL_TEXTURE1 );
+		gl().glBindTexture( GL_TEXTURE_2D, 0 );
+		gl().glActiveTexture( GL_TEXTURE0 );
 
 		gl().glPopAttrib();
 
@@ -1174,9 +1343,9 @@ void ShaderCache_setResolveHook( RenderResolveHook* hook ){
 	g_resolveHook = hook;
 }
 
-void ShaderCache_drawTonemap( unsigned int hdrTexture, float exposure ){
+void ShaderCache_drawTonemap( unsigned int hdrTexture, unsigned int depthTexture, unsigned int skyDepthTexture, float exposure ) {
 	if ( g_tonemapGLSL.created() ) {
-		g_tonemapGLSL.draw( hdrTexture, exposure );
+		g_tonemapGLSL.draw( hdrTexture, depthTexture, skyDepthTexture, exposure );
 	}
 }
 
@@ -1361,8 +1530,9 @@ class OpenGLShader final : public Shader
 	ModuleObservers m_observers;
 	GLSLPBRMaterialProgram* m_pbrLightProgram;
 	GLSLPBRMaterialProgram* m_pbrBaseProgram;
+	GLSLSkyLitMaterialProgram* m_skyLitProgram;
 public:
-	OpenGLShader() : m_shader( 0 ), m_used( 0 ), m_pbrLightProgram( 0 ), m_pbrBaseProgram( 0 ){
+	OpenGLShader() : m_shader( 0 ), m_used( 0 ), m_pbrLightProgram( 0 ), m_pbrBaseProgram( 0 ), m_skyLitProgram( 0 ) {
 	}
 	~OpenGLShader() = default;
 	void construct( const char* name );
@@ -1382,6 +1552,8 @@ public:
 		m_pbrLightProgram = 0;
 		delete m_pbrBaseProgram;
 		m_pbrBaseProgram = 0;
+		delete m_skyLitProgram;
+		m_skyLitProgram = 0;
 	}
 	void addRenderable( const OpenGLRenderable& renderable, const Matrix4& modelview, const LightList* lights ) override {
 		for ( auto *bucket : m_passes )
@@ -1647,6 +1819,10 @@ public:
 				g_pbrEyeToWorld[column * 3 + row] = modelview[row * 4 + column];
 			}
 		}
+		// the resolve's fog: clip space to world, the eye and the view direction (the camera looks down eye -Z)
+		g_fogView.clipToWorld = matrix4_full_inverse( matrix4_multiplied_by_matrix4( projection, modelview ) );
+		g_fogView.eye = viewer;
+		g_fogView.forward = vector3_normalised( Vector3( -modelview[2], -modelview[6], -modelview[10] ) );
 
 		ASSERT_MESSAGE( realised(), "render states are not realised" );
 
@@ -1772,6 +1948,7 @@ public:
 					g_pbrBaseGLSL.create();
 					g_shadowGLSL.create();
 					g_tonemapGLSL.create();
+					g_skyLitGLSL.create();
 					ShaderCache_createWhiteTexture();
 				}
 			}
@@ -1804,6 +1981,7 @@ public:
 					g_pbrBaseGLSL.destroy();
 					g_shadowGLSL.destroy();
 					g_tonemapGLSL.destroy();
+					g_skyLitGLSL.destroy();
 					gl().glDeleteTextures( 1, &g_pbrWhiteTexture );
 					g_pbrWhiteTexture = 0;
 				}
@@ -3313,7 +3491,35 @@ void OpenGLShader::construct( const char* name ){
 		// construction from IShader
 		m_shader = QERApp_Shader_ForName( name );
 
-		if ( g_ShaderCache->lightingEnabled() && ShaderCache_pbrGame() && m_shader->isPreviewLit() && m_shader->getBaseColor() != 0 ) { // lit by the preview
+		const bool pbrLighting = g_ShaderCache->lightingEnabled() && ShaderCache_pbrGame();
+		qtexture_t* skyImage = ( pbrLighting && ( m_shader->getFlags() & QER_SKY ) != 0 ) ? m_shader->getSkyImage() : nullptr;
+		if ( pbrLighting && m_shader->hasFogParms() ) {
+			// a fog face is not drawn in lighting mode (fog-preview design decision 9); the fog comes from the resolve. Selection
+			// highlights use their own states and still draw.
+			state.m_state = RENDER_FILL;
+			state.m_sort = OpenGLState::eSortOpaque;
+		}
+		else if ( skyImage != nullptr && skyImage->texture_number != 0 && g_skyLitGLSL.created() ) {
+			// a skyparms sky shows its own bytes, unlit, in its usual sort (fog-preview design decision 3)
+			const bool farbox = !string_empty( m_shader->getSkyBoxName() );
+			m_skyLitProgram = new GLSLSkyLitMaterialProgram( farbox, farbox ? Vector3( 1, 1, 1 ) : m_shader->getSkyStageColour() );
+			state.m_state = RENDER_FILL | RENDER_DEPTHTEST | RENDER_DEPTHWRITE | RENDER_COLOURWRITE | RENDER_PROGRAM;
+			if ( farbox ) {
+				state.m_textureSkyBox = skyImage->texture_number;
+				state.m_state |= RENDER_CULLFACE;
+			}
+			else {
+				state.m_texture = skyImage->texture_number;
+				state.m_state |= RENDER_TEXTURE;
+				if ( ( m_shader->getFlags() & QER_CULL ) == 0 || m_shader->getCull() == IShader::eCullBack ) {
+					state.m_state |= RENDER_CULLFACE;
+				}
+			}
+			state.m_colour = Vector4( 1, 1, 1, 1 );
+			state.m_sort = OpenGLState::eSortFullbright;
+			state.m_program = m_skyLitProgram;
+		}
+		else if ( pbrLighting && m_shader->isPreviewLit() && m_shader->getBaseColor() != 0 ) { // lit by the preview
 			const unsigned int cull = ( m_shader->isDoubleSided() || ( ( m_shader->getFlags() & QER_CULL ) != 0 && m_shader->getCull() == IShader::eCullNone ) ) ? 0 : RENDER_CULLFACE;
 			IShader::EAlphaFunc alphaFunc;
 			float alphaRef;

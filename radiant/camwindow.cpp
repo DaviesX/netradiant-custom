@@ -26,6 +26,7 @@
 //
 
 #include "camwindow.h"
+#include "fogvolumes.h"
 #include "skyenvironment.h"
 
 
@@ -63,9 +64,9 @@
 #include "timer.h"
 
 #include <QOpenGLWidget>
-#include <QOpenGLFramebufferObject>
 #include <QOpenGLContext>
 #include <QOpenGLExtraFunctions>
+#include <QOpenGLFunctions>
 #include <QImage>
 #include <QTimer>
 #include <cstdlib>
@@ -177,6 +178,7 @@ struct camwindow_globals_private_t
 	float m_lightingAmbient = 0.02f;
 	bool m_lightingShadows = true;
 	bool m_lightingSky = true;
+	bool m_lightingFog = true;
 };
 
 camwindow_globals_private_t g_camwindow_globals_private;
@@ -192,6 +194,9 @@ bool Camera_lightingShadows(){
 }
 bool Camera_lightingSky() {
 	return g_camwindow_globals_private.m_lightingSky;
+}
+bool Camera_lightingFog() {
+	return g_camwindow_globals_private.m_lightingFog;
 }
 
 /// Lighting draw mode exists for Doom 3 style games and while the PBR lighting preview is active.
@@ -975,13 +980,21 @@ class CamWnd
 	camera_t m_Camera;
 	RadiantCameraView m_cameraview;
 
-	// HDR target for lighting mode while the PBR lighting preview is active (half-float colour + depth), resolved with exposure and tonemap
-	QOpenGLFramebufferObject* m_hdr{};
+	// HDR target for lighting mode while the PBR lighting preview is active, resolved with exposure, tonemap and fog (fog-preview
+	// design decision 4): RGBA16F colour (attachment 0), R32F sky depth (attachment 1, cleared to -1 each frame) and a sampleable
+	// 24-bit depth texture
+	GLuint m_hdrFBO{};
+	GLuint m_hdrColour{};
+	GLuint m_hdrSkyDepth{};
+	GLuint m_hdrDepth{};
+	int m_hdrWidth{};
+	int m_hdrHeight{};
 	bool m_hdrWarned{};
 	GLint m_hdrPreviousFBO{};
 	bool m_hdrResolved{};
 	CamHDRResolve m_hdrResolve{ *this };
 
+	bool HDR_create();
 	bool HDR_begin();
 	void HDR_resolve();
 	friend class CamHDRResolve;
@@ -2039,62 +2052,116 @@ void ShowSize3dToggle(){
 	}
 }
 
-/// \brief Creates or resizes the HDR target and binds it. Returns false (rendering goes straight to the window) if
-/// framebuffer objects or half-float attachments are unavailable; that is reported once.
+/// \brief Creates the HDR target's textures and framebuffer at the camera's size. Returns false, with nothing left allocated, if
+/// framebuffer objects, any attachment format or two draw buffers are unavailable, or the framebuffer is incomplete.
+bool CamWnd::HDR_create() {
+	QOpenGLContext* context = QOpenGLContext::currentContext();
+	if ( context == 0 || !context->functions()->hasOpenGLFeature( QOpenGLFunctions::Framebuffers ) ) {
+		return false;
+	}
+	GLint drawBuffers = 0;
+	gl().glGetIntegerv( GL_MAX_DRAW_BUFFERS, &drawBuffers );
+	if ( drawBuffers < 2 ) {
+		return false;
+	}
+	QOpenGLExtraFunctions& ef = *context->extraFunctions();
+	while ( gl().glGetError() != GL_NO_ERROR ) {}
+
+	m_hdrWidth = m_Camera.width;
+	m_hdrHeight = m_Camera.height;
+	const auto texture = [&]( GLuint& name, GLint internalFormat, GLenum format, GLenum type ) {
+		gl().glGenTextures( 1, &name );
+		gl().glBindTexture( GL_TEXTURE_2D, name );
+		gl().glTexImage2D( GL_TEXTURE_2D, 0, internalFormat, m_hdrWidth, m_hdrHeight, 0, format, type, 0 );
+		gl().glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST );
+		gl().glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST );
+		gl().glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE );
+		gl().glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE );
+	};
+	gl().glActiveTexture( GL_TEXTURE0 );
+	texture( m_hdrColour, GL_RGBA16F, GL_RGBA, GL_FLOAT );
+	texture( m_hdrSkyDepth, GL_R32F, GL_RED, GL_FLOAT );
+	texture( m_hdrDepth, GL_DEPTH_COMPONENT24, GL_DEPTH_COMPONENT, GL_UNSIGNED_INT );
+	gl().glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_COMPARE_MODE, GL_NONE );
+	gl().glBindTexture( GL_TEXTURE_2D, 0 );
+
+	GLint previousFBO = 0;
+	gl().glGetIntegerv( GL_FRAMEBUFFER_BINDING, &previousFBO );
+	ef.glGenFramebuffers( 1, &m_hdrFBO );
+	ef.glBindFramebuffer( GL_FRAMEBUFFER, m_hdrFBO );
+	ef.glFramebufferTexture2D( GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, m_hdrColour, 0 );
+	ef.glFramebufferTexture2D( GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, m_hdrSkyDepth, 0 );
+	ef.glFramebufferTexture2D( GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, m_hdrDepth, 0 );
+	gl().glDrawBuffer( GL_COLOR_ATTACHMENT0 ); // only the sky state (GLSLSkyLitMaterialProgram) draws to both
+	gl().glReadBuffer( GL_COLOR_ATTACHMENT0 );
+	const GLenum status = ef.glCheckFramebufferStatus( GL_FRAMEBUFFER );
+	ef.glBindFramebuffer( GL_FRAMEBUFFER, GLuint( previousFBO ) );
+	const bool errors = gl().glGetError() != GL_NO_ERROR;
+	while ( gl().glGetError() != GL_NO_ERROR ) {}
+
+	if ( status != GL_FRAMEBUFFER_COMPLETE || errors ) {
+		HDR_release();
+		return false;
+	}
+	return true;
+}
+
+/// \brief Creates or resizes the HDR target and binds it, clearing the sky depth. Returns false (rendering goes straight to the
+/// window, without tonemap and fog) if the target can't be made; that is reported once.
 bool CamWnd::HDR_begin(){
-	if ( m_hdr != 0 && ( m_hdr->width() != m_Camera.width || m_hdr->height() != m_Camera.height ) ) {
+	if ( m_hdrFBO != 0 && ( m_hdrWidth != m_Camera.width || m_hdrHeight != m_Camera.height ) ) {
 		HDR_release();
 	}
-	if ( m_hdr == 0 ) {
+	if ( m_hdrFBO == 0 ) {
 		if ( m_hdrWarned ) {
 			return false;
 		}
-		if ( QOpenGLFramebufferObject::hasOpenGLFramebufferObjects() && QOpenGLFramebufferObject::hasOpenGLFramebufferBlit() ) {
-			QOpenGLFramebufferObjectFormat format;
-			format.setAttachment( QOpenGLFramebufferObject::Attachment::Depth );
-			format.setInternalTextureFormat( GL_RGBA16F );
-			format.setSamples( 0 );
-			m_hdr = new QOpenGLFramebufferObject( m_Camera.width, m_Camera.height, format );
-			if ( !m_hdr->isValid() ) {
-				delete m_hdr;
-				m_hdr = 0;
-			}
-		}
-		if ( m_hdr == 0 ) {
+		if ( !HDR_create() ) {
 			m_hdrWarned = true;
-			globalWarningStream() << "Lighting mode: half-float framebuffer unavailable, rendering without exposure and tonemapping\n";
+			globalWarningStream() << "Lighting mode: HDR framebuffer unavailable, rendering without exposure, tonemapping and fog\n";
 			return false;
 		}
 	}
 	gl().glGetIntegerv( GL_FRAMEBUFFER_BINDING, &m_hdrPreviousFBO );
-	if ( !m_hdr->bind() ) {
-		return false;
+	QOpenGLExtraFunctions& ef = *QOpenGLContext::currentContext()->extraFunctions();
+	ef.glBindFramebuffer( GL_FRAMEBUFFER, m_hdrFBO );
+	{ // the sky depth starts at -1, below any fragment depth, so no pixel is sky until a sky fragment writes it
+		// glClearBufferfv's draw-buffer index refers to the current draw buffers, so attachment 1 must be one of them
+		const GLenum buffers[2] = { GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1 };
+		gl().glDrawBuffers( 2, buffers );
+		const GLfloat minusOne[4] = { -1, -1, -1, -1 };
+		ef.glClearBufferfv( GL_COLOR, 1, minusOne );
+		gl().glDrawBuffer( GL_COLOR_ATTACHMENT0 );
 	}
 	gl().glDisable( GL_MULTISAMPLE );
 	m_hdrResolved = false;
 	return true;
 }
 
-/// \brief Copies depth to the window target, then draws the tonemapped colour over it. Overlays are drawn afterwards.
+/// \brief Draws the tonemapped colour into the window target and writes the scene's depth there. Overlays are drawn afterwards.
 void CamWnd::HDR_resolve(){
-	if ( m_hdr == 0 || m_hdrResolved ) {
+	if ( m_hdrFBO == 0 || m_hdrResolved ) {
 		return;
 	}
 	m_hdrResolved = true;
 
 	QOpenGLExtraFunctions* ef = QOpenGLContext::currentContext()->extraFunctions();
-	ef->glBindFramebuffer( GL_READ_FRAMEBUFFER, m_hdr->handle() );
-	ef->glBindFramebuffer( GL_DRAW_FRAMEBUFFER, m_hdrPreviousFBO );
-	ef->glBlitFramebuffer( 0, 0, m_Camera.width, m_Camera.height, 0, 0, m_Camera.width, m_Camera.height, GL_DEPTH_BUFFER_BIT, GL_NEAREST );
 	ef->glBindFramebuffer( GL_FRAMEBUFFER, m_hdrPreviousFBO );
-	while ( gl().glGetError() != GL_NO_ERROR ) {} // a depth format mismatch only loses overlay occlusion; do not abort the frame
 
-	ShaderCache_drawTonemap( m_hdr->texture(), g_camwindow_globals_private.m_lightingExposure );
+	ShaderCache_drawTonemap( m_hdrColour, m_hdrDepth, m_hdrSkyDepth, g_camwindow_globals_private.m_lightingExposure );
 }
 
 void CamWnd::HDR_release(){
-	delete m_hdr;
-	m_hdr = 0;
+	if ( m_hdrFBO != 0 ) {
+		QOpenGLContext::currentContext()->extraFunctions()->glDeleteFramebuffers( 1, &m_hdrFBO );
+		m_hdrFBO = 0;
+	}
+	for ( GLuint* texture : { &m_hdrColour, &m_hdrSkyDepth, &m_hdrDepth } ) {
+		if ( *texture != 0 ) {
+			gl().glDeleteTextures( 1, texture );
+			*texture = 0;
+		}
+	}
 }
 
 void CamHDRResolve::resolve(){
@@ -2139,12 +2206,14 @@ void CamWnd::Cam_Draw(){
 	if ( m_Camera.draw_mode == cd_lighting && ShaderCache_pbrGame() ) {
 		ShaderCache_bindLightingTables();
 		SkyEnvironment_update();
+		FogVolumes_update();
 	}
 
 	const bool hdr = m_Camera.draw_mode == cd_lighting && ShaderCache_pbrGame() && HDR_begin();
-	if ( !hdr && m_hdr != 0 ) {
+	if ( !hdr && m_hdrFBO != 0 ) {
 		HDR_release(); // left lighting mode
 	}
+	ShaderCache_setHDRTargetBound( hdr );
 
 	gl().glViewport( 0, 0, m_Camera.width, m_Camera.height );
 #if 0
@@ -2680,6 +2749,15 @@ void LightingSkyImport( bool value ) {
 }
 typedef FreeCaller<void( bool ), LightingSkyImport> LightingSkyImportCaller;
 
+void LightingFogImport( bool value ) {
+	g_camwindow_globals_private.m_lightingFog = value;
+	FogVolumes_setDirty();
+	if ( g_camwnd != 0 ) {
+		CamWnd_Update( *g_camwnd );
+	}
+}
+typedef FreeCaller<void( bool ), LightingFogImport> LightingFogImportCaller;
+
 void Camera_constructPreferences( PreferencesPage& page ){
 	page.appendSpinner( "Movement Speed", g_camwindow_globals_private.m_nMoveSpeed, 1, CAM_MAX_SPEED );
 	page.appendSpinner( "Time to Max Speed", g_camwindow_globals_private.m_time_toMaxSpeed, 0, 5000 );
@@ -2762,6 +2840,10 @@ void Camera_constructPreferences( PreferencesPage& page ){
 			"", "Lighting sky",
 			LightingSkyImportCaller(),
 			BoolExportCaller( g_camwindow_globals_private.m_lightingSky ) );
+		page.appendCheckBox(
+			"", "Lighting fog",
+			LightingFogImportCaller(),
+			BoolExportCaller( g_camwindow_globals_private.m_lightingFog ) );
 		page.appendCheckBox(
 		    "", "Lighting shadows",
 		    LightingShadowsImportCaller(),
@@ -2881,6 +2963,7 @@ void CamWnd_Construct(){
 	GlobalPreferenceSystem().registerPreference( "LightingAmbient", FloatImportStringCaller( g_camwindow_globals_private.m_lightingAmbient ), FloatExportStringCaller( g_camwindow_globals_private.m_lightingAmbient ) );
 	GlobalPreferenceSystem().registerPreference( "LightingShadows", BoolImportStringCaller( g_camwindow_globals_private.m_lightingShadows ), BoolExportStringCaller( g_camwindow_globals_private.m_lightingShadows ) );
 	GlobalPreferenceSystem().registerPreference( "LightingSky", BoolImportStringCaller( g_camwindow_globals_private.m_lightingSky ), BoolExportStringCaller( g_camwindow_globals_private.m_lightingSky ) );
+	GlobalPreferenceSystem().registerPreference( "LightingFog", BoolImportStringCaller( g_camwindow_globals_private.m_lightingFog ), BoolExportStringCaller( g_camwindow_globals_private.m_lightingFog ) );
 	//.  HACK: always show camera from start to have at least one ogl viewport shown = ogl initialized; otherwise loading map = loading textures = crash
 //	GlobalPreferenceSystem().registerPreference( "CamVIS", makeBoolStringImportCallback( ToggleShownImportBoolCaller( g_camera_shown ) ), makeBoolStringExportCallback( ToggleShownExportBoolCaller( g_camera_shown ) ) );
 
@@ -2889,8 +2972,10 @@ void CamWnd_Construct(){
 	Camera_registerPreferencesPage();
 
 	SkyEnvironment_construct();
+	FogVolumes_construct();
 }
 void CamWnd_Destroy(){
 	SkyEnvironment_destroy();
+	FogVolumes_destroy();
 	CamWnd_destroyStatic();
 }

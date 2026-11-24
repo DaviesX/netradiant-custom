@@ -695,6 +695,16 @@ libs/skylight_test.$(EXE): \
 test-sky-light: libs/skylight_test.$(EXE)
 	./libs/skylight_test.$(EXE)
 
+# The fog volume helpers (libs/fogvolume.h, header-only), run by
+# `make test-fog-volume`. Kept out of $(INSTALLDIR).
+libs/fogvolume_test.$(EXE): CPPFLAGS_EXTRA := -Ilibs
+libs/fogvolume_test.$(EXE): \
+	libs/fogvolume_test.o \
+
+.PHONY: test-fog-volume
+test-fog-volume: libs/fogvolume_test.$(EXE)
+	./libs/fogvolume_test.$(EXE)
+
 libmathlib.$(A): CPPFLAGS_EXTRA := -Ilibs
 libmathlib.$(A): \
 	libs/mathlib/bbox.o \
@@ -1032,6 +1042,7 @@ $(INSTALLDIR)/radiant.$(EXE): \
 	radiant/selection_mtor_uv.o \
 	radiant/select.o \
 	radiant/server.o \
+	radiant/fogvolumes.o \
 	radiant/skyenvironment.o \
 	radiant/sockets.o \
 	radiant/stacktrace.o \

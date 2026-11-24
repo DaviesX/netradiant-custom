@@ -29,6 +29,8 @@
 !/libs/emissivelight_test.cpp
 /libs/skylight_test.*
 !/libs/skylight_test.cpp
+/libs/fogvolume_test.*
+!/libs/fogvolume_test.cpp
 /tools/quake3/q3map2/light_sh.stamp
 # python bytecode of the stock check (imported by its tests)
 /tools/stockcheck/__pycache__/

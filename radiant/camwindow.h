@@ -78,6 +78,7 @@ extern camwindow_globals_t g_camwindow_globals;
 float Camera_lightingExposure();
 float Camera_lightingAmbient();
 bool Camera_lightingSky();
+bool Camera_lightingFog();
 
 void CamWnd_reconstructStatic();
 
