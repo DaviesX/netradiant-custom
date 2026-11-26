@@ -627,9 +627,9 @@ ShMaterialRules ShDeriveMaterial( const ShShaderDesc& shader ){
 		rules.alphaFunc = stages[base].alphaFunc;
 	}
 
-	// emissive: the first additive stage that isn't the lightmap, a white image or an environment map
-	for ( int i = 0; i < count; ++i )
-	{
+	// emissive: the first additive stage that isn't the lightmap, a white image or an environment map; a sky
+	// (skyparms) has none, its light being the environment light of rule 8
+	for ( int i = 0; i < count && !shader.parms.skyParms; ++i ) {
 		const ShStage& stage = stages[i];
 		if ( stage.adds() && stage.hasMap() && !stage.isLightmap() && !stage.isWhiteImage() && !stage.tcGenEnvironment ) {
 			rules.emissiveStage = i;
@@ -946,4 +946,84 @@ ShGridFit ShGridNeutralFit(){
 	fit.ambientBytes = ShBytes3( c_shGridNeutralAmbientByte, c_shGridNeutralAmbientByte, c_shGridNeutralAmbientByte );
 	fit.directedBytes = ShBytes3( 0, 0, 0 );
 	return fit;
+}
+
+// --- 8. Sky environment light ----------------------------------------------
+
+skylight::SkySource ShSkySource( const ShShaderDesc& shader ) {
+	skylight::SkySource source;
+	source.name = shader.name;
+	source.farbox = shader.skyFarbox;
+	for ( const ShStage& stage : shader.stages ) {
+		if ( stage.hasMap() && !stage.isLightmap() ) {
+			source.stageImage = stage.map;
+			if ( stage.constColour ) {
+				source.stageColour = skylight::Vec3( stage.colour[0], stage.colour[1], stage.colour[2] );
+			}
+			break;
+		}
+	}
+	source.hasStrength = shader.emissiveStrengthDeclared;
+	source.strength = shader.emissiveStrength;
+	return source;
+}
+
+namespace
+{
+/// the world direction of texture-frame angles theta (from the texture's +Y, world +Z) and phi
+skylight::Vec3 SkyDirection( double theta, double phi ) {
+	const double s = std::sin( theta );
+	// texture ( s sin phi, cos theta, s cos phi ) = world ( y, z, x )
+	return skylight::Vec3( s * std::cos( phi ), s * std::sin( phi ), std::cos( theta ) );
+}
+
+/// world -> texture frame
+skylight::Vec3 ToTexture( const skylight::Vec3& w ) {
+	skylight::Vec3 t;
+	for ( int r = 0; r < 3; ++r )
+		t[r] = c_shSkyToEnvironment[r][0] * w[0] + c_shSkyToEnvironment[r][1] * w[1] + c_shSkyToEnvironment[r][2] * w[2];
+	return t;
+}
+} // namespace
+
+skylight::Vec3 ShSkyTexelDirection( double x, double y ) {
+	return SkyDirection( y * c_pi / c_shSkyHeight, x * 2.0 * c_pi / c_shSkyWidth );
+}
+
+std::vector<float> ShSkyEquirect( const skylight::SkyRadiance& sky ) {
+	std::vector<float> texels( std::size_t( c_shSkyWidth ) * c_shSkyHeight * 3, 0.0f );
+	constexpr int n = c_shSkySubsamples;
+	for ( int y = 0; y < c_shSkyHeight; ++y ) {
+		double thetas[n], weights[n], weightSum = 0;
+		for ( int j = 0; j < n; ++j ) {
+			thetas[j] = ( y + ( j + 0.5 ) / n ) * c_pi / c_shSkyHeight;
+			weights[j] = std::sin( thetas[j] );
+			weightSum += weights[j] * n;
+		}
+		for ( int x = 0; x < c_shSkyWidth; ++x ) {
+			skylight::Vec3 sum( 0, 0, 0 );
+			for ( int j = 0; j < n; ++j )
+				for ( int i = 0; i < n; ++i )
+					sum += sky( SkyDirection( thetas[j], ( x + ( i + 0.5 ) / n ) * 2.0 * c_pi / c_shSkyWidth ) ) * weights[j];
+			float* texel = texels.data() + ( std::size_t( y ) * c_shSkyWidth + x ) * 3;
+			for ( int c = 0; c < 3; ++c )
+				texel[c] = float( sum[c] / weightSum );
+		}
+	}
+	return texels;
+}
+
+double ShSkyCheckError( const skylight::SHCoeffs& derived, const skylight::SHCoeffs& textureFrame ) {
+	double largest = 0, error = 0;
+	for ( int axis = 0; axis < 6; ++axis ) {
+		skylight::Vec3 n( 0, 0, 0 );
+		n[axis / 2] = axis % 2 == 0 ? 1 : -1;
+		const skylight::Vec3 a = skylight::Irradiance( derived, n );
+		const skylight::Vec3 b = skylight::Irradiance( textureFrame, ToTexture( n ) );
+		for ( int c = 0; c < 3; ++c ) {
+			largest = std::max( largest, a[c] );
+			error = std::max( error, std::fabs( a[c] - b[c] ) );
+		}
+	}
+	return largest > 0 ? error / largest : 0.0;
 }
