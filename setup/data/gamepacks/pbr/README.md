@@ -464,6 +464,12 @@ off for interior work; nothing else changes. The engine fixes this with the bake
   irradiance at the normal times the side file's visibility (C6). A change to the sky therefore needs a rebake for
   its bounce. Sky surfaces stay non-casting and out of the bake, so rays leave through a low sky ceiling as the stock
   engine draws it.
+- **Probe sky visibility.** Each valid probe of the side file's SH grid also holds its own sky visibility (side file
+  version 3, openspec change `q3map2-sh-grid-visibility`): the uniform fraction of its first rays that escaped, over
+  the whole sphere, since a probe has no normal (a luxel's visibility is cosine-weighted at its normal). `renderer_sh`
+  lights models and vertex-lit surfaces with the sky's irradiance at the shaded normal times the probe visibility,
+  blended like the probes' SH. Probes in solid hold 0. The value depends only on the geometry, so a map whose sky
+  emits nothing still gets it.
 - **No sky emitters.** A shader that declares `skyparms` is never an emitter in the bake, whatever its stages: a
   sky's additive cloud layer no longer becomes an area light. A shader with `surfaceparm sky` but no `skyparms` keeps
   the emissive rule.
@@ -839,7 +845,7 @@ the same points (super-luxels, one point per light-grid point, draw vertices):
 | Bake | Light at the baked point | Writes | Read by |
 |---|---|---|---|
 | full | direct plus indirect, sky included | the BSP lightmap pages, vertex colours and light grid | stock ioquake3 |
-| indirect | indirect only, no direct light (punctual, emissive or sky) | the side file `maps/<name>/<name>.shsf`: SH pages, solid hull mesh, SH grid | `renderer_sh` |
+| indirect | indirect only, no direct light (punctual, emissive or sky) | the side file `maps/<name>/<name>.shsf`: SH pages, solid hull mesh, SH grid with per-probe sky visibility (side file version 3) | `renderer_sh` |
 
 `renderer_sh` computes direct light at runtime from the light entities, so the side file holds only what they
 bounce, plus bounced sky light ("q3map2" under "Sky light"; `renderer_sh` adds the direct sky). Each bake costs about the same; the default runs both. On the benchmark each takes under a second at the
@@ -952,6 +958,9 @@ The grid is coarse (q3map2's default `gridsize` is 64 64 128), and a model takes
 cells around its origin, so near a light it can be noticeably brighter or darker than the floor under it: the 128-unit
 vertical spacing blends floor-level light with light up to 128 units higher. A worldspawn `gridsize` with a smaller
 z (for example `64 64 64`) narrows that at the cost of grid size; the side file's SH grid follows the same spacing.
+The grid spans the world bounds, and sky surfaces don't cast, so a probe outside the playable volume (above a low sky
+ceiling, or in the void outside the walls) may be valid with a sky visibility near 1. A model inside the map doesn't
+blend those probes.
 
 ### opengl2 (`renderergl2`) at defaults
 

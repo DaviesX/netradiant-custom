@@ -82,14 +82,14 @@ using q3map2_extension_internal::FloatToHalf;
 using q3map2_extension_internal::HalfToFloat;
 
 constexpr char c_magic[4] = { 'S', 'H', 'S', 'F' };
-constexpr uint32_t c_version = 2;
+constexpr uint32_t c_version = 3;
 constexpr uint64_t c_headerBytes = 24;
 constexpr uint64_t c_pageHeaderBytes = 8;
 constexpr int c_valuesPerLuxel = 27;
 constexpr uint64_t c_bytesPerLuxel = ( c_valuesPerLuxel + 1 ) * 2;
 constexpr uint64_t c_maxPageSide = std::numeric_limits<int32_t>::max();
 constexpr uint64_t c_gridHeaderBytes = 36;
-constexpr uint64_t c_bytesPerProbe = c_valuesPerLuxel * 4 + 1;
+constexpr uint64_t c_bytesPerProbe = c_valuesPerLuxel * 4 + 4 + 1; // coefficients, sky visibility, flag
 
 void SetError( std::string* error, const std::string& message ){
 	if ( error != nullptr ) {
@@ -223,11 +223,21 @@ std::string DimensionsText( const uint32_t dims[3] ){
 	return Str( dims[0] ) + " x " + Str( dims[1] ) + " x " + Str( dims[2] );
 }
 
-// Checks one probe's values, `coeffs` its 27; empty when they are right. The
-// message is the part after "probe i".
-std::string ProbeValueProblem( const float* coeffs, unsigned valid ){
+// Checks one probe's values, `coeffs` its 27 and `visibility` its sky
+// visibility; empty when they are right. The message is the part after
+// "probe i".
+std::string ProbeValueProblem( const float* coeffs, float visibility, unsigned valid ) {
 	if ( valid > 1 ) {
 		return ": valid flag " + Str( valid ) + " is neither 0 nor 1";
+	}
+	if ( !std::isfinite( visibility ) ) {
+		return " sky visibility: non-finite value " + Num( visibility );
+	}
+	if ( !( visibility >= 0.0f && visibility <= 1.0f ) ) {
+		return " sky visibility: " + Num( visibility ) + " outside [0, 1]";
+	}
+	if ( valid == 0 && visibility != 0.0f ) {
+		return " sky visibility: " + Num( visibility ) + " in an invalid probe (valid flag 0), expected 0";
 	}
 	for ( int i = 0; i < c_valuesPerLuxel; ++i ) {
 		const std::string where = " coefficient " + Str( i / 3 ) + " channel " + Str( i % 3 );
@@ -279,11 +289,14 @@ std::string GridProblem( const SHGrid& grid ){
 		return "grid.coeffs: " + have + ", expected " + Str( probes * c_valuesPerLuxel ) + " (" + Str( probes ) + " probes of 27, " +
 		       DimensionsText( dims ) + ")";
 	}
+	if ( grid.visibility.size() != probes ) {
+		return "grid.visibility: " + Str( grid.visibility.size() ) + " values, expected " + Str( probes ) + " (" + DimensionsText( dims ) + ")";
+	}
 	if ( grid.valid.size() != probes ) {
 		return "grid.valid: " + Str( grid.valid.size() ) + " flags, expected " + Str( probes ) + " (" + DimensionsText( dims ) + ")";
 	}
 	for ( size_t i = 0; i < probes; ++i ) {
-		if ( std::string problem = ProbeValueProblem( &grid.coeffs[i * c_valuesPerLuxel], grid.valid[i] ); !problem.empty() ) {
+		if ( std::string problem = ProbeValueProblem( &grid.coeffs[i * c_valuesPerLuxel], grid.visibility[i], grid.valid[i] ); !problem.empty() ) {
 			return "grid probe " + Str( i ) + problem;
 		}
 	}
@@ -375,6 +388,9 @@ std::vector<uint8_t> Serialize( const SHQ3Map2Extension& ext ){
 		PutU32( dim, out );
 	}
 	for ( float value : grid.coeffs ) {
+		PutU32( std::bit_cast<uint32_t>( value ), out );
+	}
+	for ( float value : grid.visibility ) {
 		PutU32( std::bit_cast<uint32_t>( value ), out );
 	}
 	out.insert( out.end(), grid.valid.begin(), grid.valid.end() );
@@ -525,7 +541,7 @@ std::optional<SHQ3Map2Extension> LoadSHQ3Map2Extension( const char* path, std::s
 	in.seek( 4 );
 	const uint32_t version = in.u32();
 	if ( version != c_version ) {
-		return fail( "unknown version " + Str( version ) + " (only version 2 is supported)" );
+		return fail( "unknown version " + Str( version ) + " (only version 3 is supported)" );
 	}
 	const uint64_t page_count = in.u32();
 	const uint64_t hull_count = in.u32();
@@ -690,9 +706,13 @@ std::optional<SHQ3Map2Extension> LoadSHQ3Map2Extension( const char* path, std::s
 	for ( float& value : grid.coeffs ) {
 		value = in.f32();
 	}
+	grid.visibility.resize( probe_count );
+	for ( float& value : grid.visibility ) {
+		value = in.f32();
+	}
 	grid.valid.assign( bytes.end() - probe_count, bytes.end() );
 	for ( uint64_t i = 0; i < probe_count; ++i ) {
-		if ( std::string problem = ProbeValueProblem( &grid.coeffs[i * c_valuesPerLuxel], grid.valid[i] ); !problem.empty() ) {
+		if ( std::string problem = ProbeValueProblem( &grid.coeffs[i * c_valuesPerLuxel], grid.visibility[i], grid.valid[i] ); !problem.empty() ) {
 			return fail( "grid probe " + Str( i ) + problem );
 		}
 	}
