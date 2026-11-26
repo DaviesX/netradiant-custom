@@ -102,9 +102,10 @@ sky becomes a light source. Stage~3 is restructured around that.
 \item[Sky environment light.] Missing in all three tracks until now: the point bake reads no
   environment, the editor preview has only a constant ambient, and sh-renderer's sky term is a flat
   colour times baked visibility. The map's sky shader now emits, with the same derivation as
-  emitters, in the units of §\ref{sec:units}. The indirect bake records only sky visibility, never
-  sky radiance, so \texttt{renderer\_sh} can change the sky without a rebake: it projects the sky to
-  SH at load and multiplies its irradiance by the baked visibility (C6). The full bake adds the
+  emitters, in the units of §\ref{sec:units}. The indirect bake keeps bounced sky light and records the
+  visibility of direct sky light, so \texttt{renderer\_sh} adds the direct term itself: it projects
+  the sky to SH at load and multiplies its irradiance by the baked visibility (C6). (Amended when B11
+  merged; revision 8 had kept all sky radiance out of the indirect bake.) The full bake adds the
   sky's radiance, so the stock lightmap gets direct and bounced sky light (B11 \texttt{sh-baker} PR,
   B12 q3map2). Side file v3 adds visibility per grid probe (B13). The editor preview's sky light is
   unshadowed (A12). Sky still never casts. §\ref{sec:sky}.
@@ -1127,20 +1128,27 @@ q3map2 includes the headers in \texttt{src/} directly and links the \texttt{libs
   Before, the stop's absolute floor ended any point whose per-sample L0 was constant (one lit only
   by unshadowed point lights) at its 64-sample minimum, whatever \texttt{samples} said. The default
   0.01 is unchanged. \emph{Done (\texttt{sh-baker} PR \#68, \texttt{8f181ba}).}
-\item \textbf{Sky radiance in the full bake} (B11, revision 8). When
+\item \textbf{Sky radiance in the point bake} (B11, revision 8). Whenever
   \texttt{Scene::environment} (\texttt{std::optional<Environment>}, \texttt{scene.h:89--114},
-  \texttt{:145--146}) is set and the bake is not \texttt{indirect\_only}, rays that escape, at the
-  baked point and after bounces, return its radiance. \texttt{indirect\_only} bakes never add sky
-  radiance; they keep recording only the escape fraction (environment visibility,
-  \texttt{baker.cpp:202,231}), which is what lets the runtime change the sky. An unset environment
-  gives bit-identical bakes. Coordinated with B7, whose guided sensor rays already include sky
-  escapes. Not started.
+  \texttt{:145--146}) is set, rays that escape return its radiance (\texttt{EvaluateEnvironment} in
+  \texttt{light.h}, the function \texttt{ProjectEnvironmentToSH} integrates, rotated by
+  \texttt{Environment::to\_environment} so a Z-up scene can use it). There is no separate switch:
+  the caller sets or clears the environment. A full bake gets direct and bounced sky light, at the
+  baked point, after bounces and past alpha cut-outs (those need at least one bounce). An
+  \texttt{indirect\_only} bake keeps bounced sky light, sky reached after at least one surface
+  reflection, and drops direct sky light, including sky seen only through cut-outs. Without an
+  environment, SH and irradiance are unchanged; the CLI's glTF scenes gain the loader's derived
+  Preetham sky. The same change makes surface points' visibility cosine-weighted,
+  $\sum e_i\cos\theta_i / \sum\cos\theta_i$, the right weight for the sky's irradiance at the
+  normal; full-sphere points keep the uniform fraction of escapes, cut-outs block, and SH is
+  unchanged by it. B7's guided sensor rays must keep both. \emph{Done (openspec change
+  \texttt{sh-baker-sky-radiance}, \texttt{sh-baker} PRs \#69 and \#70, \texttt{297a88f}).}
 \end{enumerate}
 The existing light types already cover what q3map2 passes in: point, spot, directional and area
 lights; material-less geometry is already a pure occluder. Today the point bake never reads the
 scene's environment (a ray that misses returns zero), so there is no sky light yet, and outdoor
-light comes from \texttt{light\_sun}. Item~9 adds it to the full bake only: sky surfaces still
-never cast, and the indirect bake stays sky-free apart from visibility (§\ref{sec:sky}).
+light comes from \texttt{light\_sun}. Item~9 adds it: direct and bounced sky light in the full
+bake, bounced sky light only in the indirect bake. Sky surfaces still never cast (§\ref{sec:sky}).
 
 \subsection{4.3 \texttt{-shbake} in q3map2}
 
@@ -1158,9 +1166,9 @@ never cast, and the indirect bake stays sky-free apart from visibility (§\ref{s
   shader info: the base-colour image, the \texttt{qer\_pbr\_*} maps and factors (q3map2's shader
   parser learns them), additive stages as emitters. Lights are the editor's \texttt{light},
   \texttt{light\_spot} and \texttt{light\_sun} entities read with the physical model of
-  §\ref{sec:units}, not q3map2's light parsing. With B12 the map's sky shader becomes the full
-  bake's \texttt{Environment}, derived as in the editor; the indirect bake gets none
-  (§\ref{sec:sky}). Occluding surfaces follow the editor's
+  §\ref{sec:units}, not q3map2's light parsing. With B12 the map's sky shader becomes both bakes'
+  \texttt{Environment}, derived as in the editor: the full bake gets direct and bounced sky light,
+  the indirect bake bounced sky light only (§\ref{sec:sky}). Occluding surfaces follow the editor's
   shadow-caster rule (§\ref{sec:rev6}). Every light casts: \texttt{sh-baker} has no per-light shadow
   switch, so point lights and \texttt{\_shadows 0} lights are shadowed too (§\ref{sec:units}).
 \item \textbf{Solid hulls.} q3map2's draw surfaces are thin, and rays can slip through the cracks
@@ -1346,9 +1354,10 @@ never cast, and the indirect bake stays sky-free apart from visibility (§\ref{s
 \item Sky light (C6, needs C3a for the sky images). At load the sky shader is projected to L0--L2
   SH with the editor's derivation; a surface adds that SH's irradiance at its normal times the
   luxel visibility plane, and grid lighting times the probes' visibility (side file v3, B13),
-  interpolated like the SH. The visibility is a scalar fraction of escaped rays, not directional,
-  and the indirect bake carries no sky radiance, so enhanced sky light has no bounce; that is the
-  price of a sky that changes without a rebake.
+  interpolated like the SH. The visibility is a scalar, not directional: cosine-weighted at the
+  luxel's normal, and a uniform fraction of escaped rays at a probe. This is the direct sky term
+  only: bounced sky light is already in the side file's SH (B11, B12), so a runtime sky change
+  moves the direct term at once and the bounce only with a rebake.
 \item Legacy non-PBR levels run on \texttt{opengl2}. The stock fallback uses the full bake's
   lightmap, grid and vertex colours.
 \item Emissive direct light. The indirect bake leaves out direct light from emissive surfaces
@@ -1527,7 +1536,8 @@ One spatial unit is fixed for all consumers: raw map units, as the editor and q3
 
 \section{Sky light (cross-cutting)}\label{sec:sky}
 
-\textbf{Decided (revision 8): the sky emits; the indirect bake stores only its visibility.} Until now no track had sky light. The point bake read
+\textbf{Decided (revision 8, amended when B11 merged): the sky emits; the indirect bake stores its
+bounced light and the visibility of its direct light.} Until now no track had sky light. The point bake read
 no environment, so a ray that escaped returned zero. The editor preview has only the constant
 ``Lighting ambient'' (default 0.02); it draws the sky shader with its skybox program but takes no
 light from it. sh-renderer's term (\texttt{radiance.frag:423--424}) is \texttt{u\_sky\_color}
@@ -1560,20 +1570,24 @@ openspec change and the PRs.
   constant ``Lighting ambient'' stays as it is and adds on top. The town's sky declares
   \texttt{qer\_pbr\_emissiveStrength 14.6}, an open-floor irradiance of half its sun's
   \texttt{intensity 5}. \emph{Done (\texttt{sky-environment-light}).}
-\item \textbf{Indirect bake and runtime} (B13, C6). The indirect bake never adds sky radiance. It
-  records only sky visibility, the fraction of a point's first rays that escape
-  (\texttt{baker.cpp:202,231}): per luxel in the side file's visibility plane (already written),
-  and per grid probe from side file v3 (B13, q3map2 only). Sky surfaces stay non-casting, so rays
+\item \textbf{Indirect bake and runtime} (B12, B13, C6). The indirect bake drops direct sky light
+  and keeps bounced sky light, sky reached after at least one surface reflection (B11 as merged,
+  \texttt{sh-baker} \#69). For the direct term it records sky visibility: per luxel in the side file's visibility plane (already written), the
+  cosine-weighted fraction of the point's first rays that escape, $\sum e_i\cos\theta_i /
+  \sum\cos\theta_i$, which makes the sky's irradiance at the normal times visibility exact for a
+  uniform sky; and per grid probe from side file v3 (B13, q3map2 only), the uniform fraction over
+  the sphere, since a probe has no normal (B11, \texttt{sh-baker} \#70). Sky surfaces stay non-casting, so rays
   pass through the town's low sky ceiling. \texttt{renderer\_sh} projects the sky shader to SH at
   load (C6) and adds its irradiance at the normal times that visibility, replacing sh-renderer's
-  flat term. The sky can change, even per frame, without a rebake. Enhanced sky light is therefore
-  unbounced and its occlusion non-directional; accepted.
+  flat term. The direct term follows a sky change, even per frame; the bounce changes only with a
+  rebake, and the direct term's occlusion is non-directional; accepted. (Until B11 merged the
+  indirect bake was to carry no sky radiance at all, making enhanced sky light unbounced.)
 \item \textbf{Full bake} (B11 \texttt{sh-baker} PR, B12 q3map2; B12 needs A12 for the shared
   derivation). The point bake returns the environment's radiance on rays that escape, at the point
-  and after bounces, unless \texttt{indirect\_only}. \texttt{-shbake} builds the
-  \texttt{Environment} from the sky shader and passes it to the full bake only, so the stock
-  lightmap, vertex colours and grid carry direct and bounced sky light. A sky change needs a rebake
-  for the stock target only. Adding sky light to the lightmap in q3map2 after the bake was rejected:
+  and after bounces, whenever the scene has an environment (B11, done). \texttt{-shbake} builds
+  the \texttt{Environment} from the sky shader and passes it to both bakes, so the stock lightmap,
+  vertex colours and grid carry direct and bounced sky light, and the side file bounced sky light.
+  A sky change needs a rebake for the stock target and for the enhanced target's bounce. Adding sky light to the lightmap in q3map2 after the bake was rejected:
   it would lose the bounce. B12 includes \texttt{libs/skylight.h} rather than reimplementing it, and
   hands \texttt{sh-baker} the radiance $L(\omega)$ (or its texels), never the SH: the truncated SH of
   a cloud layer is negative below the horizon. It must also exclude sky shaders from
@@ -1737,9 +1751,9 @@ Item & Depends on & Note \\
   over the same points, toggled by \texttt{-shnofull} and \texttt{-shnoindirect}: the full bake
   fills the stock lightmap, grid and vertex colours; the indirect bake fills the side file's pages
   and SH grid, beside the hull mesh. Stock check on the single pk3. \\
-4.2 item 9 (B11) & 4.3 & Sky radiance in non-\texttt{indirect\_only} point bakes;
-  \texttt{sh-baker} PR. \\
-Full-bake sky (B12) & B11, A12 & The sky shader's environment in the full bake only. \\
+4.2 item 9 (B11) & 4.3 & Sky radiance in point bakes (bounced only with \texttt{indirect\_only}) and
+  cosine-weighted surface visibility; done, \texttt{sh-baker} PRs \#69 and \#70. \\
+Baked sky (B12) & B11, A12 & The sky shader's environment in both bakes. \\
 Grid sky visibility (B13) & 4.3 & Side file v3. \\
 4.4 SH at runtime (C6) & C4b, C3a & Indirect only: luxel SH on surfaces, the SH grid on dynamic
   models and vertex-lit surfaces; sky SH from the sky shader times baked visibility. \\
