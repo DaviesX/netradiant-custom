@@ -1,7 +1,7 @@
 # sky-environment-light Specification
 
 ## Purpose
-Defines how a Quake 3 map's sky shader becomes an environment light: which sky shader counts, its radiance in the physical light units, and its L0–L2 spherical-harmonic radiance and irradiance. The editor preview uses it today, and the full bake (B12) and `renderer_sh` (C6) reuse it.
+Defines how a Quake 3 map's sky shader becomes an environment light: which sky shader counts, its radiance in the physical light units, and its L0–L2 spherical-harmonic radiance and irradiance. The editor preview and both of q3map2's `-shbake` bakes (B12) use it, and `renderer_sh` (C6) reuses it.
 
 ## Requirements
 
@@ -99,7 +99,12 @@ The gamepack README SHALL describe:
 - the sky light: which shader counts, the radiance formula, and the farbox face mapping, including the texel orientation within each face;
 - the cloud-layer hemisphere (the sky stage only), the SH basis, order and constants, and the convolution;
 - that bakes and other radiance consumers use L(ω), not the SH, and that `surfaceparm sky` without `skyparms` gives no sky light;
-- that q3map2 still treats a sky with an additive stage and a strength as an emitter until B12 excludes sky shaders;
+- how q3map2's `-shbake` uses it:
+  - which sky it chooses from the BSP;
+  - that both bakes get L(ω) as sampled texels, the full bake keeping direct and bounced sky light and the side file only bounced sky light, with `renderer_sh` adding the direct sky;
+  - that sky shaders are never emitters in the bake;
+  - the summary line and its cross-check;
+  - that a change to the sky needs a rebake for its bounce;
 - the "Lighting sky" preference and the overlighting of interiors in the editor.
 
 The description SHALL be complete enough to reimplement the derivation without reading the editor's code.
@@ -107,3 +112,7 @@ The description SHALL be complete enough to reimplement the derivation without r
 #### Scenario: README section
 - **WHEN** the gamepack README is read
 - **THEN** it has a sky light section with each item above, and the town's strength is worked through as an example
+
+#### Scenario: No stale caveat
+- **WHEN** the gamepack README's sky light section is read after this change
+- **THEN** it no longer says that q3map2 ignores the sky light or treats a sky's additive stage as an emitter
