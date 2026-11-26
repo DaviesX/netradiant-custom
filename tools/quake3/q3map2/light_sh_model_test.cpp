@@ -14,6 +14,7 @@
 
 #include "light_sh_model.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <limits>
@@ -533,6 +534,215 @@ void TestEmissive(){
 	// the additive lightmap pass alone isn't emission, though the shader is additive
 	const ShMaterialRules lm = ShDeriveMaterial( Shader( { Stage( "$lightmap", { "add" } ) } ) );
 	CHECK( lm.additive && !lm.emits() );
+
+	// openspec change q3map2-sky-environment: a skyparms shader never emits, even with an additive stage and a strength
+	ShShaderDesc sky = Shader( { Stage( "textures/sky/clouds" ), Stage( "textures/sky/clouds2", { "add" } ) } );
+	sky.emissiveStrength = 4;
+	sky.parms.skyParms = true;
+	sky.parms.sky = true;
+	const ShMaterialRules skyRules = ShDeriveMaterial( sky );
+	CHECK( skyRules.emissiveStage == -1 && !skyRules.emits() && !skyRules.casts );
+	sky.stages = { Stage( "textures/sky/clouds", { "add" } ) };
+	CHECK( !ShDeriveMaterial( sky ).emits() );
+	// surfaceparm sky without skyparms keeps the rule
+	sky.parms.skyParms = false;
+	sky.stages = { Stage( "textures/sky/clouds" ), Stage( "textures/sky/clouds2", { "add" } ) };
+	const ShMaterialRules holeRules = ShDeriveMaterial( sky );
+	CHECK( holeRules.emissiveStage == 1 && holeRules.emits() && !holeRules.casts );
+}
+
+// --- 8. Sky environment light (openspec change q3map2-sky-environment) -------
+
+void TestSkySource() {
+	ShStage clouds = Stage( "textures/town/sky" );
+	ShShaderDesc shader = Shader( { clouds } );
+	shader.name = "textures/town/sky";
+	// a cloud layer (skyparms -): no farbox, the first stage is the sky stage, white without rgbGen const
+	skylight::SkySource s = ShSkySource( shader );
+	CHECK( s.name == "textures/town/sky" && s.farbox.empty() && s.stageImage == "textures/town/sky" );
+	CHECK_VEC_NEAR( s.stageColour, 1, 1, 1, 0 );
+	// no strength declared: emits nothing, even though the description's default value is 1
+	CHECK( !s.hasStrength && skylight::EffectiveStrength( s ) == 0 );
+	shader.emissiveStrengthDeclared = true;
+	shader.emissiveStrength = 0;
+	CHECK( skylight::EffectiveStrength( ShSkySource( shader ) ) == 0 );
+	shader.emissiveStrength = 14.6f;
+	s = ShSkySource( shader );
+	CHECK( s.hasStrength );
+	CHECK_NEAR( skylight::EffectiveStrength( s ), 14.6, 1e-6 );
+	// a farbox, kept as written; `full` is a farbox named full, as in the editor
+	shader.skyFarbox = "env/xnight2";
+	CHECK( ShSkySource( shader ).farbox == "env/xnight2" );
+	shader.skyFarbox = "full";
+	CHECK( ShSkySource( shader ).farbox == "full" );
+	// $lightmap and rend2 stages are skipped; the sky stage's rgbGen const is C
+	ShStage rend2 = Stage( "textures/sky/rend2" );
+	rend2.rend2 = true;
+	ShStage coloured = Stage( "textures/sky/clouds" );
+	coloured.constColour = true;
+	coloured.colour = Vector3( 1, 0.5f, 0.25f );
+	shader.stages = { Stage( "$lightmap" ), rend2, coloured, Stage( "textures/sky/second", { "add" } ) };
+	s = ShSkySource( shader );
+	CHECK( s.stageImage == "textures/sky/clouds" );
+	CHECK_VEC_NEAR( s.stageColour, 1, 0.5, 0.25, 1e-7 );
+	// no stage with a map: no sky stage
+	shader.stages = { Stage( "$lightmap" ) };
+	CHECK( ShSkySource( shader ).stageImage.empty() );
+}
+
+/// one face image of a uniform sRGB byte value
+struct FaceImage
+{
+	std::vector<std::uint8_t> pixels;
+	skylight::ImageRGBA8 view( int size, std::uint8_t value ) {
+		pixels.assign( std::size_t( size ) * size * 4, value );
+		for ( std::size_t i = 3; i < pixels.size(); i += 4 ) pixels[i] = 255;
+		skylight::ImageRGBA8 v;
+		v.width = v.height = size;
+		v.pixels = pixels.data();
+		return v;
+	}
+};
+
+/// the texture integrated with its texels' exact solid angles, projected to SH in world space
+skylight::SHCoeffs ProjectTexture( const std::vector<float>& texels ) {
+	skylight::SHCoeffs c = skylight::SHZero();
+	const double dphi = 2.0 * c_pi / c_shSkyWidth;
+	for ( int y = 0; y < c_shSkyHeight; ++y ) {
+		const double w = dphi * ( std::cos( y * c_pi / c_shSkyHeight ) - std::cos( ( y + 1 ) * c_pi / c_shSkyHeight ) );
+		for ( int x = 0; x < c_shSkyWidth; ++x ) {
+			const float* t = texels.data() + ( std::size_t( y ) * c_shSkyWidth + x ) * 3;
+			const std::array<double, 9> basis = skylight::SHBasis( ShSkyTexelDirection( x + 0.5, y + 0.5 ) );
+			for ( int k = 0; k < 9; ++k ) c[k] += skylight::Vec3( t[0], t[1], t[2] ) * ( basis[k] * w );
+		}
+	}
+	return c;
+}
+
+/// the same projection in the texture frame, as sh-baker's ProjectLatLongMap computes it
+skylight::SHCoeffs ProjectTextureFrame( const std::vector<float>& texels ) {
+	skylight::SHCoeffs c = skylight::SHZero();
+	const double dphi = 2.0 * c_pi / c_shSkyWidth, dtheta = c_pi / c_shSkyHeight;
+	for ( int y = 0; y < c_shSkyHeight; ++y ) {
+		const double theta = ( y + 0.5 ) * dtheta, w = dphi * dtheta * std::sin( theta );
+		for ( int x = 0; x < c_shSkyWidth; ++x ) {
+			const double phi = ( x + 0.5 ) * dphi;
+			const skylight::Vec3 dir( std::sin( theta ) * std::sin( phi ), std::cos( theta ), std::sin( theta ) * std::cos( phi ) );
+			const float* t = texels.data() + ( std::size_t( y ) * c_shSkyWidth + x ) * 3;
+			const std::array<double, 9> basis = skylight::SHBasis( dir );
+			for ( int k = 0; k < 9; ++k ) c[k] += skylight::Vec3( t[0], t[1], t[2] ) * ( basis[k] * w );
+		}
+	}
+	return c;
+}
+
+/// the texel nearest the unit world direction d
+const float* TexelAt( const std::vector<float>& texels, const skylight::Vec3& d ) {
+	const double theta = std::acos( std::clamp( d[2], -1.0, 1.0 ) );
+	double phi = std::atan2( d[1], d[0] );
+	if ( phi < 0 ) phi += 2.0 * c_pi;
+	const int y = std::clamp( int( theta / c_pi * c_shSkyHeight ), 0, c_shSkyHeight - 1 );
+	const int x = std::clamp( int( phi / ( 2.0 * c_pi ) * c_shSkyWidth ), 0, c_shSkyWidth - 1 );
+	return texels.data() + ( std::size_t( y ) * c_shSkyWidth + x ) * 3;
+}
+
+/// the largest irradiance difference at the six axes, over the largest derivation irradiance
+double IrradianceError( const skylight::SHCoeffs& derived, const skylight::SHCoeffs& texture ) {
+	double largest = 0, error = 0;
+	for ( int axis = 0; axis < 6; ++axis ) {
+		skylight::Vec3 n( 0, 0, 0 );
+		n[axis / 2] = axis % 2 == 0 ? 1 : -1;
+		const skylight::Vec3 a = skylight::Irradiance( derived, n ), b = skylight::Irradiance( texture, n );
+		for ( int c = 0; c < 3; ++c ) {
+			largest = std::max( largest, a[c] );
+			error = std::max( error, std::fabs( a[c] - b[c] ) );
+		}
+	}
+	return error / largest;
+}
+
+void TestSkyEquirect() {
+	// the frame: a proper rotation taking world +Z to the texture's +Y
+	double det = 0;
+	const auto& m = c_shSkyToEnvironment;
+	det = m[0][0] * ( m[1][1] * m[2][2] - m[1][2] * m[2][1] ) - m[0][1] * ( m[1][0] * m[2][2] - m[1][2] * m[2][0] )
+	    + m[0][2] * ( m[1][0] * m[2][1] - m[1][1] * m[2][0] );
+	CHECK_NEAR( det, 1, 0 );
+	CHECK( m[1][2] == 1 );
+	// texel directions: row 0 at the zenith, column 0 starting at +X, columns towards +Y
+	CHECK_VEC_NEAR( ShSkyTexelDirection( 0, 0 ), 0, 0, 1, 1e-12 );
+	CHECK_VEC_NEAR( ShSkyTexelDirection( 0, c_shSkyHeight / 2 ), 1, 0, 0, 1e-12 );
+	CHECK_VEC_NEAR( ShSkyTexelDirection( c_shSkyWidth / 4, c_shSkyHeight / 2 ), 0, 1, 0, 1e-12 );
+
+	skylight::SkySource source;
+	source.hasStrength = true;
+	source.strength = 2;
+	source.stageColour = skylight::Vec3( 1, 0.5, 0.25 );
+
+	// an _rt-only farbox (non-black on +X): the texels at +X hold it, those at +Y, -Y and the zenith are black
+	{
+		FaceImage images[6];
+		std::array<skylight::ImageRGBA8, skylight::c_faceCount> faces;
+		for ( int f = 0; f < 6; ++f ) faces[f] = images[f].view( 64, f == skylight::c_faceRt ? 188 : 0 );
+		const skylight::SkyRadiance sky = skylight::FarboxRadiance( source, faces );
+		const std::vector<float> tex = ShSkyEquirect( sky );
+		CHECK_EQ_INT( long( tex.size() ), long( c_shSkyWidth ) * c_shSkyHeight * 3 );
+		const double L = 2 * skylight::SrgbToLinear( 188 / 255.0 );
+		const float* px = TexelAt( tex, skylight::Vec3( 1, 0, 0 ) );
+		CHECK_NEAR( px[0], L, 1e-5 );
+		CHECK_NEAR( px[1], L * 0.5, 1e-5 );
+		CHECK_NEAR( px[2], L * 0.25, 1e-5 );
+		CHECK_NEAR( TexelAt( tex, skylight::Vec3( 0, 1, 0 ) )[0], 0, 0 );
+		CHECK_NEAR( TexelAt( tex, skylight::Vec3( 0, -1, 0 ) )[0], 0, 0 );
+		CHECK_NEAR( TexelAt( tex, skylight::Vec3( 0, 0, 1 ) )[0], 0, 0 );
+		CHECK_NEAR( TexelAt( tex, skylight::Vec3( -1, 0, 0 ) )[0], 0, 0 );
+		const skylight::SHCoeffs derived = skylight::ProjectRadiance( sky );
+		CHECK( IrradianceError( derived, ProjectTexture( tex ) ) < 0.005 );
+		CHECK( ShSkyCheckError( derived, ProjectTextureFrame( tex ) ) < 0.005 );
+		const skylight::Vec3 ex = skylight::Irradiance( derived, skylight::Vec3( 1, 0, 0 ) );
+		const skylight::Vec3 emx = skylight::Irradiance( derived, skylight::Vec3( -1, 0, 0 ) );
+		CHECK( ex[0] > emx[0] );
+	}
+	// the up face alone (and a _dn-only farbox, lit from below: no spurious error), a uniform farbox
+	for ( const int lit : { int( skylight::c_faceUp ), int( skylight::c_faceDn ), -1 } ) {
+		FaceImage images[6];
+		std::array<skylight::ImageRGBA8, skylight::c_faceCount> faces;
+		for ( int f = 0; f < 6; ++f ) faces[f] = images[f].view( 32 + 16 * f, lit < 0 || f == lit ? 200 : 0 );
+		const skylight::SkyRadiance sky = skylight::FarboxRadiance( source, faces );
+		const std::vector<float> tex = ShSkyEquirect( sky );
+		const skylight::SHCoeffs derived = skylight::ProjectRadiance( sky );
+		CHECK_MSG( IrradianceError( derived, ProjectTexture( tex ) ) < 0.005, std::to_string( lit ) );
+		CHECK_MSG( ShSkyCheckError( derived, ProjectTextureFrame( tex ) ) < 0.005, std::to_string( lit ) );
+		if ( lit == skylight::c_faceUp ) {
+			CHECK( TexelAt( tex, skylight::Vec3( 0, 0, 1 ) )[0] > 0 && TexelAt( tex, skylight::Vec3( 0, 0, -1 ) )[0] == 0 );
+		}
+	}
+	// a cloud layer: every row above the horizon is its radiance, every row below 0
+	{
+		FaceImage image;
+		const skylight::SkyRadiance sky = skylight::CloudRadiance( source, image.view( 16, 188 ) );
+		const std::vector<float> tex = ShSkyEquirect( sky );
+		const double L = 2 * skylight::SrgbToLinear( 188 / 255.0 );
+		bool rowsExact = true;
+		for ( int y = 0; y < c_shSkyHeight; ++y )
+			for ( int x = 0; x < c_shSkyWidth; ++x ) {
+				const float* t = tex.data() + ( std::size_t( y ) * c_shSkyWidth + x ) * 3;
+				const skylight::Vec3 expect = y < c_shSkyHeight / 2 ? skylight::Vec3( L, L * 0.5, L * 0.25 ) : skylight::Vec3( 0, 0, 0 );
+				for ( int c = 0; c < 3; ++c ) rowsExact = rowsExact && t[c] == float( expect[c] );
+			}
+		CHECK( rowsExact );
+		const skylight::SHCoeffs derived = skylight::ProjectRadiance( sky );
+		CHECK( IrradianceError( derived, ProjectTexture( tex ) ) < 0.005 );
+		CHECK( ShSkyCheckError( derived, ProjectTextureFrame( tex ) ) < 0.005 );
+	}
+	// the check itself: a wrong frame (world coefficients read as texture-frame ones) is caught
+	{
+		FaceImage image;
+		const skylight::SkyRadiance sky = skylight::CloudRadiance( source, image.view( 4, 188 ) );
+		const skylight::SHCoeffs derived = skylight::ProjectRadiance( sky );
+		CHECK( ShSkyCheckError( derived, derived ) > 0.1 );
+		CHECK_NEAR( ShSkyCheckError( skylight::SHZero(), skylight::SHZero() ), 0, 0 );
+	}
 }
 
 // --- 4.4 SH, encoding, grid, alpha, UVs -------------------------------------
@@ -937,6 +1147,8 @@ int main(){
 		{ "AreaRect", TestAreaRect },
 		{ "AreaRectAttached", TestAreaRectAttached },
 		{ "ProxyAttached", TestProxyAttached },
+		{ "SkySource", TestSkySource },
+		{ "SkyEquirect", TestSkyEquirect },
 	};
 	for ( const auto& test : tests ) {
 		g_test = test.name;

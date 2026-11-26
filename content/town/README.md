@@ -147,9 +147,16 @@ for `E = (1.518, 2.499, 2.006)` on an open floor. A facade gets half that, a cei
 it against the committed `sky.tga` and `town1_lights.json` ("Half the sun"). Change the strength whenever the sun's
 `intensity` changes.
 
-The sky light changes nothing else: the image, the stages, `skyparms` and the fog colour are as before, so the stock
-look and the fog seam are unchanged, and since the shader has no additive stage, q3map2 `-shbake` doesn't take it for
-an emitter.
+The sky shader's image, stages, `skyparms` and fog colour are as before, so the fog seam is unchanged. The stock
+lightmap is not: since B12 (openspec change `q3map2-sky-environment`) `-shbake` bakes the sky, direct and bounced, into
+the lightmap, vertex colours and grid, and its bounce into the side file. Measured at the draft defaults against the
+bake before B12, the lightmap's luxels that see the sky over more than half their cosine-weighted hemisphere went
+from a mean byte of 25.9 to 35.4 (of 64), those seeing some sky from 15.1 to 24.7, and those seeing none from 9.0 to
+9.4 (bounced sky only). On the 66 luxels with a visibility above 0.9 the full bake's green irradiance went from a mean
+of 2.37 to 4.68, while their side-file L0 stays under 1% of it: the side file holds no direct sky. In opengl1 the stock check's views show it:
+in `crossroads` and `street` the facades in the sun's shade, near black before, now read as brick under the sky, and
+`sw-room` is unchanged away from its doorway. A9 judges the result. A sky shader is never an emitter in the bake,
+whatever its stages.
 
 The editor preview has no sky visibility, so it lights every interior as if it were open to the sky. Make interior
 preview checks (the unlit SW room being dark away from its doorway, the sealed rooms under their own lights) with the

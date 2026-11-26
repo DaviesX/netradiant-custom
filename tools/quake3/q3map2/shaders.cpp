@@ -908,7 +908,7 @@ static void ShaderSH_pbrKeyword( shaderSH_t& sh, const char *keyword, const std:
 		sh.pbrMetallicFactorSet |= number( sh.pbrMetallicFactor );
 	}
 	else if ( striEqual( keyword, "qer_pbr_emissiveStrength" ) ) {
-		number( sh.pbrEmissiveStrength );
+		sh.pbrEmissiveStrengthSet |= number( sh.pbrEmissiveStrength );
 	}
 	else if ( striEqual( keyword, "qer_pbr_baseColorFactor" ) ) {
 		float c[ 3 ];
@@ -1195,6 +1195,9 @@ static void ParseShaderFile( const char *filename ){
 
 				/* get image base */
 				text.GetToken( false );
+
+				/* -shbake's sky light: the editor's farbox, every token but - (openspec change q3map2-sky-environment) */
+				si.sh.skyFarbox = strEqual( token, "-" ) ? "" : token;
 
 				/* ignore bogus paths */
 				if ( !strEqual( token, "-" ) && !striEqual( token, "full" ) ) {

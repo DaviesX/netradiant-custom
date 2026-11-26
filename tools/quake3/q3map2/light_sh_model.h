@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "math/vector.h"
+#include "skylight.h"
 
 /*
    Every rule here is a port of the editor (or of the engine, for the grid), so
@@ -89,6 +90,10 @@
         or GL_SRC_ALPHA, i.e. `add`), has a map, and isn't `$lightmap`,
         `$whiteimage` or `tcGen environment`. Its colour is its `rgbGen const`,
         else white; its strength is `qer_pbr_emissiveStrength` (default 1).
+        A shader with skyparms has no emissive (openspec change
+        q3map2-sky-environment, design decision 7): its light is the sky
+        environment light of section 8, so an additive cloud stage never makes
+        it an area light. `surfaceparm sky` without skyparms keeps the rule.
       - Alpha test: the base stage's alphaFunc (GT0, LT128, GE128).
       - Additive (sh-baker Material::additive: emits, never occludes): every
         stage adds, and there is at least one stage. An opaque base with an
@@ -185,6 +190,35 @@
         ceiling to 4 * 64 into directed light (18); the neutral has none, so
         no direction is favoured. Models then show at the engine's ambient
         ceiling, about 183/255; the ambient-1 rule doesn't apply.
+
+   8. Sky environment light (openspec change q3map2-sky-environment; the
+      derivation is libs/skylight.h, the editor's radiant/skyenvironment.cpp
+      and plugins/shaders/shaders.cpp are the reference for the shader data).
+      - Sky source: the shader's name; its farbox, the skyparms first token
+        unless it is `-`, kept as written (so `full` is a farbox named
+        "full", as in the editor); the sky stage, the first stage with a map
+        (rend2 stages have none) that isn't `$lightmap`, and its `rgbGen
+        const` or white; and whether `qer_pbr_emissiveStrength` was declared,
+        with its value. skylight::EffectiveStrength decides whether it emits.
+      - Equirect texture: sh-baker's Environment::Texture layout, W x H =
+        1024 x 512 RGB floats, row 0 at the zenith, texel (x, y) at index
+        (y W + x) 3. Texel (x, y) spans theta in [y, y + 1] pi / H from the
+        texture's +Y and phi in [x, x + 1] 2 pi / W, its texture direction
+        being (sin theta sin phi, cos theta, sin theta cos phi). The texture
+        frame is the world turned by c_shSkyToEnvironment, whose rows are
+        (0 1 0), (0 0 1), (1 0 0): texture (x, y, z) = world (y, z, x), so
+        world +Z is up, theta is measured from world +Z and phi = atan2(y, x)
+        is the map azimuth from +X. Each texel is the mean of L over a 4 x 4
+        grid of (theta, phi) sub-positions at sub-cell centres, weighted by
+        sin theta. H is even, so a cloud layer's horizon falls on a row
+        boundary and every row of it is exactly its radiance or 0.
+      - Cross-check: the texture's irradiance, from its SH in the texture
+        frame (sh-baker's ProjectEnvironmentToSH), evaluated at the texture
+        direction of each world axis n in +-X, +-Y, +-Z, against the
+        derivation's skylight::Irradiance( ProjectRadiance, n ). The error is
+        the largest channel difference over the six, divided by the largest
+        channel of the derivation's six irradiances (0 when that is 0); the
+        glue warns above 1%.
 */
 
 /// Real SH coefficients, l <= 2, in sh-baker's order, one RGB triple each.
@@ -352,6 +386,8 @@ struct ShShaderDesc
 	std::vector<ShStage> stages;
 	Vector3 baseColorFactor = Vector3( 1, 1, 1 ); ///< qer_pbr_baseColorFactor
 	float emissiveStrength = 1;    ///< qer_pbr_emissiveStrength
+	bool emissiveStrengthDeclared = false; ///< qer_pbr_emissiveStrength was given
+	std::string skyFarbox;                 ///< skyparms' first token unless it is `-`; "" otherwise
 };
 
 /// \brief What the bake takes from a shader.
@@ -453,3 +489,22 @@ ShGridFit ShGridNeutralFit();
 float ShGridRealisedAmbient( int ambientByte );
 /// \brief opengl1's colour (post-shift, 0..255) of a model face looking straight at the grid direction.
 float ShGridRealisedLit( int ambientByte, int directedByte );
+
+// --- 8. Sky environment light ----------------------------------------------
+
+constexpr int c_shSkyWidth = 1024;
+constexpr int c_shSkyHeight = 512;
+constexpr int c_shSkySubsamples = 4; ///< per axis, per texel
+/// rows of sh-baker's Environment::to_environment: texture = c_shSkyToEnvironment x world
+constexpr float c_shSkyToEnvironment[3][3] = { { 0, 1, 0 }, { 0, 0, 1 }, { 1, 0, 0 } };
+
+/// \brief The sky data of a shader as skylight.h takes it (rule 8).
+skylight::SkySource ShSkySource( const ShShaderDesc& shader );
+/// \brief The unit world direction at continuous texel coordinates ( \p x, \p y ) of the equirect texture (a texel's centre is
+/// ( x + 0.5, y + 0.5 )).
+skylight::Vec3 ShSkyTexelDirection( double x, double y );
+/// \brief \p sky resampled into the equirect texture: c_shSkyWidth * c_shSkyHeight * 3 floats (rule 8).
+std::vector<float> ShSkyEquirect( const skylight::SkyRadiance& sky );
+/// \brief The cross-check error of rule 8: \p textureFrame is the texture's L0-L2 radiance SH in the texture frame,
+/// \p derived the derivation's in world space.
+double ShSkyCheckError( const skylight::SHCoeffs& derived, const skylight::SHCoeffs& textureFrame );

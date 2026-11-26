@@ -340,7 +340,7 @@ brighter than the face. An area light has neither gap, which is why flat rectang
 ## Sky light
 
 The map's sky shader is an environment light in the same units as the light entities (openspec change
-`sky-environment-light`). The editor preview uses it now; both `-shbake` bakes (task B12) and `renderer_sh` (task C6) reuse
+`sky-environment-light`). The editor preview and both `-shbake` bakes (task B12, openspec change `q3map2-sky-environment`) use it, and `renderer_sh` (task C6) will reuse
 the same derivation, which lives in `libs/skylight.h` (header-only, tested by `make test-sky-light`). This section is
 complete enough to reimplement it without reading that code.
 
@@ -419,7 +419,7 @@ E(n) = Σ Â_l L_lm Y_lm(n),   Â₀ = π, Â₁ = 2π/3, Â₂ = π/4,   each c
 For a cloud layer this is exact: `E(+Z) = πℒ`, `E` at any horizontal normal `πℒ/2`, `E(−Z) = 0`. A uniform sphere of
 radiance `L` gives `E = πL` for every normal.
 
-The SH is for irradiance only. Anything that needs the radiance in a direction (the bakes' escaping rays in B12)
+The SH is for irradiance only. Anything that needs the radiance in a direction (the bakes' escaping rays, "q3map2" below)
 uses `L(ω)` itself, never the truncated SH radiance, which for a cloud layer is `ℒ/2 + ¾ℒz`: −ℒ/4 straight down.
 
 ### In the editor preview
@@ -443,11 +443,38 @@ off for interior work; nothing else changes. The engine fixes this with the bake
 
 ### q3map2
 
-q3map2 does not read the sky light yet; B12 gives it the derivation, for both bakes (the side file keeps bounced sky light; `renderer_sh` adds the direct sky). Until then one caveat
-holds: `-shbake`'s emissive rule takes a shader's first additive stage as its emitter and doesn't exclude sky
-shaders, so a sky with an additive cloud stage and a `qer_pbr_emissiveStrength` counts as an unattached emitter and
-gets the warning. A sky without an additive stage, like the town's, is unaffected. B12 excludes sky shaders from that
-rule.
+`q3map2 -light -shbake` lights both bakes from the sky (openspec change `q3map2-sky-environment`):
+
+- **Which sky.** The candidates are the shaders in the BSP's shader list that declare `skyparms`, chosen as above
+  (alphabetically first, one warning naming all of them when there are several). The BSP's list differs from the
+  editor's brush faces and patches in three rare cases: a sky shader used only on a `misc_model`'s surfaces is a
+  candidate in q3map2 and not in the editor; a shader whose only faces q3map2 culled is not in q3map2's list; and a sky
+  shader used only by surfaces copied into a `_skybox` portal is a candidate, though the bake leaves those copies out.
+- **No sky light** when there is no candidate, when the sky has no positive `qer_pbr_emissiveStrength` (nothing is
+  loaded then, so a legacy sky never warns about its images), or when a farbox face or the cloud image fails to load
+  (one warning naming it). Such a map bakes exactly as before.
+- **Sampled texels.** The bakes get `L(ω)` itself, never the SH. q3map2 samples it into sh-baker's equirectangular
+  environment: 1024 × 512 RGB floats, row 0 at the zenith, column 0 starting at +X and increasing towards +Y (θ from
+  +Z, φ = atan2(y, x), texel centres at half-integers), each texel the sin θ-weighted mean of a 4 × 4 grid of
+  sub-positions. The horizon falls on a row boundary, so a cloud layer's rows are exact; sh-baker filters the texture
+  bilinearly, which smears the horizon by ±0.18°.
+- **What each bake keeps.** An escaping ray returns the sky's radiance. The full bake (the stock lightmap, vertex
+  colours and grid) gets direct and bounced sky light. The indirect bake (the side file) keeps only bounced sky
+  light, sky reached after at least one surface reflection; `renderer_sh` adds the direct sky as the sky's
+  irradiance at the normal times the side file's visibility (C6). A change to the sky therefore needs a rebake for
+  its bounce. Sky surfaces stay non-casting and out of the bake, so rays leave through a low sky ceiling as the stock
+  engine draws it.
+- **No sky emitters.** A shader that declares `skyparms` is never an emitter in the bake, whatever its stages: a
+  sky's additive cloud layer no longer becomes an area light. A shader with `surfaceparm sky` but no `skyparms` keeps
+  the emissive rule.
+- **The summary line.** `ShBuildScene` prints the sky, its kind and strength, its irradiance at +Z from the
+  derivation and the same irradiance from sh-baker's own projection of the sampled texture, with the largest
+  difference at ±X, ±Y and ±Z as a fraction of the largest of the derivation's six irradiances. Above 1% it warns: the
+  sampling or its frame would be wrong. For the town it reads
+
+  ```
+  sky textures/town/sky (cloud layer, strength 14.6): irradiance at +Z 1.5184 2.4989 2.0060; sampled 1024 x 512: 1.5183 2.4994 2.0063 (0.023% off at most)
+  ```
 
 ### Worked example: the town
 
@@ -811,11 +838,11 @@ the same points (super-luxels, one point per light-grid point, draw vertices):
 
 | Bake | Light at the baked point | Writes | Read by |
 |---|---|---|---|
-| full | direct plus indirect | the BSP lightmap pages, vertex colours and light grid | stock ioquake3 |
-| indirect | indirect only, no direct light (punctual or emissive) | the side file `maps/<name>/<name>.shsf`: SH pages, solid hull mesh, SH grid | `renderer_sh` |
+| full | direct plus indirect, sky included | the BSP lightmap pages, vertex colours and light grid | stock ioquake3 |
+| indirect | indirect only, no direct light (punctual, emissive or sky) | the side file `maps/<name>/<name>.shsf`: SH pages, solid hull mesh, SH grid | `renderer_sh` |
 
 `renderer_sh` computes direct light at runtime from the light entities, so the side file holds only what they
-bounce, plus bounced sky light once B12 gives the bakes the sky (`renderer_sh` adds the direct sky). Each bake costs about the same; the default runs both. On the benchmark each takes under a second at the
+bounce, plus bounced sky light ("q3map2" under "Sky light"; `renderer_sh` adds the direct sky). Each bake costs about the same; the default runs both. On the benchmark each takes under a second at the
 defaults (41939 points); "Quality presets" above gives the times of the three Town builds.
 
 ### Options

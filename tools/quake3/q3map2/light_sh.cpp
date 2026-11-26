@@ -18,6 +18,7 @@
 
 #include <cmath>
 #include <map>
+#include <optional>
 #include <random>
 #include <set>
 
@@ -117,6 +118,8 @@ static ShShaderDesc ShShaderDescFor( const shaderInfo_t& si ){
 	desc.stages = si.sh.stages;
 	desc.baseColorFactor = si.sh.pbrBaseColorFactor;
 	desc.emissiveStrength = si.sh.pbrEmissiveStrength;
+	desc.emissiveStrengthDeclared = si.sh.pbrEmissiveStrengthSet;
+	desc.skyFarbox = si.sh.skyFarbox;
 	return desc;
 }
 
@@ -692,6 +695,103 @@ static void ShWarnEntityKeys( ShUnsupported& unsupported ){
    draw surfaces, the brush hulls, then the lights, and prints its counts
  */
 
+/* the sky environment light (openspec change q3map2-sky-environment): the map's sky shader by the
+   editor's rule, its radiance L(w) from libs/skylight.h, resampled into sh-baker's equirect texture
+   (light_sh_model rule 8) and cross-checked through sh-baker's own projection. Both bakes read it:
+   the full bake keeps direct and bounced sky light, the indirect bake only the bounced */
+static void ShAddSky( ShBakeScene& bake ) {
+	std::vector<std::string> names;
+	for ( const bspShader_t& shader : bspShaders ) {
+		if ( ShaderInfoForShader( shader.shader ).sh.parms.skyParms ) {
+			names.push_back( shader.shader );
+		}
+	}
+	const std::vector<std::string> candidates = skylight::SortCandidates( std::move( names ) );
+	const std::optional<std::string> chosen = skylight::ChooseSky( candidates );
+	if ( !chosen ) {
+		Sys_Printf( "%9s no sky shader: no sky light\n", "" );
+		return;
+	}
+	if ( candidates.size() > 1 ) {
+		std::string list;
+		for ( const std::string& candidate : candidates )
+			list += ( list.empty() ? "" : ", " ) + candidate;
+		Sys_Warning( "-shbake: the map uses %zu sky shaders (%s); the sky light uses %s\n", candidates.size(), list.c_str(), chosen->c_str() );
+	}
+
+	const skylight::SkySource source = ShSkySource( ShShaderDescFor( ShaderInfoForShader( chosen->c_str() ) ) );
+	if ( skylight::EffectiveStrength( source ) <= 0 ) {
+		/* a legacy sky: nothing is loaded, so its images can't warn */
+		Sys_Printf( "%9s sky %s has no positive qer_pbr_emissiveStrength: no sky light\n", "", chosen->c_str() );
+		return;
+	}
+
+	/* q3map2's image cache keeps every image for the whole run, so SkyRadiance may borrow them */
+	const auto view = []( const char* name ) -> std::optional<skylight::ImageRGBA8> {
+		const image_t* image = strEmpty( name ) ? nullptr : ImageLoad( name );
+		if ( image == nullptr || image->pixels == nullptr || image->width <= 0 || image->height <= 0 ) {
+			return std::nullopt;
+		}
+		skylight::ImageRGBA8 v;
+		v.width = image->width;
+		v.height = image->height;
+		v.pixels = image->pixels;
+		return v;
+	};
+	skylight::SkyRadiance sky;
+	const char* kind;
+	if ( !source.farbox.empty() ) {
+		std::array<skylight::ImageRGBA8, skylight::c_faceCount> faces;
+		for ( int face = 0; face < skylight::c_faceCount; ++face ) {
+			const auto name = StringStream( source.farbox.c_str(), '_', skylight::FaceSuffix( face ) );
+			const std::optional<skylight::ImageRGBA8> image = view( name );
+			if ( !image ) {
+				Sys_Warning( "-shbake: sky shader %s: farbox %s has no image %s; the map has no sky light\n", chosen->c_str(), source.farbox.c_str(), name.c_str() );
+				return;
+			}
+			faces[face] = *image;
+		}
+		sky = skylight::FarboxRadiance( source, faces );
+		kind = "farbox";
+	}
+	else {
+		const std::optional<skylight::ImageRGBA8> image = view( source.stageImage.c_str() );
+		if ( !image ) {
+			Sys_Warning( "-shbake: sky shader %s: cloud image \"%s\" not found; the map has no sky light\n", chosen->c_str(), source.stageImage.c_str() );
+			return;
+		}
+		sky = skylight::CloudRadiance( source, *image );
+		kind = "cloud layer";
+	}
+
+	sh_baker::Environment env;
+	env.type = sh_baker::Environment::Type::Texture;
+	env.texture.width = c_shSkyWidth;
+	env.texture.height = c_shSkyHeight;
+	env.texture.channels = 3;
+	env.texture.pixel_data = ShSkyEquirect( sky );
+	for ( int r = 0; r < 3; ++r )
+		for ( int c = 0; c < 3; ++c )
+			env.to_environment( r, c ) = c_shSkyToEnvironment[r][c];
+
+	/* the cross-check: sh-baker's projection of the texture, in the texture frame, against the derivation */
+	env.sh_coeffs = sh_baker::ProjectEnvironmentToSH( env );
+	skylight::SHCoeffs textureFrame;
+	for ( int k = 0; k < 9; ++k )
+		textureFrame[k] = skylight::Vec3( env.sh_coeffs.coeffs[k].x(), env.sh_coeffs.coeffs[k].y(), env.sh_coeffs.coeffs[k].z() );
+	const skylight::SHCoeffs derived = skylight::ProjectRadiance( sky );
+	const double error = ShSkyCheckError( derived, textureFrame );
+	const skylight::Vec3 up = skylight::Irradiance( derived, skylight::Vec3( 0, 0, 1 ) );
+	const skylight::Vec3 upTexture = skylight::Irradiance( textureFrame, skylight::Vec3( 0, 1, 0 ) ); /* world +Z in the texture frame */
+	Sys_Printf( "%9s sky %s (%s, strength %g): irradiance at +Z %.4f %.4f %.4f; sampled %d x %d: %.4f %.4f %.4f (%.3f%% off at most)\n", "",
+	            chosen->c_str(), kind, skylight::EffectiveStrength( source ), up[0], up[1], up[2], c_shSkyWidth, c_shSkyHeight,
+	            upTexture[0], upTexture[1], upTexture[2], error * 100 );
+	if ( error > 0.01 ) {
+		Sys_Warning( "-shbake: sky %s: the sampled sky's irradiance is %.2f%% off the derivation's; the bake's sky light is inaccurate\n", chosen->c_str(), error * 100 );
+	}
+	bake.scene.environment = std::move( env );
+}
+
 static void ShBuildScene( ShBakeScene& bake ){
 	ShSceneCounts counts;
 	ShUnsupported unsupported;
@@ -738,6 +838,7 @@ static void ShBuildScene( ShBakeScene& bake ){
 	            counts.areaEntitiesSkipped, counts.proxiesSkipped );
 	Sys_Printf( "%9zu lights in the light tree (%zu directional) of %zu in the scene\n", tree.NumLights(), tree.NumDirectionalLights(), bake.scene.lights.size() );
 	Sys_Printf( "%9zu geometries in scaled space (x %g)\n", bake.scene.geometries.size(), c_shSceneScale );
+	ShAddSky( bake );
 }
 
 

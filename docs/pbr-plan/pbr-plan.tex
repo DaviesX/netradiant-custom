@@ -1166,9 +1166,9 @@ bake, bounced sky light only in the indirect bake. Sky surfaces still never cast
   shader info: the base-colour image, the \texttt{qer\_pbr\_*} maps and factors (q3map2's shader
   parser learns them), additive stages as emitters. Lights are the editor's \texttt{light},
   \texttt{light\_spot} and \texttt{light\_sun} entities read with the physical model of
-  §\ref{sec:units}, not q3map2's light parsing. With B12 the map's sky shader becomes both bakes'
-  \texttt{Environment}, derived as in the editor: the full bake gets direct and bounced sky light,
-  the indirect bake bounced sky light only (§\ref{sec:sky}). Occluding surfaces follow the editor's
+  §\ref{sec:units}, not q3map2's light parsing. The map's sky shader is both bakes'
+  \texttt{Environment} (B12, done), derived as in the editor and sampled into texels: the full bake
+  gets direct and bounced sky light, the indirect bake bounced sky light only (§\ref{sec:sky}). Occluding surfaces follow the editor's
   shadow-caster rule (§\ref{sec:rev6}). Every light casts: \texttt{sh-baker} has no per-light shadow
   switch, so point lights and \texttt{\_shadows 0} lights are shadowed too (§\ref{sec:units}).
 \item \textbf{Solid hulls.} q3map2's draw surfaces are thin, and rays can slip through the cracks
@@ -1582,17 +1582,26 @@ openspec change and the PRs.
   flat term. The direct term follows a sky change, even per frame; the bounce changes only with a
   rebake, and the direct term's occlusion is non-directional; accepted. (Until B11 merged the
   indirect bake was to carry no sky radiance at all, making enhanced sky light unbounced.)
-\item \textbf{Full bake} (B11 \texttt{sh-baker} PR, B12 q3map2; B12 needs A12 for the shared
-  derivation). The point bake returns the environment's radiance on rays that escape, at the point
-  and after bounces, whenever the scene has an environment (B11, done). \texttt{-shbake} builds
-  the \texttt{Environment} from the sky shader and passes it to both bakes, so the stock lightmap,
-  vertex colours and grid carry direct and bounced sky light, and the side file bounced sky light.
-  A sky change needs a rebake for the stock target and for the enhanced target's bounce. Adding sky light to the lightmap in q3map2 after the bake was rejected:
-  it would lose the bounce. B12 includes \texttt{libs/skylight.h} rather than reimplementing it, and
-  hands \texttt{sh-baker} the radiance $L(\omega)$ (or its texels), never the SH: the truncated SH of
-  a cloud layer is negative below the horizon. It must also exclude sky shaders from
-  \texttt{-shbake}'s emissive rule, which today takes a sky's additive cloud stage plus a strength
-  for an unattached emitter.
+\item \textbf{Full bake} (B11 \texttt{sh-baker} PR, B12 q3map2). The point bake returns the
+  environment's radiance on rays that escape, at the point and after bounces, whenever the scene
+  has an environment (B11, done). \texttt{-shbake} chooses the sky among the BSP's shaders that
+  declare \texttt{skyparms} by the editor's rule, fills \texttt{libs/skylight.h}'s
+  \texttt{SkySource} from q3map2's shader info (which learns the declared strength and the farbox
+  name) and passes the sky to both bakes, so the stock lightmap, vertex colours and grid carry
+  direct and bounced sky light, and the side file bounced sky light. A sky change needs a rebake for
+  the stock target and for the enhanced target's bounce. Adding sky light to the lightmap in q3map2
+  after the bake was rejected: it would lose the bounce. \texttt{sh-baker} gets the radiance
+  $L(\omega)$, never the SH (the truncated SH of a cloud layer is negative below the horizon), as an
+  equirectangular texture of 1024 $\times$ 512 texels, each the solid-angle-weighted mean of
+  $4\times4$ samples of $L(\omega)$; no \texttt{sh-baker} change was needed. Every run cross-checks
+  the texture through \texttt{sh-baker}'s own projection against the derivation at the six axes and
+  warns above 1\% (the town: 0.023\%). A sky without a positive strength loads nothing and bakes
+  exactly as before, so the benchmark and the fixtures are byte-identical. Sky shaders are excluded
+  from \texttt{-shbake}'s emissive rule, which used to take a sky's additive cloud stage for an
+  unattached emitter, with the default strength 1 even when none was declared. On the town at the
+  draft preset the stock lightmap's luxels that see the sky got about 9.5 bytes (of 64) brighter,
+  those that see none 0.4 (bounce only); facades in the sun's shade now read under the sky in
+  \texttt{opengl1}. A9 judges it. \emph{Done (openspec change \texttt{q3map2-sky-environment}).}
 \item \textbf{Parity.} None for sky light: the preview's is unshadowed, the runtime's uses baked
   visibility. 3.4's parity check runs with sky emission off, as the README procedure already does.
 \end{itemize}
@@ -1753,7 +1762,8 @@ Item & Depends on & Note \\
   and SH grid, beside the hull mesh. Stock check on the single pk3. \\
 4.2 item 9 (B11) & 4.3 & Sky radiance in point bakes (bounced only with \texttt{indirect\_only}) and
   cosine-weighted surface visibility; done, \texttt{sh-baker} PRs \#69 and \#70. \\
-Baked sky (B12) & B11, A12 & The sky shader's environment in both bakes. \\
+Baked sky (B12) & B11, A12 & The sky shader's environment in both bakes; done
+  (\texttt{q3map2-sky-environment}). \\
 Grid sky visibility (B13) & 4.3 & Side file v3. \\
 4.4 SH at runtime (C6) & C4b, C3a & Indirect only: luxel SH on surfaces, the SH grid on dynamic
   models and vertex-lit surfaces; sky SH from the sky shader times baked visibility. \\

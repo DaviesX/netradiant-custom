@@ -550,6 +550,8 @@ struct shaderSH_t
 	bool pbrMetallicFactorSet = false;                  /* the editor zeroes metallic without a texture or this */
 	Vector3 pbrBaseColorFactor{ 1, 1, 1 };              /* qer_pbr_baseColorFactor */
 	float pbrEmissiveStrength = 1;                      /* qer_pbr_emissiveStrength */
+	bool pbrEmissiveStrengthSet = false;                /* qer_pbr_emissiveStrength parsed: a sky emits only with it */
+	std::string skyFarbox;                              /* skyparms' first token unless it is -, as the editor keeps it */
 };
 
 
