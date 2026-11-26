@@ -1145,8 +1145,10 @@ static int ShStoreIndirect( const ShPointList& list, const sh_baker::BakeResult&
 		}
 	}
 
-	/* the SH grid: the BSP grid's origin, spacing and dimensions, probe i is BSP grid point i;
-	   probes in solid are invalid with zero coefficients. Under -nogrid it has no probes, and
+	/* the SH grid: the BSP grid's origin, spacing and dimensions, probe i is BSP grid point i,
+	   each valid probe with its SH and its sky visibility (the uniform fraction of escapes over
+	   the whole sphere, sh-baker's full_sphere visibility); probes in solid or with a non-finite
+	   result are invalid with zero coefficients and visibility. Under -nogrid it has no probes, and
 	   origin and spacing stay 0, since SetupGrid leaves gridMins unset (design decision 12) */
 	SHGrid& grid = g_shSideFile.grid;
 	grid = SHGrid();
@@ -1158,6 +1160,7 @@ static int ShStoreIndirect( const ShPointList& list, const sh_baker::BakeResult&
 			grid.dimensions[ i ] = gridBounds[ i ];
 	}
 	grid.coeffs.assign( probes * 27, 0.f );
+	grid.visibility.assign( probes, 0.f );
 	grid.valid.assign( probes, 0 );
 	for ( size_t num = 0; num < probes; ++num )
 	{
@@ -1173,6 +1176,7 @@ static int ShStoreIndirect( const ShPointList& list, const sh_baker::BakeResult&
 		for ( size_t k = 0; k < 9; ++k )
 			for ( int c = 0; c < 3; ++c )
 				grid.coeffs[ ( num * 9 + k ) * 3 + c ] = probe.sh[ k ][ c ];
+		grid.visibility[num] = probe.visibility;
 		grid.valid[ num ] = 1;
 	}
 	return nonFinite;
@@ -1384,9 +1388,17 @@ void ShWriteSideFile(){
 	}
 	Sys_Printf( "%9zu pages, %zu luxels (%zu still unbaked, written as 0)\n", ext.pages.size(), luxels, filled );
 	Sys_Printf( "%9zu hulls, %zu vertices, %zu indices\n", ext.hull_mesh.hulls.size(), ext.hull_mesh.positions.size(), ext.hull_mesh.indices.size() );
-	Sys_Printf( "%9zu SH grid probes (%u x %u x %u), %zu valid\n", ext.grid.valid.size(),
-	            ext.grid.dimensions[ 0 ], ext.grid.dimensions[ 1 ], ext.grid.dimensions[ 2 ],
-	            size_t( std::count( ext.grid.valid.begin(), ext.grid.valid.end(), 1 ) ) );
+	size_t validProbes = 0;
+	double probeVisibility = 0;
+	for ( size_t i = 0; i < ext.grid.valid.size(); ++i ) {
+		if ( ext.grid.valid[i] != 0 ) {
+			++validProbes;
+			probeVisibility += ext.grid.visibility[i];
+		}
+	}
+	Sys_Printf( "%9zu SH grid probes (%u x %u x %u), %zu valid, mean sky visibility %.4f\n", ext.grid.valid.size(),
+	            ext.grid.dimensions[0], ext.grid.dimensions[1], ext.grid.dimensions[2],
+	            validProbes, validProbes != 0 ? probeVisibility / validProbes : 0.0 );
 	Sys_Printf( "Wrote %s in %.2f seconds\n", path.c_str(), timer.elapsed_sec() );
 
 	if ( shDumpL0 ) {

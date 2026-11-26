@@ -19,12 +19,12 @@
 #include "math/vector.h"
 
 /*
-   Byte layout, version 2. Little-endian, no padding beyond what is listed, and
+   Byte layout, version 3. Little-endian, no padding beyond what is listed, and
    the file ends exactly after the last valid flag:
 
      header, 24 bytes:
        char[4]  magic 'S','H','S','F'
-       uint32   version (2)
+       uint32   version (3)
        uint32   page count
        uint32   hull count
        uint32   hull vertex count
@@ -40,24 +40,28 @@
      hull ranges: per hull, uint32 first index, uint32 index count
      hull vertices: per vertex, float32 x, y, z
      hull indices: one uint32 per index
-     SH grid (36 + 109 * N bytes, N = nx * ny * nz probes):
+     SH grid (36 + 113 * N bytes, N = nx * ny * nz probes):
        float32[3]  origin (x, y, z): the position of probe 0
        float32[3]  spacing (x, y, z)
        uint32[3]   dimensions nx, ny, nz (all 0 or all >= 1)
        coefficients: per probe in order, the nine coefficients in the page
          order above, each three float32 values (R, G, B)
+       sky visibilities: one float32 per probe in order, in [0, 1]
        valid flags: one uint8 per probe in order, 0 or 1
 
    Every section up to the valid flags starts on a 4-byte boundary; the flags
-   come last so the probe coefficients stay aligned, and the file length need
-   not be a multiple of 4. The bytes are the same on any host byte order.
+   come last so the probe coefficients and sky visibilities stay aligned, and
+   the file length need not be a multiple of 4. The bytes are the same on any
+   host byte order.
 
-   Version rule: the writer always writes version 2, and the reader accepts
-   only version 2; it rejects version 1 (B4's layout, which has no SH grid)
-   and every other version. Any change to the layout or the meaning of the
-   values takes a new version number. One exception was made: visibility
-   became cosine-weighted within version 2 (sh-baker 297a88f), because no
-   reader of version 2 existed; version 3 is the first a renderer reads.
+   Version rule: the writer always writes version 3, and the reader accepts
+   only version 3; it rejects version 1 (B4's layout, which has no SH grid),
+   version 2 (no probe sky visibility) and every other version. Any change to
+   the layout or the meaning of the values takes a new version number. One
+   exception was made in the past: page visibility became cosine-weighted
+   within version 2 (sh-baker 297a88f), because no reader of version 2
+   existed. Version 3 is the first version a renderer reads, so it takes no
+   such exception.
 
    Contents: the file always holds the indirect bake, sh-baker's
    BakeSHLightMap with indirect_only set: no direct light at the baked point,
@@ -92,8 +96,9 @@
    Values: page coefficients and visibility are IEEE 754 binary16, rounded to
    nearest, ties to even (subnormals included), with the sign of zero kept. A
    finite value whose magnitude exceeds 65504 is clamped to +-65504, so very
-   bright luxels clip. Hull positions and the grid's origin, spacing and probe
-   coefficients are float32, stored as given, unclamped. The reader decodes
+   bright luxels clip. Hull positions and the grid's origin, spacing, probe
+   coefficients and probe sky visibilities are float32, stored as given,
+   unclamped. The reader decodes
    binary16 exactly.
 
    No "not baked" value: visibility is in [0, 1] and L0 is never negative, so
@@ -112,8 +117,13 @@
    probe i is the caller's light-grid point i. q3map2 writes its BSP light
    grid: origin is gridMins, spacing is the BSP's gridSize, the dimensions are
    gridBounds, and a probe is invalid when its grid point is still in solid
-   after q3map2's nudge. A probe whose valid flag is 0 has no data: its
-   coefficients are 0, and a renderer leaves it out when it blends
+   after q3map2's nudge. A probe's sky visibility is the uniform fraction of
+   its first rays that reached the sky over the whole sphere (sh-baker's
+   full_sphere visibility), unlike the page luxels' cosine-weighted value,
+   since a probe has no normal; a renderer lights with the sky's irradiance at
+   the shaded normal times the probe sky visibility, blended like the
+   coefficients. A probe whose valid flag is 0 has no data: its coefficients
+   and sky visibility are 0, and a renderer leaves it out when it blends
    neighbouring probes. A grid with no probes (-nogrid) has dimensions 0, 0, 0
    and is 36 bytes; its origin and spacing are stored as given (q3map2 passes
    0). The file stores the grid as given and does not check it against any
@@ -157,7 +167,8 @@ struct SHGrid
 	// probes * 27 values, probe-major as in sh-baker's SHCoeffs:
 	// coefficient k, channel c of probe i is coeffs[( i * 9 + k ) * 3 + c].
 	std::vector<float> coeffs;
-	std::vector<uint8_t> valid;  // one per probe, 0 or 1
+	std::vector<float> visibility; // one per probe, in [0, 1]; 0 when invalid
+	std::vector<uint8_t> valid;    // one per probe, 0 or 1
 };
 
 struct SHQ3Map2Extension
@@ -173,20 +184,20 @@ struct SHQ3Map2Extension
 // creates no file:
 //   - a page width or height below 1;
 //   - coefficient or visibility counts that differ from width * height needs;
-//   - a non-finite coefficient, visibility value, position, grid origin or
-//     grid spacing;
-//   - a visibility outside [0, 1], or a negative L0 component in a page luxel
-//     or a valid probe;
+//   - a non-finite coefficient, visibility value, position, grid origin,
+//     grid spacing or probe sky visibility;
+//   - a visibility or probe sky visibility outside [0, 1], or a negative L0
+//     component in a page luxel or a valid probe;
 //   - a hull index count that is not a multiple of 3, or zero for a hull;
 //   - hull ranges that are not contiguous in order from index 0 to the end of
 //     the index list;
 //   - an index not below the vertex count;
 //   - grid dimensions of which some but not all are 0;
 //   - a grid spacing component not above 0, when the grid has probes;
-//   - probe coefficient or valid-flag counts that differ from what the
-//     dimensions need;
+//   - probe coefficient, sky-visibility or valid-flag counts that differ from
+//     what the dimensions need;
 //   - a valid flag other than 0 or 1, or an invalid probe with a coefficient
-//     other than 0;
+//     or sky visibility other than 0;
 //   - any count that does not fit in a uint32, the probe count included.
 // The bytes are written to "<path>.tmp" and renamed over `path` once
 // complete. If that fails, returns false with a message naming the path,

@@ -169,7 +169,7 @@ float& ProbeCoeff( SHGrid& grid, size_t probe, int k, int c ){
 }
 
 // A valid grid of nx * ny * nz probes, all valid, whose values vary by probe,
-// coefficient and channel.
+// coefficient and channel, and whose sky visibilities vary by probe.
 SHGrid MakeGrid( uint32_t nx, uint32_t ny, uint32_t nz ){
 	SHGrid grid;
 	grid.origin = Vector3( -128, 64, -8 );
@@ -179,8 +179,10 @@ SHGrid MakeGrid( uint32_t nx, uint32_t ny, uint32_t nz ){
 	grid.dimensions[2] = nz;
 	const size_t probes = size_t( nx ) * ny * nz;
 	grid.coeffs.resize( probes * 27 );
+	grid.visibility.resize( probes );
 	grid.valid.assign( probes, 1 );
 	for ( size_t i = 0; i < probes; ++i ) {
+		grid.visibility[i] = float( ( i * 5 + 3 ) % 17 ) / 16.0f;
 		for ( int k = 0; k < 9; ++k ) {
 			for ( int c = 0; c < 3; ++c ) {
 				const float v = 0.3f + 1.7f * i + 0.013f * k + 0.0071f * c;
@@ -218,6 +220,7 @@ SHQ3Map2Extension GoldenExtension(){
 		ProbeCoeff( grid, 0, k, 1 ) = k + 0.25f;
 		ProbeCoeff( grid, 0, k, 2 ) = k + 0.5f;
 	}
+	grid.visibility = { 0.375f, 0.0f };
 	grid.valid = { 1, 0 };
 	return ext;
 }
@@ -230,8 +233,9 @@ constexpr size_t c_goldenVertices = 96;
 constexpr size_t c_goldenIndices = 132;
 constexpr size_t c_goldenGrid = 144;          // origin; spacing at +12, dimensions at +24
 constexpr size_t c_goldenProbeCoeffs = 180;   // probe i coefficient k channel c: +108i + 12k + 4c
-constexpr size_t c_goldenValid = 396;         // one byte per probe
-constexpr size_t c_goldenSize = 398;
+constexpr size_t c_goldenProbeVisibility = 396; // probe i: +4i
+constexpr size_t c_goldenValid = 404;           // one byte per probe
+constexpr size_t c_goldenSize = 406;
 
 void CheckSameValues( const SHQ3Map2Extension& written, const SHQ3Map2Extension& read ){
 	CHECK( read.pages.size() == written.pages.size() );
@@ -279,6 +283,14 @@ void CheckSameValues( const SHQ3Map2Extension& written, const SHQ3Map2Extension&
 			same = same && Bits( rg.coeffs[i] ) == Bits( wg.coeffs[i] );
 		}
 		CHECK_MSG( same, "grid values" );
+	}
+	CHECK( rg.visibility.size() == wg.visibility.size() );
+	if ( rg.visibility.size() == wg.visibility.size() ) {
+		bool same = true;
+		for ( size_t i = 0; i < wg.visibility.size(); ++i ) {
+			same = same && Bits( rg.visibility[i] ) == Bits( wg.visibility[i] );
+		}
+		CHECK_MSG( same, "grid sky visibilities" );
 	}
 }
 
@@ -338,8 +350,8 @@ void TestHalfRoundingAndClamp(){
 void TestGoldenBytes(){
 	// Built by hand from the layout in q3map2_extension.h.
 	const std::vector<uint8_t> expected = {
-		// Header: magic, version 2, 1 page, 1 hull, 3 vertices, 3 indices.
-		'S', 'H', 'S', 'F', 2, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 3, 0, 0, 0, 3, 0, 0, 0,
+		// Header: magic, version 3, 1 page, 1 hull, 3 vertices, 3 indices.
+		'S', 'H', 'S', 'F', 3, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 3, 0, 0, 0, 3, 0, 0, 0,
 		// Page: width 1, height 1.
 		1, 0, 0, 0, 1, 0, 0, 0,
 		// Coefficient planes, (k, k + 0.5, -k) as binary16 R, G, B.
@@ -357,7 +369,7 @@ void TestGoldenBytes(){
 		// Hull range: first index 0, count 3.
 		0, 0, 0, 0, 3, 0, 0, 0,
 		// Vertices (0,0,0), (1,0,0), (0,1,0) as float32; 1.0f is 0x3F800000.
-		0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, //
+		0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,       //
 		0, 0, 0x80, 0x3F, 0, 0, 0, 0, 0, 0, 0, 0, //
 		0, 0, 0, 0, 0, 0, 0x80, 0x3F, 0, 0, 0, 0, //
 		// Indices 0, 1, 2.
@@ -382,11 +394,14 @@ void TestGoldenBytes(){
 		0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, //
 		0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, //
 		0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, //
+		// Sky visibilities as float32: probe 0 0.375 (0x3EC00000), probe 1 0.
+		0, 0, 0xC0, 0x3E, 0, 0, 0, 0,
 		// Valid flags: probe 0 valid, probe 1 invalid.
-		1, 0 };
-	CHECK( expected.size() == 24u + 64u + 8u + 36u + 12u + 36u + 216u + 2u );
+		1, 0
+	};
+	CHECK( expected.size() == 24u + 64u + 8u + 36u + 12u + 36u + 216u + 8u + 2u );
 	CHECK( expected.size() == c_goldenSize );
-	CHECK( expected.size() == 398u );
+	CHECK( expected.size() == 406u );
 	const fs::path path = g_dir / "golden.shsf";
 	std::string error;
 	CHECK_MSG( SaveSHQ3Map2Extension( GoldenExtension(), P( path ).c_str(), &error ), error );
@@ -514,6 +529,11 @@ void TestGridWriterRefusals(){
 		ext.grid.valid.resize( 7 );
 		CheckRefused( ext, "grid.valid: 7 flags, expected 8 (2 x 2 x 2)" );
 	}
+	{ // 8 probes of coefficients but 7 sky visibilities.
+		SHQ3Map2Extension ext = OneGrid( 2, 2, 2 );
+		ext.grid.visibility.resize( 7 );
+		CheckRefused( ext, "grid.visibility: 7 values, expected 8 (2 x 2 x 2)" );
+	}
 	{ // Probes given for a grid with no probes.
 		SHQ3Map2Extension ext = OneGrid( 1, 1, 1 );
 		for ( uint32_t& dim : ext.grid.dimensions ) {
@@ -581,13 +601,28 @@ void TestGridWriterRefusals(){
 		for ( int i = 0; i < 27; ++i ) {
 			ext.grid.coeffs[3 * 27 + i] = 0.0f;
 		}
+		ext.grid.visibility[3] = 0.0f;
 		ProbeCoeff( ext.grid, 3, 0, 0 ) = 0.5f;
 		CheckRefused( ext, "grid probe 3 coefficient 0 channel 0: 0.5 in an invalid probe (valid flag 0), expected 0" );
+		ProbeCoeff( ext.grid, 3, 0, 0 ) = 0.0f;
+		ext.grid.visibility[3] = 0.5f;
+		CheckRefused( ext, "grid probe 3 sky visibility: 0.5 in an invalid probe (valid flag 0), expected 0" );
 	}
 	{
 		SHQ3Map2Extension ext = OneGrid( 2, 2, 1 );
 		ext.grid.valid[3] = 2;
 		CheckRefused( ext, "grid probe 3: valid flag 2 is neither 0 nor 1" );
+	}
+	{ // The "Bad probe sky visibility" scenario.
+		SHQ3Map2Extension ext = OneGrid( 2, 2, 1 );
+		ext.grid.visibility[2] = 1.5f;
+		CheckRefused( ext, "grid probe 2 sky visibility: 1.5 outside [0, 1]" );
+		ext.grid.visibility[2] = -0.25f;
+		CheckRefused( ext, "grid probe 2 sky visibility: -0.25 outside [0, 1]" );
+		ext.grid.visibility[2] = std::numeric_limits<float>::quiet_NaN();
+		CheckRefused( ext, "grid probe 2 sky visibility: non-finite value nan" );
+		ext.grid.visibility[2] = std::numeric_limits<float>::infinity();
+		CheckRefused( ext, "grid probe 2 sky visibility: non-finite value inf" );
 	}
 	{ // An invalid probe's negative higher band is data too.
 		SHQ3Map2Extension ext = GoldenExtension();
@@ -650,8 +685,7 @@ void TestRoundTripKeepsOrderAndSizes(){
 	ext.hull_mesh = TwoHullMesh();
 	ext.grid = MakeGrid( 3, 2, 2 );
 	std::optional<SHQ3Map2Extension> read = RoundTrip( ext, "town.shsf" );
-	CHECK( fs::file_size( g_dir / "town.shsf" ) ==
-	       24u + ( 8 + 56 * 8 ) + ( 8 + 56 * 1 ) + ( 8 + 56 * 15 ) + 8 * 2 + 12 * 5 + 4 * 9 + 36 + 109 * 12 );
+	CHECK( fs::file_size( g_dir / "town.shsf" ) == 24u + ( 8 + 56 * 8 ) + ( 8 + 56 * 1 ) + ( 8 + 56 * 15 ) + 8 * 2 + 12 * 5 + 4 * 9 + 36 + 113 * 12 );
 	if ( !read ) {
 		return;
 	}
@@ -683,32 +717,35 @@ void TestEmptyPartsAllowed(){
 	}
 	if ( auto read = RoundTrip( SHQ3Map2Extension(), "d.shsf" ) ) {
 		CHECK( read->pages.empty() && read->hull_mesh.positions.empty() && read->hull_mesh.hulls.empty() );
-		CHECK( read->grid.coeffs.empty() && read->grid.valid.empty() );
+		CHECK( read->grid.coeffs.empty() && read->grid.visibility.empty() && read->grid.valid.empty() );
 		CHECK( read->grid.dimensions[0] == 0 && read->grid.dimensions[1] == 0 && read->grid.dimensions[2] == 0 );
 	}
 	CHECK( fs::file_size( g_dir / "d.shsf" ) == 60u );
 }
 
-// The "Probe order kept" scenario: probe i of a 2 x 3 x 2 grid has L0 red i.
+// The "Probe order kept" scenario: probe i of a 2 x 3 x 2 grid has L0 red i
+// and sky visibility i / 16.
 void TestGridRoundTripKeepsProbeOrder(){
 	SHQ3Map2Extension ext;
 	ext.grid = MakeGrid( 2, 3, 2 );
 	for ( size_t i = 0; i < 12; ++i ) {
 		ProbeCoeff( ext.grid, i, 0, 0 ) = float( i );
+		ext.grid.visibility[i] = float( i ) / 16.0f;
 	}
-	// Probe 7 invalid, with zero coefficients.
+	// Probe 7 invalid, with zero coefficients and sky visibility.
 	ext.grid.valid[7] = 0;
 	for ( int i = 0; i < 27; ++i ) {
 		ext.grid.coeffs[7 * 27 + i] = 0.0f;
 	}
+	ext.grid.visibility[7] = 0.0f;
 	std::optional<SHQ3Map2Extension> read = RoundTrip( ext, "grid.shsf" );
-	CHECK( fs::file_size( g_dir / "grid.shsf" ) == 24u + 36u + 109u * 12u );
+	CHECK( fs::file_size( g_dir / "grid.shsf" ) == 24u + 36u + 113u * 12u );
 	if ( !read ) {
 		return;
 	}
 	CheckSameValues( ext, *read );
 	CHECK( read->grid.dimensions[0] == 2 && read->grid.dimensions[1] == 3 && read->grid.dimensions[2] == 2 );
-	if ( read->grid.coeffs.size() != 12 * 27 ) {
+	if ( read->grid.coeffs.size() != 12 * 27 || read->grid.visibility.size() != 12 ) {
 		return;
 	}
 	for ( uint32_t z = 0; z < 2; ++z ) {
@@ -718,13 +755,15 @@ void TestGridRoundTripKeepsProbeOrder(){
 				CHECK( i % 2 == x && ( i / 2 ) % 3 == y && i / 6 == z );
 				const float expected = i == 7 ? 0.0f : float( i );
 				CHECK_MSG( ProbeCoeff( read->grid, i, 0, 0 ) == expected, "probe " + std::to_string( i ) );
+				CHECK_MSG( read->grid.visibility[i] == expected / 16.0f, "probe " + std::to_string( i ) + " sky visibility" );
 			}
 		}
 	}
 	CHECK( read->grid.valid[7] == 0 && read->grid.valid[6] == 1 );
 }
 
-// The "Probe coefficients exact" scenario: float32, unclamped and unrounded.
+// The "Probe coefficients exact" scenario: float32, unclamped and unrounded,
+// for the coefficients and the sky visibility.
 void TestProbeCoefficientsExact(){
 	SHQ3Map2Extension ext = OneGrid( 1, 1, 1 );
 	const float big = 1e6f;
@@ -732,11 +771,14 @@ void TestProbeCoefficientsExact(){
 	ProbeCoeff( ext.grid, 0, 0, 0 ) = big;
 	ProbeCoeff( ext.grid, 0, 5, 1 ) = fine;
 	ProbeCoeff( ext.grid, 0, 6, 2 ) = -big;
+	const float near_one = 1.0f - std::ldexp( 1.0f, -20 );
+	ext.grid.visibility[0] = near_one;
 	ext.grid.origin = Vector3( -1e7f, 0.1f, 3.25f );
 	if ( auto read = RoundTrip( ext, "exact.shsf" ) ) {
 		CHECK( Bits( ProbeCoeff( read->grid, 0, 0, 0 ) ) == Bits( big ) );
 		CHECK( Bits( ProbeCoeff( read->grid, 0, 5, 1 ) ) == Bits( fine ) );
 		CHECK( Bits( ProbeCoeff( read->grid, 0, 6, 2 ) ) == Bits( -big ) );
+		CHECK( read->grid.visibility.size() == 1 && Bits( read->grid.visibility[0] ) == Bits( near_one ) );
 		CheckSameValues( ext, *read );
 	}
 }
@@ -750,7 +792,7 @@ void TestZeroProbeGrid(){
 	if ( auto read = RoundTrip( ext, "nogrid.shsf" ) ) {
 		CheckSameValues( ext, *read );
 	}
-	CHECK( fs::file_size( g_dir / "nogrid.shsf" ) == c_goldenSize - 2 * 109 );
+	CHECK( fs::file_size( g_dir / "nogrid.shsf" ) == c_goldenSize - 2 * 113 );
 	// Dropping the golden file's two probes and setting its dimensions to 0
 	// gives the same bytes.
 	SHQ3Map2Extension zero = GoldenExtension();
@@ -758,6 +800,7 @@ void TestZeroProbeGrid(){
 	zero.grid.dimensions[1] = 0;
 	zero.grid.dimensions[2] = 0;
 	zero.grid.coeffs.clear();
+	zero.grid.visibility.clear();
 	zero.grid.valid.clear();
 	const fs::path path = g_dir / "zero.shsf";
 	std::string error;
@@ -808,9 +851,10 @@ void TestReaderRejections(){
 	const SHQ3Map2Extension golden = GoldenExtension();
 	CheckRejected( golden, []( std::vector<uint8_t>& b ){ b[0] = 'X'; }, "bad magic" );
 	CheckRejected( golden, []( std::vector<uint8_t>& b ){ PutU32At( b, 4, 1 ); }, "unknown version 1" );
-	CheckRejected( golden, []( std::vector<uint8_t>& b ){ PutU32At( b, 4, 3 ); }, "unknown version 3" );
+	CheckRejected( golden, []( std::vector<uint8_t>& b ) { PutU32At( b, 4, 2 ); }, "unknown version 2 (only version 3 is supported)" );
+	CheckRejected( golden, []( std::vector<uint8_t>& b ) { PutU32At( b, 4, 4 ); }, "unknown version 4" );
 	CheckRejected( golden, []( std::vector<uint8_t>& b ){ b.pop_back(); }, "shorter than expected" );
-	CheckRejected( golden, []( std::vector<uint8_t>& b ){ b.push_back( 0 ); }, "longer than expected: 398 bytes implied, has 399" );
+	CheckRejected( golden, []( std::vector<uint8_t>& b ) { b.push_back( 0 ); }, "longer than expected: 406 bytes implied, has 407" );
 	// Truncated inside the hulls or the grid header.
 	CheckRejected( golden, []( std::vector<uint8_t>& b ){ b.resize( c_goldenGrid + 20 ); }, "shorter than expected" );
 	CheckRejected( golden, []( std::vector<uint8_t>& b ){ b.resize( 100 ); }, "shorter than expected" );
@@ -819,14 +863,14 @@ void TestReaderRejections(){
 	{ // The "Huge counts in a small file" scenario: every count 0xFFFFFFFF in a 24-byte file.
 		std::vector<uint8_t> bytes( 24, 0xFF );
 		std::memcpy( bytes.data(), "SHSF", 4 );
-		PutU32At( bytes, 4, 2 );
+		PutU32At( bytes, 4, 3 );
 		// 24 + 36 + (8 + 8 + 12 + 4) * 0xFFFFFFFF.
 		CheckBytesRejected( bytes, "shorter than expected: needs at least 137438953500 bytes, has 24" );
 	}
 	{ // The "Huge grid in a small file" scenario: a 60-byte file, no pages or hulls.
 		std::vector<uint8_t> bytes( 60, 0 );
 		std::memcpy( bytes.data(), "SHSF", 4 );
-		PutU32At( bytes, 4, 2 );
+		PutU32At( bytes, 4, 3 );
 		for ( int i = 0; i < 3; ++i ) {
 			PutU32At( bytes, 24 + 12 + 4 * i, 1 );  // spacing
 			PutU32At( bytes, 24 + 24 + 4 * i, 0xFFFFFFFF );
@@ -841,7 +885,7 @@ void TestReaderRejections(){
 	{ // One huge page in a 68-byte file.
 		std::vector<uint8_t> bytes( 68, 0 );
 		std::memcpy( bytes.data(), "SHSF", 4 );
-		PutU32At( bytes, 4, 2 );
+		PutU32At( bytes, 4, 3 );
 		PutU32At( bytes, 8, 1 );
 		PutU32At( bytes, 24, 0xFFFFFFFF );
 		PutU32At( bytes, 28, 0xFFFFFFFF );
@@ -887,10 +931,10 @@ void TestGridReaderRejections(){
 	CheckRejected( golden, [=]( std::vector<uint8_t>& b ){ PutU32At( b, dims + 4, 0 ); },
 	               "grid dimensions 2 x 0 x 1 have some but not all components 0" );
 	// Dimensions that need more probes than the file holds, or fewer.
-	CheckRejected( golden, [=]( std::vector<uint8_t>& b ){ PutU32At( b, dims + 8, 2 ); },
-	               "shorter than expected: grid (2 x 1 x 2) does not fit in 398 bytes" );
-	CheckRejected( golden, [=]( std::vector<uint8_t>& b ){ PutU32At( b, dims, 1 ); },
-	               "longer than expected: 289 bytes implied, has 398" );
+	CheckRejected( golden, [=]( std::vector<uint8_t>& b ) { PutU32At( b, dims + 8, 2 ); },
+	               "shorter than expected: grid (2 x 1 x 2) does not fit in 406 bytes" );
+	CheckRejected( golden, [=]( std::vector<uint8_t>& b ) { PutU32At( b, dims, 1 ); },
+	               "longer than expected: 293 bytes implied, has 406" );
 	// Non-finite origin, spacing and probe coefficient.
 	CheckRejected( golden, [=]( std::vector<uint8_t>& b ){ PutU32At( b, c_goldenGrid + 8, 0x7F800000 ); },
 	               "non-finite grid origin (-64, 0, inf)" );
@@ -909,12 +953,27 @@ void TestGridReaderRejections(){
 	// The "Bad valid flag in the file" scenario, and a flag of 0xFF.
 	CheckRejected( golden, []( std::vector<uint8_t>& b ){ b[c_goldenValid + 1] = 2; }, "grid probe 1: valid flag 2 is neither 0 nor 1" );
 	CheckRejected( golden, []( std::vector<uint8_t>& b ){ b[c_goldenValid] = 0xFF; }, "grid probe 0: valid flag 255 is neither 0 nor 1" );
-	// Probe 0 marked invalid while it holds data; probe 1 (invalid) given data.
-	CheckRejected( golden, []( std::vector<uint8_t>& b ){ b[c_goldenValid] = 0; },
-	               "grid probe 0 coefficient 0 channel 1: 0.25 in an invalid probe (valid flag 0), expected 0" );
+	// Probe 0 marked invalid while it holds data (its sky visibility is checked
+	// before its coefficients); probe 1 (invalid) given data.
+	CheckRejected( golden, []( std::vector<uint8_t>& b ) { b[c_goldenValid] = 0; },
+	               "grid probe 0 sky visibility: 0.375 in an invalid probe (valid flag 0), expected 0" );
+	CheckRejected( golden, []( std::vector<uint8_t>& b ) {
+		b[c_goldenValid] = 0;
+		PutU32At( b, c_goldenProbeVisibility, 0 );
+	}, "grid probe 0 coefficient 0 channel 1: 0.25 in an invalid probe (valid flag 0), expected 0" );
 	CheckRejected( golden, []( std::vector<uint8_t>& b ){ PutU32At( b, c_goldenProbeCoeffs + 108 + 12 * 3, 0x3F000000 ); },
 	               "grid probe 1 coefficient 3 channel 0: 0.5 in an invalid probe (valid flag 0), expected 0" );
-	// Marking probe 1 valid is fine: its zero coefficients are data.
+	// The "Bad probe sky visibility in the file" scenario, and the non-finite
+	// probe sky visibility of "Non-finite value in the file".
+	CheckRejected( golden, []( std::vector<uint8_t>& b ) { PutU32At( b, c_goldenProbeVisibility, 0x3FC00000 ); },
+	               "grid probe 0 sky visibility: 1.5 outside [0, 1]" );
+	CheckRejected( golden, []( std::vector<uint8_t>& b ) { PutU32At( b, c_goldenProbeVisibility, 0xBE800000 ); },
+	               "grid probe 0 sky visibility: -0.25 outside [0, 1]" );
+	CheckRejected( golden, []( std::vector<uint8_t>& b ) { PutU32At( b, c_goldenProbeVisibility + 4, 0x3F000000 ); },
+	               "grid probe 1 sky visibility: 0.5 in an invalid probe (valid flag 0), expected 0" );
+	CheckRejected( golden, []( std::vector<uint8_t>& b ) { PutU32At( b, c_goldenProbeVisibility, 0x7FC00000 ); },
+	               "grid probe 0 sky visibility: non-finite value nan" );
+	// Marking probe 1 valid is fine: its zero coefficients and sky visibility are data.
 	{
 		const fs::path path = g_dir / "valid.shsf";
 		CHECK( SaveSHQ3Map2Extension( golden, P( path ).c_str(), nullptr ) );

@@ -271,7 +271,7 @@ When the indirect bake runs, the stage SHALL write the side file to `maps/<name>
 - the un-shrunk hull mesh in BSP units, with hull triangles facing outward and q3map2's winding;
 - the SH grid.
 
-**The SH grid.** It has the BSP light grid's origin, spacing and dimensions, and one probe per BSP grid point in the same order (x fastest, then y, then z). Each probe holds that point's full-sphere SH from the indirect bake. A probe whose grid point is still in solid after q3map2's nudge SHALL be marked invalid, with zero coefficients. With `-nogrid` the SH grid has no probes, dimensions 0, 0, 0, and origin and spacing 0.
+**The SH grid.** It has the BSP light grid's origin, spacing and dimensions, and one probe per BSP grid point in the same order (x fastest, then y, then z). Each probe holds that point's full-sphere SH from the indirect bake. It also holds that point's sky visibility from the indirect bake: the uniform fraction of the point's first rays that escaped, over the whole sphere. Visibility depends only on the geometry the rays trace, so a probe gets it whether or not the map's sky emits. A probe SHALL be marked invalid, with zero coefficients and zero sky visibility, when its grid point is still in solid after q3map2's nudge, or when its SH or visibility is non-finite. With `-nogrid` the SH grid has no probes, dimensions 0, 0, 0, and origin and spacing 0.
 
 **Failures and other files.** A writer failure SHALL stop q3map2 with the writer's message. The stage SHALL NOT write any `lm_*.hdr` file.
 
@@ -289,7 +289,15 @@ When the indirect bake runs, the stage SHALL write the side file to `maps/<name>
 
 #### Scenario: SH grid matches the BSP grid
 - **WHEN** the benchmark is baked with `-shbake` and its side file read back
-- **THEN** the SH grid's dimensions and probe count equal the BSP light grid's, a probe in a lit room is valid with non-zero L0, and a probe whose grid point is black in the BSP because it is in solid is invalid
+- **THEN** the SH grid's dimensions and probe count equal the BSP light grid's, a probe in a lit room is valid with non-zero L0, and a probe whose grid point is black in the BSP because it is in solid is invalid, with sky visibility 0
+
+#### Scenario: Probe sky visibility outdoors and indoors
+- **WHEN** the town is baked with `-shbake` and its side file read back
+- **THEN** a valid probe in the open crossroads, at least one grid step above the street and clear of walls, has a sky visibility above 0.25, and every valid probe inside a sealed room (no opening to the sky) has a sky visibility of exactly 0
+
+#### Scenario: Probe sky visibility without an emitting sky
+- **WHEN** a map is baked with `-shbake` once with a sky that has `qer_pbr_emissiveStrength` and once with the same sky without it
+- **THEN** the two side files' probe sky visibilities and valid flags are equal, and the first bake has some valid probe with a sky visibility above 0
 
 ### Requirement: Optional L0 dump
 With `-shdumpl0`, when the indirect bake runs, the stage SHALL also write each side-file page's L0 as `maps/<name>/<name>_l0_<page>.hdr`, with the page number as four digits. These files SHALL NOT be packed by the stock check.

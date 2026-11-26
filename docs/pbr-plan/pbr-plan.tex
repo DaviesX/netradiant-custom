@@ -107,7 +107,7 @@ sky becomes a light source. Stage~3 is restructured around that.
   the sky to SH at load and multiplies its irradiance by the baked visibility (C6). (Amended when B11
   merged; revision 8 had kept all sky radiance out of the indirect bake.) The full bake adds the
   sky's radiance, so the stock lightmap gets direct and bounced sky light (B11 \texttt{sh-baker} PR,
-  B12 q3map2). Side file v3 adds visibility per grid probe (B13). The editor preview's sky light is
+  B12 q3map2). Side file v3 adds visibility per grid probe (B13, done). The editor preview's sky light is
   unshadowed (A12). Sky still never casts. §\ref{sec:sky}.
 \item[Track C restructured.] C0 cleans sh-renderer for the module; C1 brings the module up; C2 is
   Tier~1; C3 splits into C3a (sky and fog) and C3b (the rest of Tier~2); C4b loads the side file,
@@ -1206,8 +1206,10 @@ bake, bounced sky light only in the indirect bake. Sky surfaces still never cast
   the q3map2 extension's writer (4.2 item~4). It always holds the indirect bake: the luxel pages
   (side-file page $i$ is BSP lightmap page $i$; skipped luxels are filled before writing), the hull
   mesh in BSP units, and an SH grid. The SH grid has one probe per BSP light-grid point, in the
-  grid's order, with nine RGB coefficients in the pages' basis and a valid flag; a probe left in
-  solid after q3map2's nudge is invalid and zero. Never \texttt{lm\_*.hdr}, which stock rend2 would
+  grid's order, with nine RGB coefficients in the pages' basis, a sky visibility and a valid flag
+  (side file version~3, B13). The sky visibility is the uniform fraction of the probe's first rays
+  that escape over the whole sphere, since a probe has no normal. A probe left in solid after
+  q3map2's nudge, or with a non-finite result, is invalid, with zero coefficients and visibility. Never \texttt{lm\_*.hdr}, which stock rend2 would
   load. The irradiance-to-byte encoding is chosen here (§\ref{sec:units}).
 \item \textbf{Anti-aliasing.} From \texttt{-super N}: raw lightmaps are mapped at $N\times$
   resolution, each super-luxel is baked as a point, and \texttt{StoreSurfaceLightmaps} averages
@@ -1575,7 +1577,7 @@ openspec change and the PRs.
   \texttt{sh-baker} \#69). For the direct term it records sky visibility: per luxel in the side file's visibility plane (already written), the
   cosine-weighted fraction of the point's first rays that escape, $\sum e_i\cos\theta_i /
   \sum\cos\theta_i$, which makes the sky's irradiance at the normal times visibility exact for a
-  uniform sky; and per grid probe from side file v3 (B13, q3map2 only), the uniform fraction over
+  uniform sky; and per grid probe from side file v3 (B13, q3map2 only; done, \texttt{q3map2-sh-grid-visibility}), the uniform fraction over
   the sphere, since a probe has no normal (B11, \texttt{sh-baker} \#70). Sky surfaces stay non-casting, so rays
   pass through the town's low sky ceiling. \texttt{renderer\_sh} projects the sky shader to SH at
   load (C6) and adds its irradiance at the normal times that visibility, replacing sh-renderer's
@@ -1764,7 +1766,8 @@ Item & Depends on & Note \\
   cosine-weighted surface visibility; done, \texttt{sh-baker} PRs \#69 and \#70. \\
 Baked sky (B12) & B11, A12 & The sky shader's environment in both bakes; done
   (\texttt{q3map2-sky-environment}). \\
-Grid sky visibility (B13) & 4.3 & Side file v3. \\
+Grid sky visibility (B13) & 4.3 & Side file v3, one \texttt{float32} sky visibility per probe; done
+  (\texttt{q3map2-sh-grid-visibility}). \\
 4.4 SH at runtime (C6) & C4b, C3a & Indirect only: luxel SH on surfaces, the SH grid on dynamic
   models and vertex-lit surfaces; sky SH from the sky shader times baked visibility. \\
 4.5 LTC area lights (C7) & 4.4, 2.2 step 6 & Runtime direct light from attached lights, with the
