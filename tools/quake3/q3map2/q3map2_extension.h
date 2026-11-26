@@ -55,13 +55,17 @@
    Version rule: the writer always writes version 2, and the reader accepts
    only version 2; it rejects version 1 (B4's layout, which has no SH grid)
    and every other version. Any change to the layout or the meaning of the
-   values takes a new version number.
+   values takes a new version number. One exception was made: visibility
+   became cosine-weighted within version 2 (sh-baker 297a88f), because no
+   reader of version 2 existed; version 3 is the first a renderer reads.
 
    Contents: the file always holds the indirect bake, sh-baker's
    BakeSHLightMap with indirect_only set: no direct light at the baked point,
    neither punctual (point, spot, directional) nor emissive. Bounced light
-   from every light, emissive surfaces included, is kept. The renderer adds
-   all direct light itself.
+   from every light, emissive surfaces included, is kept, and so is bounced
+   sky light when the scene has an environment (sky reached after at least
+   one surface reflection). The renderer adds all direct light itself, the
+   direct sky light as the sky's irradiance at the normal times visibility.
 
    SH basis: real SH with no Condon-Shortley phase, for a unit direction
    (x, y, z) in the caller's world frame, pointing from the luxel or probe
@@ -79,8 +83,11 @@
    points. The caller may average and fill page luxels with its storage
    weights, but does not rescale or convolve the coefficients.
 
-   Visibility is the fraction of the luxel's samples whose first ray reached
-   the sky, in [0, 1].
+   Visibility is the cosine-weighted fraction of the luxel's samples whose
+   first ray reached the sky, sum(e_i cos t_i) / sum(cos t_i) with e_i 1 for
+   an escaped ray and t_i its angle to the normal, in [0, 1]: the weight for
+   the sky's irradiance at the normal. This is sh-baker's surface-point
+   visibility (from 297a88f; before it, the uniform fraction of escapes).
 
    Values: page coefficients and visibility are IEEE 754 binary16, rounded to
    nearest, ties to even (subnormals included), with the sign of zero kept. A

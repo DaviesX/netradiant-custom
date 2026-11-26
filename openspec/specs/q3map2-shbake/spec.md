@@ -73,8 +73,8 @@ With `-shbake`, `-shsamples N` SHALL set the exact number of rays per point (def
 - **THEN** the first log reports exactly 16 samples per point, and the second run exits non-zero naming `-shsamples`
 
 #### Scenario: Exact sample count
-- **WHEN** a black floor in a sky shell, partly shaded by a black wall and lit by one point light, is baked with `-shsamples 128`
-- **THEN** every side-file visibility is a multiple of 1/128, and some are odd multiples, which a point stopped at 64 samples can't give
+- **WHEN** a black floor in a sky shell, partly shaded by a black wall and lit by one point light, is baked single-threaded with `-shsamples 128` and again with `-shsamples 64`
+- **THEN** the two side files differ in the visibility of some partly shaded luxels, which they could not if every point stopped at 64 samples (each point's first 64 samples are the same in both bakes, since it is seeded by its index)
 
 ### Requirement: Light entities read with the physical model
 The stage SHALL read `light`, `light_spot` and `light_sun` as the editor does (`plugins/entity/light.cpp`, `colour.h`):

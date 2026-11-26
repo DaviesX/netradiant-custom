@@ -340,7 +340,7 @@ brighter than the face. An area light has neither gap, which is why flat rectang
 ## Sky light
 
 The map's sky shader is an environment light in the same units as the light entities (openspec change
-`sky-environment-light`). The editor preview uses it now; the full bake (task B12) and `renderer_sh` (task C6) reuse
+`sky-environment-light`). The editor preview uses it now; both `-shbake` bakes (task B12) and `renderer_sh` (task C6) reuse
 the same derivation, which lives in `libs/skylight.h` (header-only, tested by `make test-sky-light`). This section is
 complete enough to reimplement it without reading that code.
 
@@ -419,7 +419,7 @@ E(n) = Σ Â_l L_lm Y_lm(n),   Â₀ = π, Â₁ = 2π/3, Â₂ = π/4,   each c
 For a cloud layer this is exact: `E(+Z) = πℒ`, `E` at any horizontal normal `πℒ/2`, `E(−Z) = 0`. A uniform sphere of
 radiance `L` gives `E = πL` for every normal.
 
-The SH is for irradiance only. Anything that needs the radiance in a direction (the full bake's escaping rays in B12)
+The SH is for irradiance only. Anything that needs the radiance in a direction (the bakes' escaping rays in B12)
 uses `L(ω)` itself, never the truncated SH radiance, which for a cloud layer is `ℒ/2 + ¾ℒz`: −ℒ/4 straight down.
 
 ### In the editor preview
@@ -443,7 +443,7 @@ off for interior work; nothing else changes. The engine fixes this with the bake
 
 ### q3map2
 
-q3map2 does not read the sky light yet; B12 gives it the derivation, for the full bake only. Until then one caveat
+q3map2 does not read the sky light yet; B12 gives it the derivation, for both bakes (the side file keeps bounced sky light; `renderer_sh` adds the direct sky). Until then one caveat
 holds: `-shbake`'s emissive rule takes a shader's first additive stage as its emitter and doesn't exclude sky
 shaders, so a sky with an additive cloud stage and a `qer_pbr_emissiveStrength` counts as an unattached emitter and
 gets the warning. A sky without an additive stage, like the town's, is unaffected. B12 excludes sky shaders from that
@@ -815,7 +815,7 @@ the same points (super-luxels, one point per light-grid point, draw vertices):
 | indirect | indirect only, no direct light (punctual or emissive) | the side file `maps/<name>/<name>.shsf`: SH pages, solid hull mesh, SH grid | `renderer_sh` |
 
 `renderer_sh` computes direct light at runtime from the light entities, so the side file holds only what they
-bounce. Each bake costs about the same; the default runs both. On the benchmark each takes under a second at the
+bounce, plus bounced sky light once B12 gives the bakes the sky (`renderer_sh` adds the direct sky). Each bake costs about the same; the default runs both. On the benchmark each takes under a second at the
 defaults (41939 points); "Quality presets" above gives the times of the three Town builds.
 
 ### Options
