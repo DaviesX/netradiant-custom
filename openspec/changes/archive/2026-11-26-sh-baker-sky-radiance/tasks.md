@@ -74,4 +74,5 @@ Any output difference the group doesn't expect is reported to the user before co
   Done. `tools/stockcheck/stockcheck.py content/benchmark bench` and `content/town town1` (each compiles from a fresh copy): compile, opengl1 and opengl2 PASS for both.
 - [x] 3.5 Archive the change, which creates `openspec/specs/sh-baker-environment-light/spec.md` and applies the two q3map2 deltas. Verify that `openspec validate --specs --strict` passes.
   Done 2026-11-26 with `openspec archive`; `openspec validate --specs --strict` passes.
-- [ ] 3.6 After the user agrees, push the branch to `fork` and open the landing PR with `--repo DaviesX/netradiant-custom`. Verify that the PR URL exists.
+- [x] 3.6 After the user agrees, push the branch to `fork` and open the landing PR with `--repo DaviesX/netradiant-custom`. Verify that the PR URL exists.
+  PR: https://github.com/DaviesX/netradiant-custom/pull/15
