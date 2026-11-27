@@ -898,9 +898,15 @@ file I/O, and its own GLFW window and frame loop. As a renderer module:
   target; in the module, input belongs to the engine. The frame loop is inverted onto
   \texttt{BeginFrame}, \texttt{RenderScene} and \texttt{EndFrame}.
 \item \textbf{Engine services.} Logging through a shim over \texttt{ri.Printf}/\texttt{ri.Error}
-  (glog's \texttt{LOG(FATAL)} and \texttt{CHECK} abort the whole process, \texttt{ri.Error} drops to
-  the console; the viewer maps the shim back to stderr),
-  configuration through \texttt{ri.Cvar\_Get}, GLSL and \emph{every} other file through
+  (the viewer maps it back to stderr). Invariant \texttt{CHECK}s and \texttt{LOG(FATAL)} stay fatal
+  but go through \texttt{ri.Error(ERR\_FATAL)}: the engine's shutdown then restores the display mode
+  and hardware gamma, releases the mouse and flushes \texttt{qconsole.log}, all of which
+  \texttt{abort()} skips, and the message reaches the console log instead of stderr. Conditions the
+  environment causes are not invariants in an engine and become handled cases or
+  \texttt{ERR\_DROP}: a minimised window's 0$\times$0 framebuffer (\texttt{main.cpp:126--127})
+  skips the frame, and a GLSL program the driver rejects (\texttt{draw\_radiance.cpp:56} and the
+  other three \texttt{LOG(FATAL)}s) means the machine cannot run \texttt{renderer\_sh}.
+  Configuration goes through \texttt{ri.Cvar\_Get}, and GLSL and \emph{every} other file through
   \texttt{ri.FS\_ReadFile}, so assets come from the pk3 through the engine's VFS. Level-lifetime
   buffers may use \texttt{ri.Hunk\_Alloc}; the rest \texttt{ri.Malloc} or the C++ allocator.
 \item \textbf{Gamma.} ioquake3's \texttt{r\_gamma} and hardware gamma are reconciled with
