@@ -79,7 +79,9 @@ sky becomes a light source. Stage~3 is restructured around that.
   loading as a new translation unit beside it (\texttt{loader\_q3.\{h,cpp\}}), as \texttt{sh-baker}
   added \texttt{loader\_q3map2} beside its glTF loader (B2). The glTF side builds as its own CMake
   target with tinygltf, tinyexr and the viewer; the module links only the core, so none of them
-  reaches the engine (C1). The glTF path gets no new features; its target must keep building.
+  reaches the engine (C1). The glTF path gets no new features; its target must keep building, and
+  in the \texttt{Q3\_COORDINATE} build the glTF loader converts its scenes to Z-up map units with
+  one root transform (C2), so they still render.
   \texttt{kLightIntensityScale} and \texttt{ComputeLightRadius} stay on the glTF path; the module
   reads lights from the entity lump (C4). The analytic sky stays for glTF scenes; maps draw
   \texttt{skyparms} (C3a).
@@ -820,7 +822,8 @@ sh-renderer is a submodule at \texttt{ioq3/code/tools/sh-renderer}. The engine i
 and never through a glTF; sh-renderer's glTF loader stays only for its own viewer and tests
 (§\ref{sec:rev8}). Changes to
 sh-renderer go as pull requests to \texttt{github.com/DaviesX/sh-renderer}, reviewed and merged by
-the user. It works in raw Z-up map units, as the editor and q3map2 do. Packed assets are probed with
+the user. It works in raw Z-up map units, as the editor and q3map2 do, through sh-renderer's
+\texttt{Q3\_COORDINATE} build (3.3). Packed assets are probed with
 \texttt{ri.FS\_ReadFile}, never \texttt{ri.FS\_FileExists}, which searches no pk3
 (§\ref{sec:rend2facts}).
 
@@ -881,7 +884,9 @@ file I/O, and its own GLFW window and frame loop. As a renderer module:
   and \texttt{ComputeLightRadius}, and \texttt{implementations.cpp} defines both the tinygltf and
   tinyexr implementations; these move to the glTF target. The unused Embree include
   (\texttt{scene.h:3}) is dropped, and the core keeps no glog (the shim below). Core tests link the
-  core; the loader, window and input tests link the glTF target. \texttt{GEMINI.md} is updated
+  core; the loader, window and input tests link the glTF target. A CMake option,
+  \texttt{SH\_RENDERER\_Q3\_COORDINATE}, defines \texttt{Q3\_COORDINATE} on the core: the module
+  builds it on, the viewer and sh-renderer's other uses off (C2). \texttt{GEMINI.md} is updated
   to match.
 \item \textbf{GL context.} \texttt{GLimp\_Init} in the shared \texttt{sdl\_glimp.c} gains a
   context-request parameter that only \texttt{renderer\_sh} sets: 4.6 core, debug, sRGB
@@ -938,8 +943,27 @@ reference --- not as code to copy.
   \texttt{depth\_w\_normal.frag:19}), \texttt{cull} and \texttt{surfaceparm}, and the defaults of
   §\ref{sec:materials} where absent. \texttt{tcMod}, \texttt{rgbGen wave}, \texttt{blendFunc} and
   \texttt{animMap} go into the layer runtime.
-\item Coordinates: sh-renderer's Y-up metres become Z-up map units (\texttt{camera.cpp:45},
-  \texttt{cascade.cpp:70}, \texttt{:77}, \texttt{:172}).
+\item Coordinates, behind \texttt{Q3\_COORDINATE}, so sh-renderer keeps Y-up metres for its other
+  uses. The macro is tested only in one header, \texttt{world\_frame.h}, which defines
+  \texttt{kWorldUp} (Z with the macro, Y without) and \texttt{kUnitsPerMetre} (about 32 with,
+  a Quake~3 player being 56 units tall; 1 without). Every metre-scaled constant is written as metres
+  $\times$ \texttt{kUnitsPerMetre}: the camera's default near and far (\texttt{camera.h:11--12}), the
+  cascade padding (\texttt{cascade.cpp:172}), the spot-shadow near plane and fallback far
+  (\texttt{draw\_shadow\_map.cpp:282--284}) and the viewer's move speed
+  (\texttt{interaction.cpp:59}). \texttt{LookAt} and \texttt{PanCamera} (\texttt{camera.cpp:17},
+  \texttt{:45}), the light-up fallback (\texttt{cascade.cpp:77}) and the analytic sky
+  (\texttt{sky\_analytic.frag:15}) read \texttt{kWorldUp}. The shader loader injects the macro after
+  \texttt{\#version}, and the shaders derive the up vector, the shadow normal bias
+  (\texttt{radiance.frag:241}) and the SSAO radius and bias (\texttt{ssao.frag:16--17}) the same
+  way. \texttt{cascade.cpp:70} is the camera's view-space up and stays. The SH basis is
+  sh-baker's (\texttt{sh\_coeffs.cpp:16--25}) and is evaluated in the frame it was baked in, so SH
+  needs no rotation. The module's camera comes from \texttt{refdef\_t}'s \texttt{viewaxis} and
+  \texttt{fov\_x}/\texttt{fov\_y} in the engine glue, outside sh-renderer, with the near plane at
+  \texttt{r\_znear} and the far plane from the world bounds. \texttt{loader\_q3} is compiled only with
+  the macro (a map converted to Y-up would need its L2 SH rotated too). With the macro the glTF
+  loader applies one root transform, $+90^\circ$ about X and the metre scale, so glTF scenes render
+  in the Quake~3 build; without it glTF loads as before. The tests run in both configurations, and
+  \texttt{camera\_test} and \texttt{cascade\_test} compare against \texttt{kWorldUp}.
 \item 2D: \texttt{SetColor}, \texttt{DrawStretchPic}, \texttt{RegisterShaderNoMip}. Without these
   there is no HUD, no menu and no console --- an ortho quad batcher, small but unavoidable.
 \item Frame protocol: \texttt{ClearScene}, \texttt{AddRefEntityToScene}, \texttt{RenderScene},
