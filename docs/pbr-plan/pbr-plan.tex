@@ -66,25 +66,32 @@ sky becomes a light source. Stage~3 is restructured around that.
   \texttt{ioq3-custom/sh-renderer} becomes a renderer module loaded by \texttt{cl\_renderer sh}
   through \texttt{GetRefAPI}, beside \texttt{opengl1} and \texttt{opengl2}, which stay untouched.
   The engine glue goes in \texttt{ioq3/code/renderersh/} and \texttt{cmake/renderer\_sh.cmake}
-  (neither exists yet). sh-renderer changes go as pull requests to
+  (neither exists yet). sh-renderer is a git submodule of ioquake3 at
+  \texttt{code/tools/sh-renderer}, which pins the commit the module builds; the checkout at
+  \texttt{ioq3-custom/sh-renderer} is the working copy for pull requests, and line references in
+  this plan are to sh-renderer's main. sh-renderer changes go as pull requests to
   \texttt{github.com/DaviesX/sh-renderer}, which the user reviews and merges; nothing is pushed or
   opened without asking, as with \texttt{sh-baker}.
-\item[Direct invocation only; the glTF path is deleted.] There is no compatibility with the
-  exporter $\to$ glTF $\to$ sh-renderer path. C0 deletes from sh-renderer: the glTF loader
-  (\texttt{loader.cpp}'s glTF parts and \texttt{loader\_layers\_test}), tinygltf, tinyexr, the
-  EXR/xatlas SH atlas input, \texttt{SH\_material\_layers} parsing, \texttt{kLightIntensityScale}
-  (\texttt{loader.cpp:18}), \texttt{ComputeLightRadius} (\texttt{scene.cpp:585--590}), the stray
-  Embree include (\texttt{scene.h:3}), the unused glTF \texttt{AreaLight}
-  (\texttt{scene.h:169--177}, \texttt{loader.cpp:757--793}) and the analytic sky for maps. The
-  glTF loader is not kept for sh-renderer's own tests; they switch to synthetic inputs. Revision
-  7's ``its glTF loader stays for its own tests and tools'' is withdrawn.
+\item[Direct invocation is the target; the glTF loader stays beside a Q3 loader.] No work goes
+  into the exporter $\to$ glTF $\to$ sh-renderer path, and \texttt{renderer\_sh} never reads a glTF.
+  (Amended 26 November 2026; revision 8 had deleted the glTF path in a cleanup task, C0, which is
+  dropped.) sh-renderer keeps its glTF loader, standalone viewer and tests, and gains Quake~3
+  loading as a new translation unit beside it (\texttt{loader\_q3.\{h,cpp\}}), as \texttt{sh-baker}
+  added \texttt{loader\_q3map2} beside its glTF loader (B2). The glTF side builds as its own CMake
+  target with tinygltf, tinyexr and the viewer; the module links only the core, so none of them
+  reaches the engine (C1). The glTF path gets no new features; its target must keep building.
+  \texttt{kLightIntensityScale} and \texttt{ComputeLightRadius} stay on the glTF path; the module
+  reads lights from the entity lump (C4). The analytic sky stays for glTF scenes; maps draw
+  \texttt{skyparms} (C3a).
 \item[The Q3 layer compositor is reference code.] The compositor already on sh-renderer's main
   (PRs \#15--\#18: \texttt{q3\_layer.h}, \texttt{q3\_layer\_bind}, \texttt{q3\_composite.glsl},
   per-layer descriptor SSBOs) is reused. Under \texttt{renderer\_sh} it is fed from shader text,
   and suspected bugs are fixed there. sh-renderer PRs \#19 (cutout coverage) and \#20 (additive
   pass) were closed as superseded; their features are redone from shader text in C2, C3 and C5.
-\item[Parser decided: \texttt{renderer\_sh} writes its own.] A small BSP and shader loader in raw
-  Z-up map units over \texttt{ri.FS\_*}. It does not link \texttt{libioq3\_map}, which reads only 5
+\item[Parser decided: sh-renderer's own \texttt{loader\_q3}.] A small BSP and shader loader in raw
+  Z-up map units, a new translation unit in sh-renderer's core. It reads files through a reader the
+  caller supplies: the module passes \texttt{ri.FS\_ReadFile} (the pk3 through the engine's VFS),
+  and its tests read fixtures from disk. It does not link \texttt{libioq3\_map}, which reads only 5
   of the 17 lumps, knows no \texttt{qer\_pbr\_*}, \texttt{alphaFunc} or \texttt{rgbGen const}, and
   pulls in glog, gflags, Embree and tinygltf. \texttt{renderergl2}'s \texttt{tr\_bsp},
   \texttt{tr\_shader} and \texttt{tr\_curve} are the reference for meaning. The open decision of
@@ -109,7 +116,8 @@ sky becomes a light source. Stage~3 is restructured around that.
   sky's radiance, so the stock lightmap gets direct and bounced sky light (B11 \texttt{sh-baker} PR,
   B12 q3map2). Side file v3 adds visibility per grid probe (B13, done). The editor preview's sky light is
   unshadowed (A12). Sky still never casts. §\ref{sec:sky}.
-\item[Track C restructured.] C0 cleans sh-renderer for the module; C1 brings the module up; C2 is
+\item[Track C restructured.] C1 brings the module up (C0, a cleanup task deleting the glTF path,
+  is dropped); C2 is
   Tier~1; C3 splits into C3a (sky and fog) and C3b (the rest of Tier~2); C4b loads the side file,
   ahead of C5 and C6; C8 is the spot-flashlight ABI, gated by the game-code decision. 3.4 follows
   Tier~1. Light units are no longer open: the editor's physical model is authoritative. Corrected
@@ -427,8 +435,8 @@ There is no calibration mode: nothing is matched against q3map2's lightmap.
   engine has, with the omni light as the stock fallback. The BSP and pk3 rules do not depend on the
   choice. It gates the flashlight of Stage~1 (A10) and the spot-flashlight ABI (C8, 3.6).
 \end{itemize}
-The parser for \texttt{renderer\_sh}, open until revision 7, is decided: it writes its own
-(§\ref{sec:rev8}).
+The parser for \texttt{renderer\_sh}, open until revision 7, is decided: sh-renderer's own
+\texttt{loader\_q3}, beside its glTF loader (§\ref{sec:rev8}).
 
 \section{Material authoring}\label{sec:materials}
 
@@ -590,10 +598,9 @@ wired, which is why it does not carry over as-is:
 \end{itemize}
 \textbf{Carried over:} \texttt{sh-renderer} as \texttt{renderer\_sh} (Stage~3) and \texttt{sh-baker}
 as a library linked into q3map2 (Stage~4). \texttt{ioq3-materialize} and the exporter are not part
-of this plan, and neither is its parsing code: \texttt{renderer\_sh} writes its own loader
-(§\ref{sec:rev8}). The glTF path is dropped from \texttt{sh-renderer}, not kept for its own
-tests: C0 deletes the glTF loader, tinygltf, tinyexr and the EXR/xatlas SH atlas input
-(§\ref{sec:rev8}).
+of this plan, and neither is its parsing code: sh-renderer gains its own Q3 loader,
+\texttt{loader\_q3} (§\ref{sec:rev8}). Its glTF loader stays for the standalone viewer and tests,
+but nothing feeds it from a map.
 
 \subsection{The editor and q3map2}
 
@@ -808,14 +815,16 @@ matching the editor preview.
 
 \textbf{Shape (revision 8).} \texttt{renderer\_sh} is \texttt{ioq3-custom/sh-renderer} grown into
 an ioquake3 renderer module, loaded by \texttt{cl\_renderer sh} through \texttt{GetRefAPI}; the
-engine glue lives in \texttt{ioq3/code/renderersh/} and \texttt{cmake/renderer\_sh.cmake}. It is
-invoked directly by the engine only; the glTF path is gone (§\ref{sec:rev8}). Changes to
+engine glue lives in \texttt{ioq3/code/renderersh/} and \texttt{cmake/renderer\_sh.cmake}, and
+sh-renderer is a submodule at \texttt{ioq3/code/tools/sh-renderer}. The engine invokes it directly
+and never through a glTF; sh-renderer's glTF loader stays only for its own viewer and tests
+(§\ref{sec:rev8}). Changes to
 sh-renderer go as pull requests to \texttt{github.com/DaviesX/sh-renderer}, reviewed and merged by
 the user. It works in raw Z-up map units, as the editor and q3map2 do. Packed assets are probed with
 \texttt{ri.FS\_ReadFile}, never \texttt{ri.FS\_FileExists}, which searches no pk3
 (§\ref{sec:rend2facts}).
 
-Tasks (Track~C): C0 cleanup and C1 module bring-up (3.1); C2 Tier~1 (3.3); C3a sky and fog, C3b the
+Tasks (Track~C): C1 module bring-up (3.1; C0 was dropped); C2 Tier~1 (3.3); C3a sky and fog, C3b the
 rest of Tier~2 (3.3); C4 direct-light parity (3.4); C4b the side-file loader (4.4); C5 shadow parity
 (3.5); C6 SH at runtime (4.4); C7 LTC area lights (4.5); C8 the spot-flashlight ABI (3.6). A task
 may run out of order once its \texttt{needs} are met.
@@ -845,17 +854,17 @@ Rationale:
 
 \textbf{What changes in sh-renderer's inputs.} It renders the BSP, not a glTF: draw surfaces with
 their q3map2 lightmap coordinates, materials from the shader text of §\ref{sec:materials}, the SH
-bands from the side file of Stage~4. It reads them with its own small BSP and shader loader over
-\texttt{ri.FS\_*}, with \texttt{renderergl2}'s \texttt{tr\_bsp}, \texttt{tr\_shader} and
-\texttt{tr\_curve} as the reference for meaning; it does not link \texttt{libioq3\_map}. No glTF
-loader is kept, not even for its tests. The Q3 layer compositor already on sh-renderer's main
+bands from the side file of Stage~4. It reads them with its own small BSP and shader loader,
+\texttt{loader\_q3}, a new translation unit beside the glTF loader, through a caller-supplied file
+reader (\texttt{ri.FS\_ReadFile} in the module, disk in its tests), with \texttt{renderergl2}'s \texttt{tr\_bsp},
+\texttt{tr\_shader} and \texttt{tr\_curve} as the reference for meaning; it does not link
+\texttt{libioq3\_map}. The glTF loader stays for the standalone viewer and the tests. The Q3 layer
+compositor already on sh-renderer's main
 (\texttt{q3\_layer.h}, \texttt{q3\_layer\_bind}, \texttt{q3\_composite.glsl}, per-layer
 descriptor SSBOs) is reused, fed from shader text instead of glTF extras.
 
-\textbf{C0: cleanup for the module} (one sh-renderer PR). Delete the glTF and EXR path and its
-dependencies as listed in §\ref{sec:rev8}, rewrite \texttt{GEMINI.md}'s phases to match C1--C7 and
-the module stack (no GLFW, gflags, glog, tinygltf or tinyexr), and switch the tests to synthetic
-inputs.
+\textbf{C0 is dropped.} It would have deleted the glTF and EXR path before C1. That code stays,
+moved by C1's split into the glTF target, so it costs the module nothing.
 
 \textbf{C1: the one part that is not additive}, planned as a refactor rather than a feature:
 \texttt{sh-renderer} currently owns its process. It uses \texttt{glog}, \texttt{gflags}, its own
@@ -863,19 +872,29 @@ file I/O, and its own GLFW window and frame loop. As a renderer module:
 \begin{itemize}
 \item \textbf{Build.} \texttt{cmake/renderer\_sh.cmake} behind \texttt{BUILD\_RENDERER\_SH}.
   \texttt{sh\_renderer} is a shared library built with \texttt{-march=native} today
-  (\texttt{sh-renderer/CMakeLists.txt:11}, \texttt{:114}); the module links it as a static or
+  (\texttt{sh-renderer/CMakeLists.txt:11}, \texttt{:110}); the module links it as a static or
   object library, and \texttt{-march=native} and the Eigen alignment it implies stay out of the
-  engine's translation units.
+  engine's translation units. sh-renderer's CMake splits a core library (passes, scene,
+  compositor, \texttt{loader\_q3}) from the glTF target (glTF loader, tinygltf, tinyexr, GLFW,
+  gflags, the viewer); the module links the core only. The split moves code, not just files:
+  \texttt{scene.cpp} includes \texttt{tinyexr.h} and holds the EXR reader \texttt{LoadLightmaps}
+  and \texttt{ComputeLightRadius}, and \texttt{implementations.cpp} defines both the tinygltf and
+  tinyexr implementations; these move to the glTF target. The unused Embree include
+  (\texttt{scene.h:3}) is dropped, and the core keeps no glog (the shim below). Core tests link the
+  core; the loader, window and input tests link the glTF target. \texttt{GEMINI.md} is updated
+  to match.
 \item \textbf{GL context.} \texttt{GLimp\_Init} in the shared \texttt{sdl\_glimp.c} gains a
   context-request parameter that only \texttt{renderer\_sh} sets: 4.6 core, debug, sRGB
   framebuffer. \texttt{opengl1} and \texttt{opengl2} request exactly what they do today. Below 4.6,
   \texttt{renderer\_sh} stops with \texttt{ri.Error}. glad is loaded through
   \texttt{SDL\_GL\_GetProcAddress} after \texttt{GLimp\_Init}, in translation units separate from
   \texttt{sdl\_glimp.c}'s \texttt{qgl*} pointers.
-\item \textbf{Window, input, frame.} GLFW and \texttt{input.cpp} are removed; input belongs to the
-  engine. The frame loop is inverted onto \texttt{BeginFrame}, \texttt{RenderScene} and
-  \texttt{EndFrame}.
-\item \textbf{Engine services.} Logging through a shim over \texttt{ri.Printf}/\texttt{ri.Error},
+\item \textbf{Window, input, frame.} GLFW and \texttt{input.cpp} leave the core for the viewer
+  target; in the module, input belongs to the engine. The frame loop is inverted onto
+  \texttt{BeginFrame}, \texttt{RenderScene} and \texttt{EndFrame}.
+\item \textbf{Engine services.} Logging through a shim over \texttt{ri.Printf}/\texttt{ri.Error}
+  (glog's \texttt{LOG(FATAL)} and \texttt{CHECK} abort the whole process, \texttt{ri.Error} drops to
+  the console; the viewer maps the shim back to stderr),
   configuration through \texttt{ri.Cvar\_Get}, GLSL and \emph{every} other file through
   \texttt{ri.FS\_ReadFile}, so assets come from the pk3 through the engine's VFS. Level-lifetime
   buffers may use \texttt{ri.Hunk\_Alloc}; the rest \texttt{ri.Malloc} or the C++ allocator.
@@ -908,7 +927,7 @@ reference --- not as code to copy.
   \texttt{BeginFrame}/\texttt{EndFrame}/\texttt{Shutdown}, and the control inversion off GLFW
   (C1).
 \item The \texttt{ri.*} refactor of §3.1 (C1).
-\item \texttt{LoadWorld} from \texttt{.bsp} with the module's own loader: every Tier-1 lump,
+\item \texttt{LoadWorld} from \texttt{.bsp} with \texttt{loader\_q3}: every Tier-1 lump,
   visdata and the light grid included, patches, plus \texttt{SetWorldVisData}, \texttt{inPVS} and
   PVS-based cluster culling, \texttt{LightForPoint}, and \texttt{GetEntityToken} (cgame reads the
   entity lump through the renderer).
@@ -937,7 +956,7 @@ rest) needs C3a and may run after C4.
 \begin{itemize}
 \item \textbf{Sky} (C3a; \texttt{tr\_sky}, 859 LOC). Highest priority of this tier for this project
   specifically: the low sky ceiling is the town's defining structural element. The
-  \texttt{skyparms} farbox and cloud layer replace sh-renderer's analytic sky, drawn as
+  \texttt{skyparms} farbox and cloud layer replace sh-renderer's analytic sky for maps, drawn as
   \texttt{tr\_sky} draws them: by view direction alone, the farbox around the camera and every stage
   a cloud layer projected onto a sphere centred \texttt{cloudheight} below the eye, never through
   the sky face's UVs (the model is recorded in A14, which brings the editor preview to it). The sky is drawn,
@@ -980,7 +999,8 @@ C4; needs Tier~1 (C2) and the light entities under \texttt{Q3.game} (A6).
   with no conversion constant --- radiant intensity flux$/4\pi$ for points and
   flux$/(2\pi(1-\cos\texttt{cone}))$ for spots, normalised \texttt{\_color}, zero beyond
   \texttt{radius}. Light units are not open: the editor's model is authoritative. sh-renderer's
-  glTF light scale (\texttt{kLightIntensityScale}) and \texttt{ComputeLightRadius} are deleted.
+  glTF light scale (\texttt{kLightIntensityScale}) and \texttt{ComputeLightRadius} stay on the glTF
+  path; map lights never pass through them.
 \item The sky term leaves the direct-light pass. sh-renderer adds \texttt{u\_sky\_color}
   $\times$ sun intensity$/10$ $\times$ baked visibility (\texttt{radiance.frag:423--424}), a flat
   colour. C6 replaces it with the sky shader's SH irradiance times the same visibility
@@ -1523,8 +1543,8 @@ constant between consumers.
 \toprule
 Consumer & Current scale & Where \\
 \midrule
-\texttt{sh-renderer} & $\times 1/200$ on the glTF intensity; deleted with the glTF loader (C0, 3.4),
-  lights read from the entities &
+\texttt{sh-renderer} & $\times 1/200$ on the glTF intensity, glTF path only; map lights read
+  from the entities with no scale (3.4) &
   \texttt{sh-renderer/src/loader.cpp:18}, \texttt{kLightIntensityScale} \\
 Editor & flux in the tens of thousands, raw map units, no metre conversion; this is the model &
   \texttt{setup/data/gamepacks/pbr/README.md} \\
@@ -1685,8 +1705,8 @@ The \texttt{renderer\_sh} feature set is open-ended &
   3 is stubbed indefinitely. \texttt{opengl2} remains the fallback for anything unimplemented, so
   no gap blocks play. \\
 The \texttt{ri.*} refactor spreads through sh-renderer &
-  The one non-additive part of §3.1 (C1), after C0 has removed the glTF path; done first, before
-  feature work, so nothing is ported twice. \\
+  The one non-additive part of §3.1 (C1); done first, before feature work, so nothing is ported
+  twice. \\
 The machine lacks GL~4.6 core &
   \texttt{renderer\_sh} stops with \texttt{ri.Error} naming the version; \texttt{opengl1} and
   \texttt{opengl2} keep their own context request. \\
@@ -1741,12 +1761,12 @@ Item & Depends on & Note \\
 2.x Sky drawing in the editor (A14) & A13 & Not scheduled: the preview's cloud layer samples the sky
   face's UVs; stock draws the sky by view direction (\texttt{tr\_sky}'s cloud dome). Appearance
   only; the model is recorded for C3a. \\
-3.1 sh-renderer cleanup (C0) & --- & One sh-renderer PR: the glTF and EXR path and its
-  dependencies deleted, tests on synthetic inputs. \\
-3.1 Module bring-up (C1) & C0 & Not additive, so it goes first: \texttt{ri.*}, the
-  \texttt{GLimp\_Init} context parameter, the inverted frame loop. \\
-3.3 Tier 1 features (C2) & C1, 0.2 & Walkable town under \texttt{cl\_renderer sh}, own BSP and
-  shader loader; adds the \texttt{cl\_renderer sh} stock-check run. \\
+3.1 sh-renderer cleanup (C0) & --- & Dropped: the glTF loader stays beside the Q3 loader, in its
+  own CMake target. \\
+3.1 Module bring-up (C1) & --- & Not additive, so it goes first: \texttt{ri.*}, the
+  \texttt{GLimp\_Init} context parameter, the inverted frame loop, the core/glTF target split. \\
+3.3 Tier 1 features (C2) & C1, 0.2 & Walkable town under \texttt{cl\_renderer sh}, BSP and
+  shader loader in \texttt{loader\_q3}; adds the \texttt{cl\_renderer sh} stock-check run. \\
 3.3 Tier 2 sky and fog (C3a) & Tier 1 & They define the town; fog after the tonemap (A13). \\
 3.3 Tier 2 rest (C3b) & C3a & May run after 3.4. \\
 3.4 Direct light parity (C4) & Tier 1, 2.2 step 4 & Editor and engine read lights identically;
