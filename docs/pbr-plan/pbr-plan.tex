@@ -103,8 +103,11 @@ sky becomes a light source. Stage~3 is restructured around that.
   \texttt{cmake/renderer\_common.cmake:15--18}; \texttt{renderergl2/tr\_init.cpp:264--267}), and
   \texttt{sdl\_glimp.c} asks for at most GL~3.2 core (\texttt{:545--548}). sh-renderer needs 4.6
   core with a debug context and an sRGB framebuffer (\texttt{window.cpp:72--78}, \texttt{:114}).
-  \texttt{sdl\_glimp.c} gains a context-request parameter that only \texttt{renderer\_sh} sets;
-  \texttt{opengl1} and \texttt{opengl2} request exactly what they do today. This replaces the
+  \texttt{sdl\_glimp.c} gains a context request that only \texttt{renderer\_sh} makes;
+  \texttt{opengl1} and \texttt{opengl2} request exactly what they do today. (Amended 27 November
+  2026: \texttt{GLimp\_Init} keeps its signature and a new \texttt{GLimp\_InitWithRequest} carries
+  the request, and glad is loaded inside sh-renderer's core through a resolver the module passes;
+  §3.1 records C1's other decisions.) This replaces the
   \texttt{r\_glMajorVersion}-style cvars designed in \texttt{ioq3-custom/docs/c\_interface\_design.tex}
   (\texttt{:298--300}), and the earlier wording ``initialise against an already-current GL
   context''.
@@ -424,7 +427,10 @@ carries the new one. The engine only parses shaders a map uses, so the check cov
 shaders the map references. The enhanced check is the same run with \texttt{cl\_renderer sh}
 (added by C2). It must also assert from the console that \texttt{renderer\_sh} loaded, because a
 module that fails to load prints \texttt{failed:} (\texttt{cl\_main.c:3190}) and the engine
-continues on \texttt{opengl2}.
+continues on \texttt{opengl2}. Until then, C1's smoke check
+(\texttt{tools/stockcheck/renderer\_sh\_smoke.py}) makes the same assertion without a map: the
+main menu under \texttt{cl\_renderer sh}, the module's banner, no \texttt{failed:} line, and
+screenshots of the cleared frame at \texttt{r\_gamma} 1 and 1.5.
 There is no calibration mode: nothing is matched against q3map2's lightmap.
 
 \subsection{Open decisions}\label{sec:open}
@@ -873,10 +879,10 @@ moved by C1's split into the glTF target, so it costs the module nothing.
 \texttt{sh-renderer} currently owns its process. It uses \texttt{glog}, \texttt{gflags}, its own
 file I/O, and its own GLFW window and frame loop. As a renderer module:
 \begin{itemize}
-\item \textbf{Build.} \texttt{cmake/renderer\_sh.cmake} behind \texttt{BUILD\_RENDERER\_SH}.
-  \texttt{sh\_renderer} is a shared library built with \texttt{-march=native} today
-  (\texttt{sh-renderer/CMakeLists.txt:11}, \texttt{:110}); the module links it as a static or
-  object library, and \texttt{-march=native} and the Eigen alignment it implies stay out of the
+\item \textbf{Build.} \texttt{cmake/renderer\_sh.cmake} behind \texttt{BUILD\_RENDERER\_SH}
+  (default off). \texttt{sh\_renderer} is a shared library built with \texttt{-march=native} today
+  (\texttt{sh-renderer/CMakeLists.txt:11}, \texttt{:110}); the module links it as a static
+  library, and \texttt{-march=native} and the Eigen alignment it implies stay out of the
   engine's translation units. sh-renderer's CMake splits a core library (passes, scene,
   compositor, \texttt{loader\_q3}) from the glTF target (glTF loader, tinygltf, tinyexr, GLFW,
   gflags, the viewer); the module links the core only. The split moves code, not just files:
@@ -885,35 +891,64 @@ file I/O, and its own GLFW window and frame loop. As a renderer module:
   tinyexr implementations; these move to the glTF target. The unused Embree include
   (\texttt{scene.h:3}) is dropped, and the core keeps no glog (the shim below). Core tests link the
   core; the loader, window and input tests link the glTF target. A CMake option,
-  \texttt{SH\_RENDERER\_Q3\_COORDINATE}, defines \texttt{Q3\_COORDINATE} on the core: the module
+  \texttt{SH\_RENDERER\_Q3\_COORDINATE}, defines \texttt{Q3\_COORDINATE} on the core as a public definition, so everything that
+  links the core (its tests, the engine glue) sees the same layout: the module
   builds it on, the viewer and sh-renderer's other uses off (C2). \texttt{GEMINI.md} is updated
   to match.
-\item \textbf{GL context.} \texttt{GLimp\_Init} in the shared \texttt{sdl\_glimp.c} gains a
-  context-request parameter that only \texttt{renderer\_sh} sets: 4.6 core, debug, sRGB
-  framebuffer. \texttt{opengl1} and \texttt{opengl2} request exactly what they do today. Below 4.6,
-  \texttt{renderer\_sh} stops with \texttt{ri.Error}. glad is loaded through
-  \texttt{SDL\_GL\_GetProcAddress} after \texttt{GLimp\_Init}, in translation units separate from
-  \texttt{sdl\_glimp.c}'s \texttt{qgl*} pointers.
+\item \textbf{GL context.} \texttt{GLimp\_Init} in the shared \texttt{sdl\_glimp.c} keeps its
+  signature and its code path, so \texttt{opengl1} and \texttt{opengl2} request exactly what they
+  do today and their sources are unchanged. A new \texttt{GLimp\_InitWithRequest} carries the
+  context request, and only \texttt{renderer\_sh} calls it: one context, 4.6 core, debug, sRGB
+  framebuffer. It returns failure instead of calling \texttt{ri.Error}, so the module can fall
+  back (Engine services). glad is loaded inside sh-renderer's core: the module passes
+  \texttt{SDL\_GL\_GetProcAddress} as a resolver to the core's setup call, which loads glad and
+  checks for 4.6. No engine translation unit includes \texttt{glad.h}; the glue includes only an
+  Eigen-free facade header, \texttt{engine\_api.h}, which also hands it the built-in GLSL
+  (\texttt{ShEmbeddedReader}), and \texttt{sdl\_glimp.c} keeps its own \texttt{qgl*} pointers.
+  With a request, \texttt{sdl\_glimp.c} skips its hardware-gamma probe
+  (\texttt{SDL\_SetWindowBrightness}, which itself sets a ramp), so no ramp is ever set.
 \item \textbf{Window, input, frame.} GLFW and \texttt{input.cpp} leave the core for the viewer
   target; in the module, input belongs to the engine. The frame loop is inverted onto
-  \texttt{BeginFrame}, \texttt{RenderScene} and \texttt{EndFrame}.
+  \texttt{BeginFrame}, \texttt{RenderScene} and \texttt{EndFrame}, which the viewer drives too.
 \item \textbf{Engine services.} Logging through a shim over \texttt{ri.Printf}/\texttt{ri.Error}
   (the viewer maps it back to stderr). Invariant \texttt{CHECK}s and \texttt{LOG(FATAL)} stay fatal
   but go through \texttt{ri.Error(ERR\_FATAL)}: the engine's shutdown then restores the display mode
   and hardware gamma, releases the mouse and flushes \texttt{qconsole.log}, all of which
   \texttt{abort()} skips, and the message reaches the console log instead of stderr. Conditions the
-  environment causes are not invariants in an engine and become handled cases or
-  \texttt{ERR\_DROP}: a minimised window's 0$\times$0 framebuffer (\texttt{main.cpp:126--127})
-  skips the frame, and a GLSL program the driver rejects (\texttt{draw\_radiance.cpp:56} and the
-  other three \texttt{LOG(FATAL)}s) means the machine cannot run \texttt{renderer\_sh}.
-  Configuration goes through \texttt{ri.Cvar\_Get}, and GLSL and \emph{every} other file through
+  environment causes are not invariants in an engine and become handled cases: a minimised
+  window's 0$\times$0 framebuffer (\texttt{main.cpp:126--127}) skips the frame, and program
+  creation (\texttt{draw\_radiance.cpp:56} and the other three \texttt{LOG(FATAL)}s) returns an
+  empty program with the driver's info log. A failure at renderer init that means the machine
+  cannot run \texttt{renderer\_sh} (no 4.6 core context, or a built-in GLSL program the driver
+  rejects) is fatal with a fallback: the module sets \texttt{cl\_renderer} to \texttt{opengl2},
+  writes it with \texttt{writeconfig} (the fatal path never writes \texttt{q3config.cfg}, and no
+  frame has run yet), and ends through \texttt{ri.Error(ERR\_FATAL)} with a message saying the next
+  start uses \texttt{opengl2}. \texttt{ERR\_DROP} is not used at init, where its longjmp would
+  leave the client calling a half-initialised renderer, and is kept for per-level failures (C2's
+  map load). Configuration goes through \texttt{ri.Cvar\_Get}, and \emph{every} file through
   \texttt{ri.FS\_ReadFile}, so assets come from the pk3 through the engine's VFS. Level-lifetime
   buffers may use \texttt{ri.Hunk\_Alloc}; the rest \texttt{ri.Malloc} or the C++ allocator.
-\item \textbf{Gamma.} ioquake3's \texttt{r\_gamma} and hardware gamma are reconciled with
-  \texttt{GL\_FRAMEBUFFER\_SRGB}.
-\item \textbf{Exit.} A cleared frame under \texttt{cl\_renderer sh}, with the console proving
-  that \texttt{renderer\_sh} loaded (a failed load falls back to \texttt{opengl2},
-  §\ref{sec:verify}).
+\item \textbf{GLSL.} The module carries its GLSL built in (\texttt{SH\_RENDERER\_EMBED\_GLSL}), so
+  it needs no file beside it and no renderer pk3. Each file, \texttt{\#include}d ones too, is read
+  first as \texttt{glsl/sh/<name>} through \texttt{ri.FS\_ReadFile} (loose or packed; the
+  \texttt{sh/} prefix keeps it clear of \texttt{opengl2}'s \texttt{glsl/} overrides). If the
+  renderer fails to build while any override was used, the whole renderer, every program, is
+  rebuilt from the built-in GLSL, with a warning that gives the driver's info log and names every
+  override as dropped; if that fails too, it is the fatal fallback above.
+\item \textbf{Gamma.} \texttt{r\_gamma} is applied in the tonemap shader to the unrounded sRGB
+  value, before the \texttt{GL\_FRAMEBUFFER\_SRGB} encode quantises it; at 1 the output is
+  unchanged. The module reports no hardware gamma and never sets a ramp, which has no effect
+  windowed on many SDL2 and Wayland setups and is left behind after a crash.
+\item \textbf{Delivery.} Four stacked sh-renderer pull requests, each keeping the viewer's frames
+  byte-identical: the logging shim; the file reader, embedded GLSL and program creation that
+  reports failure; the CMake split; the frame API, facade and display gamma. Then two ioquake3 pull
+  requests: \texttt{GLimp\_InitWithRequest} alone, then \texttt{code/renderersh/},
+  \texttt{cmake/renderer\_sh.cmake} and the submodule bump to the merged sh-renderer.
+\item \textbf{Exit.} A smoke check, \texttt{tools/stockcheck/renderer\_sh\_smoke.py}, boots
+  ioquake3 with \texttt{cl\_renderer sh} in a clean temporary basepath and homepath and passes only
+  if the console proves that \texttt{renderer\_sh} loaded (its banner, and no \texttt{failed:} line:
+  a failed load falls back to \texttt{opengl2}, §\ref{sec:verify}) and the screenshots of the
+  cleared frame match the tonemapped clear colour at \texttt{r\_gamma} 1 and 1.5.
 \end{itemize}
 This touches every module's edges. Do it first, before any feature work, so no feature is ported
 twice.
@@ -1738,8 +1773,9 @@ The \texttt{ri.*} refactor spreads through sh-renderer &
   The one non-additive part of §3.1 (C1); done first, before feature work, so nothing is ported
   twice. \\
 The machine lacks GL~4.6 core &
-  \texttt{renderer\_sh} stops with \texttt{ri.Error} naming the version; \texttt{opengl1} and
-  \texttt{opengl2} keep their own context request. \\
+  \texttt{renderer\_sh} sets \texttt{cl\_renderer} to \texttt{opengl2}, writes the configuration
+  and stops with \texttt{ri.Error(ERR\_FATAL)} naming the version, so the next start uses
+  \texttt{opengl2}; \texttt{opengl1} and \texttt{opengl2} keep their own context request. \\
 The preview's sky light is unshadowed and overlights interiors &
   Accepted approximation (§\ref{sec:sky}); the runtime uses baked visibility and the full bake
   shadows it, and 3.4's parity check runs with sky emission off. \\
@@ -1794,7 +1830,8 @@ Item & Depends on & Note \\
 3.1 sh-renderer cleanup (C0) & --- & Dropped: the glTF loader stays beside the Q3 loader, in its
   own CMake target. \\
 3.1 Module bring-up (C1) & --- & Not additive, so it goes first: \texttt{ri.*}, the
-  \texttt{GLimp\_Init} context parameter, the inverted frame loop, the core/glTF target split. \\
+  \texttt{GLimp\_InitWithRequest}, the inverted frame loop, the core/glTF target split; exit is
+  the \texttt{renderer\_sh} smoke check. \\
 3.3 Tier 1 features (C2) & C1, 0.2 & Walkable town under \texttt{cl\_renderer sh}, BSP and
   shader loader in \texttt{loader\_q3}; adds the \texttt{cl\_renderer sh} stock-check run. \\
 3.3 Tier 2 sky and fog (C3a) & Tier 1 & They define the town; fog after the tonemap (A13). \\
